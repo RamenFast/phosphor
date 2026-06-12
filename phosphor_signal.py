@@ -5,14 +5,19 @@ same segments, and the offline exporter replays audio through this same
 class, so what you record is exactly what you saw.
 
 Modes:
-  xy        — left channel deflects X, right deflects Y (oscilloscope music)
-  xy45      — goniometer rotation: X = side (L-R), Y = mid (L+R). Ordinary
-              stereo songs collapse to a diagonal line in raw XY; rotated,
-              mono energy stands upright and stereo width blooms sideways.
-  waveform  — dual trace with rising-edge triggering so pitched sounds
-              stand still instead of crawling.
-  spectrum  — log-frequency bars from a pure-python FFT, with fast attack
-              and slow phosphor-style fall.
+  xy              — left channel deflects X, right deflects Y (scope music)
+  xy45            — goniometer rotation: X = side (L-R), Y = mid (L+R).
+                    Ordinary stereo songs collapse to a diagonal line in raw
+                    XY; rotated, mono energy stands upright and stereo width
+                    blooms sideways.
+  xy_dots         — XY sampled as discrete dots, the way a vectorscope's
+                    dot display looks; great for seeing sample density.
+  waveform        — dual trace with rising-edge triggering so pitched sounds
+                    stand still instead of crawling.
+  spectrum        — log-frequency bars from a pure-python FFT, with fast
+                    attack and slow phosphor-style fall.
+  spectrum_radial — the same analysis swept around a circle, bars radiating
+                    outward from a quiet center.
 """
 
 import math
@@ -100,12 +105,16 @@ class SegmentComputer:
         """New beam segments for this frame from this frame's new samples."""
         if self.mode in ("xy", "xy45"):
             return self._xy_segments(samples, width, height)
+        if self.mode == "xy_dots":
+            return self._xy_dot_segments(samples, width, height)
         self.waveform_history.extend(samples)
         excess = len(self.waveform_history) - 2 * WAVEFORM_HISTORY
         if excess > 0:
             del self.waveform_history[:excess]
         if self.mode == "waveform":
             return self._waveform_segments(width, height)
+        if self.mode == "spectrum_radial":
+            return self._radial_spectrum_segments(width, height)
         return self._spectrum_segments(width, height)
 
     # -- XY -----------------------------------------------------------------
@@ -136,6 +145,19 @@ class SegmentComputer:
                 segments.append((previous_x, previous_y, x, y, intensity))
             previous_x, previous_y = x, y
         self.last_beam_x, self.last_beam_y = previous_x, previous_y
+        return segments
+
+    def _xy_dot_segments(self, samples, width, height):
+        """Discrete-dot vectorscope display: one short stamp per sample."""
+        if len(samples) > 2 * MAX_POINTS_PER_FRAME:
+            samples = samples[-2 * MAX_POINTS_PER_FRAME:]
+        center_x, center_y = width / 2, height / 2
+        radius = min(width, height) * 0.45
+        segments = []
+        for index in range(0, len(samples) - 1, 2):
+            x = center_x + samples[index] * self.gain * radius
+            y = center_y - samples[index + 1] * self.gain * radius
+            segments.append((x - 0.8, y, x + 0.8, y, 1.0))
         return segments
 
     # -- waveform -------------------------------------------------------------
@@ -191,7 +213,8 @@ class SegmentComputer:
             ranges.append((low_bin, min(high_bin, FFT_SIZE // 2)))
         return ranges
 
-    def _spectrum_segments(self, width, height):
+    def _update_spectrum_levels(self):
+        """Run the FFT every other frame and smooth bar levels in place."""
         frame_count = len(self.waveform_history) // 2
         self.frames_since_fft += 1
         if frame_count >= FFT_SIZE and self.frames_since_fft >= 2:
@@ -211,6 +234,8 @@ class SegmentComputer:
                 else:
                     self.spectrum_levels[bar] *= 0.93            # slow fall
 
+    def _spectrum_segments(self, width, height):
+        self._update_spectrum_levels()
         segments = []
         baseline = height * 0.88
         bar_pitch = width / SPECTRUM_BAR_COUNT
@@ -220,4 +245,25 @@ class SegmentComputer:
             x = bar_pitch * (bar + 0.5)
             top = baseline - level * height * 0.74
             segments.append((x, baseline, x, top, 0.35 + 0.65 * level))
+        return segments
+
+    def _radial_spectrum_segments(self, width, height):
+        """Spectrum bars radiating from a circle: bass at twelve o'clock,
+        sweeping clockwise to treble."""
+        self._update_spectrum_levels()
+        segments = []
+        center_x, center_y = width / 2, height / 2
+        inner_radius = min(width, height) * 0.14
+        bar_reach = min(width, height) * 0.32
+        for bar, level in enumerate(self.spectrum_levels):
+            if level < 0.01:
+                continue
+            angle = 2 * math.pi * (bar + 0.5) / SPECTRUM_BAR_COUNT - math.pi / 2
+            cosine, sine = math.cos(angle), math.sin(angle)
+            outer_radius = inner_radius + level * bar_reach
+            segments.append((center_x + cosine * inner_radius,
+                             center_y + sine * inner_radius,
+                             center_x + cosine * outer_radius,
+                             center_y + sine * outer_radius,
+                             0.35 + 0.65 * level))
         return segments

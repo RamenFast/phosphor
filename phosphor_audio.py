@@ -11,7 +11,9 @@ The stream also keeps a rolling ring of the last CLIP_SECONDS of audio so
 snapshots and clip exports can re-render what you just saw and heard.
 """
 
+import os
 import re
+import signal
 import subprocess
 import threading
 from array import array
@@ -33,16 +35,23 @@ def _run_pactl(arguments):
 
 
 class CaptureTarget:
-    """Something parec can record: kind is 'device' or 'app'."""
+    """Something parec can record: kind is 'device' or 'app'.
 
-    def __init__(self, kind, identifier, label):
+    App targets are keyed by application name, not sink-input index: indexes
+    are reassigned every time playback restarts (every song change in a
+    browser), so an index-keyed selection would go stale immediately. The
+    name stays put, letting the scope re-find "Google Chrome" forever.
+    """
+
+    def __init__(self, kind, identifier, label, stable_key=None):
         self.kind = kind
-        self.identifier = identifier
+        self.identifier = identifier      # device name, or sink-input index
         self.label = label
+        self.stable_key = stable_key or identifier
 
     @property
     def combo_id(self):
-        return f"{self.kind}:{self.identifier}"
+        return f"{self.kind}:{self.stable_key}"
 
     def parec_argument(self):
         if self.kind == "app":
@@ -53,16 +62,23 @@ class CaptureTarget:
 def list_capture_targets():
     """All capturable things: playing apps first, then monitors, then mics."""
     targets = []
+    seen_app_keys = set()
 
     for block in re.split(r"^Sink Input #", _run_pactl(["list", "sink-inputs"]), flags=re.MULTILINE):
         index_match = re.match(r"(\d+)", block)
         if not index_match:
             continue
+        index = index_match.group(1)
         application = re.search(r'application\.name = "(.*?)"', block)
         media_title = re.search(r'media\.name = "(.*?)"', block)
         parts = [match.group(1) for match in (application, media_title) if match]
-        label = " — ".join(parts) or f"stream #{index_match.group(1)}"
-        targets.append(CaptureTarget("app", index_match.group(1), f"APP · {label}"))
+        label = " — ".join(parts) or f"stream #{index}"
+        app_key = application.group(1) if application else f"stream-{index}"
+        while app_key in seen_app_keys:        # two streams from one app
+            app_key += "+"
+        seen_app_keys.add(app_key)
+        targets.append(CaptureTarget("app", index, f"APP · {label}",
+                                     stable_key=app_key))
 
     monitors, microphones = [], []
     for block in re.split(r"^Source #\d+", _run_pactl(["list", "sources"]), flags=re.MULTILINE):
@@ -93,6 +109,7 @@ class AudioCaptureStream:
     def __init__(self, on_stream_ended):
         self._process = None
         self._playback_process = None      # pacat, only during file playback
+        self.playback_paused = False
         self._reader_thread = None
         self._pending_bytes = bytearray()
         self._history_bytes = bytearray()  # rolling last CLIP_SECONDS for export
@@ -159,7 +176,23 @@ class AudioCaptureStream:
         )
         self._reader_thread.start()
 
+    def set_playback_paused(self, paused):
+        """Freeze/unfreeze file playback. SIGSTOP holds both the decoder and
+        pacat in place, so resuming continues exactly where the sound left
+        off — no buffer to rebuild, no seek needed."""
+        if self._playback_process is None or paused == self.playback_paused:
+            return
+        stop_or_continue = signal.SIGSTOP if paused else signal.SIGCONT
+        for child in (self._process, self._playback_process):
+            if child is not None and child.poll() is None:
+                try:
+                    os.kill(child.pid, stop_or_continue)
+                except ProcessLookupError:
+                    pass
+        self.playback_paused = paused
+
     def stop(self):
+        self.set_playback_paused(False)    # SIGTERM stays pending on a stopped process
         process, self._process = self._process, None
         playback, self._playback_process = self._playback_process, None
         for child in (process, playback):

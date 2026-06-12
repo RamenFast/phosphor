@@ -120,6 +120,8 @@ class Settings:
         self.cairo_resolution = 1.0    # CPU phosphor buffer scale: 0.5..1.0
         self.ui_style = "dark"         # "system" | "dark" | "black"
         self.show_pin_button = True
+        self.show_fps = False
+        self.max_fps = 0               # 0 = uncapped (monitor refresh rate)
         # capture
         self.target_id = None
 

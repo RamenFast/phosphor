@@ -12,13 +12,15 @@ Audio files can also be played directly (decoded by ffmpeg, audible
 through pacat) so you can scope a track without a separate player.
 
 Keys:  Space capture · O open file · M mini · S snapshot · C save clip
-       P pin · G grid · scroll = gain (Ctrl+scroll in mini = resize) · Q quit
+       P pin · G grid · F fps · scroll = gain (Ctrl+scroll in mini = resize)
+       Q quit
 Mini mode: drag with the left button, double-click to restore,
 right-click anywhere for the menu.
 """
 
 import os
 import threading
+import time
 
 import gi
 
@@ -35,38 +37,92 @@ from phosphor_settings import (CUSTOM_THEME_NAME, THEME_PRESETS, Settings,
 from phosphor_signal import SegmentComputer
 
 APPLICATION_ID = "io.github.ben.Phosphor"
-APPLICATION_VERSION = "2.1.0"
+APPLICATION_VERSION = "2.2.0"
 PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 QUIET_PEAK_THRESHOLD = 1e-4
 QUIET_FRAMES_BEFORE_SLEEP = 120
 MINI_SIZE_PRESETS = (("Small", 200), ("Medium", 280), ("Large", 380))
+AUDIO_FILE_EXTENSIONS = (".mp3", ".flac", ".ogg", ".oga", ".opus", ".wav",
+                         ".m4a", ".aac", ".wma", ".aif", ".aiff", ".mka")
+REACQUIRE_POLL_LIMIT = 180   # seconds to wait for a dead app stream to return
 
 DISPLAY_MODES = (
     ("xy", "XY (scope art)"),
     ("xy45", "XY · goniometer"),
+    ("xy_dots", "XY · dots"),
     ("waveform", "Waveform"),
     ("spectrum", "Spectrum"),
+    ("spectrum_radial", "Spectrum · radial"),
 )
 
-GPU_QUALITY_CHOICES = (("1", "Standard"), ("2", "High · 2× supersampled"))
+GPU_QUALITY_CHOICES = (("1", "Standard"), ("2", "High · 2× supersampled"),
+                       ("3", "Ultra · 3× supersampled"))
 CPU_RESOLUTION_CHOICES = (("1.0", "Full resolution"),
                           ("0.75", "Balanced · 75%"),
                           ("0.5", "Fast · 50%"))
 UI_STYLE_CHOICES = (("system", "System"), ("dark", "Dark"),
                     ("black", "AMOLED black"))
 
-# Pure-black chrome for the AMOLED UI style; scope themes stay independent.
+# Always loaded: just the FPS overlay chip.
+BASE_UI_CSS = b"""
+#fps-overlay {
+    background-color: rgba(0, 0, 0, 0.55);
+    color: #7dff9e;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-family: monospace;
+    font-size: 11px;
+}
+"""
+
+# AMOLED UI style: pure-black chrome, pink for idle controls, yellow for
+# anything selected/active, and slimmer buttons. Scope themes stay separate.
 BLACK_UI_CSS = b"""
 window, headerbar, popover, popover.background, menu, .background {
     background-color: #000000;
+    color: #ff8fd5;
 }
+label { color: #ff8fd5; }
 headerbar {
+    min-height: 32px;
+    padding: 0 4px;
     box-shadow: none;
-    border-bottom: 1px solid #161616;
+    border-bottom: 1px solid #1c0414;
 }
-menu, popover {
-    border: 1px solid #1c1c1c;
+headerbar .title { color: #ff8fd5; }
+button {
+    background-color: #000000;
+    background-image: none;
+    color: #ff8fd5;
+    border: 1px solid #38112a;
+    border-radius: 5px;
+    padding: 1px 8px;
+    min-height: 22px;
 }
+button:hover { border-color: #ff5ec4; }
+button:checked {
+    color: #ffd84d;
+    border-color: #ad8a20;
+    background-color: #120c00;
+}
+button:checked label, button:checked image { color: #ffd84d; }
+entry, spinbutton, spinbutton entry {
+    background-color: #000000;
+    background-image: none;
+    color: #ffd84d;
+    border: 1px solid #38112a;
+    min-height: 20px;
+}
+combobox button.combo { padding: 1px 6px; }
+scale trough { background-color: #1b0712; border-color: #38112a; }
+scale highlight { background-color: #ff5ec4; }
+scale slider { background-color: #ff8fd5; border: 1px solid #38112a; }
+switch { background-color: #1b0712; border: 1px solid #38112a; }
+switch:checked { background-color: #ad1f80; }
+switch slider { background-color: #ff8fd5; }
+menu menuitem:hover, popover modelbutton:hover { background-color: #240a1b; }
+menu, popover { border: 1px solid #240a1b; }
+#fps-overlay { color: #ffd84d; }
 """
 
 
@@ -155,12 +211,30 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             on_stream_ended=lambda: GLib.idle_add(self._handle_stream_died))
         self.capture_targets = {}
         self.playing_file = None
+        self.playlist = []
+        self.playlist_index = -1
         self.is_mini_mode = False
         self.tick_callback_id = None
         self.fade_out_frames_remaining = 0
         self.quiet_frame_count = 0
         self.exporting = False
         self._black_css_provider = None
+        self._reacquire_target_id = None
+        self._reacquire_source = None
+        self._reacquire_attempts = 0
+        self._geometry_apply_source = None
+        # suspended until the remembered view is applied, so startup configure
+        # events can't overwrite the saved geometry with the WM's placement
+        self._geometry_tracking_suspended = True
+        self._last_frame_time = 0.0
+        self._fps_counter = 0
+        self._fps_window_start = time.monotonic()
+
+        base_css_provider = Gtk.CssProvider()
+        base_css_provider.load_from_data(BASE_UI_CSS)
+        Gtk.StyleContext.add_provider_for_screen(
+            Gdk.Screen.get_default(), base_css_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
         self._build_renderers()
         self._build_user_interface()
@@ -170,6 +244,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._apply_ui_style()
 
         self.connect("key-press-event", self._on_key_press)
+        self.connect("configure-event", self._on_configure_event)
         self.connect("delete-event", self._on_delete)
 
     # ------------------------------------------------------------------ UI --
@@ -213,7 +288,20 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         event_box.connect("button-press-event", self._on_button_press)
         event_box.connect("scroll-event", self._on_scroll)
         event_box.add(self.display_stack)
-        layout.pack_start(event_box, True, True, 0)
+
+        self.fps_label = Gtk.Label(label="… fps")
+        self.fps_label.set_name("fps-overlay")
+        self.fps_label.set_halign(Gtk.Align.END)
+        self.fps_label.set_valign(Gtk.Align.START)
+        for edge in ("top", "end"):
+            getattr(self.fps_label, f"set_margin_{edge}")(10)
+        self.fps_label.set_no_show_all(True)
+        self.fps_label.set_visible(self.settings.show_fps)
+
+        display_overlay = Gtk.Overlay()
+        display_overlay.add(event_box)
+        display_overlay.add_overlay(self.fps_label)
+        layout.pack_start(display_overlay, True, True, 0)
         self.add(layout)
 
     def _build_header_bar(self):
@@ -227,6 +315,29 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         open_button.set_tooltip_text("Play an audio file on the scope (O)")
         open_button.connect("clicked", lambda _b: self.open_audio_file())
         self.header_bar.pack_start(open_button)
+
+        # transport appears only while a file is loaded
+        self.transport_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        self.transport_box.get_style_context().add_class("linked")
+        for icon_name, tooltip, callback in (
+                ("media-skip-backward-symbolic", "Previous track in folder",
+                 self.play_previous_track),
+                (None, "Play/pause the loaded file", self._on_transport_play_pause),
+                ("media-skip-forward-symbolic", "Next track in folder",
+                 self.play_next_track)):
+            if icon_name is None:
+                self.play_pause_image = Gtk.Image.new_from_icon_name(
+                    "media-playback-pause-symbolic", Gtk.IconSize.BUTTON)
+                button = Gtk.Button()
+                button.add(self.play_pause_image)
+            else:
+                button = Gtk.Button.new_from_icon_name(icon_name,
+                                                       Gtk.IconSize.BUTTON)
+            button.set_tooltip_text(tooltip)
+            button.connect("clicked", lambda _b, c=callback: c())
+            self.transport_box.pack_start(button, False, False, 0)
+        self.transport_box.set_no_show_all(True)
+        self.header_bar.pack_start(self.transport_box)
 
         settings_button = self._build_settings_button()
         self.header_bar.pack_end(settings_button)
@@ -296,7 +407,22 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._populate_targets()
         self.target_combo.connect("changed", self._on_target_changed)
         row.pack_end(self.target_combo, False, False, 0)
+
+        self.target_kind_icon = Gtk.Image.new_from_icon_name(
+            "audio-speakers-symbolic", Gtk.IconSize.BUTTON)
+        row.pack_end(self.target_kind_icon, False, False, 0)
+        self._update_target_kind_icon()
         return row
+
+    def _update_target_kind_icon(self):
+        target_id = self.target_combo.get_active_id() or ""
+        if target_id.startswith("app:"):
+            icon_name = "audio-x-generic-symbolic"
+        elif target_id.endswith(".monitor"):
+            icon_name = "audio-speakers-symbolic"
+        else:
+            icon_name = "audio-input-microphone-symbolic"
+        self.target_kind_icon.set_from_icon_name(icon_name, Gtk.IconSize.BUTTON)
 
     def _build_slider_toolbar_row(self):
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
@@ -444,6 +570,15 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                                  self._on_ui_style_changed))
         attach("Pin button", switch(self.settings.show_pin_button,
                                     self._on_show_pin_switched))
+        self.show_fps_switch = attach("Show FPS", switch(
+            self.settings.show_fps, self._on_show_fps_switched))
+        max_fps_spin = Gtk.SpinButton.new_with_range(0, 240, 5)
+        max_fps_spin.set_value(self.settings.max_fps)
+        max_fps_spin.set_tooltip_text(
+            "Frame rate cap — 0 follows the monitor refresh rate (165 Hz "
+            "monitor = 165 fps); lower it to trade smoothness for power")
+        max_fps_spin.connect("value-changed", self._on_max_fps_changed)
+        attach("Max FPS", max_fps_spin)
 
         grid.show_all()
         popover.add(grid)
@@ -481,15 +616,18 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         target_id = self.target_combo.get_active_id()
         if target_id is None:
             return
+        self._cancel_reacquire()
         self.settings.target_id = target_id
+        self._update_target_kind_icon()
         if self.capture_stream.is_running and self.playing_file is None:
             self.capture_stream.start(self.capture_targets[target_id])
 
     # -------------------------------------------------------------- capture --
 
     def _on_capture_toggled(self, toggle):
+        self._cancel_reacquire()
         if toggle.get_active():
-            self.playing_file = None
+            self._set_file_loaded(False)
             target_id = self.target_combo.get_active_id()
             if target_id is None or target_id not in self.capture_targets:
                 toggle.set_active(False)
@@ -505,7 +643,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             self._start_render_loop()
         else:
             self.capture_stream.stop()
-            self.playing_file = None
+            self._set_file_loaded(False)
             self.status_label.set_text("idle — no capture, no CPU")
             self.fade_out_frames_remaining = 90
 
@@ -527,14 +665,20 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                 self.play_file(path)
         dialog.destroy()
 
-    def play_file(self, path):
+    def play_file(self, path, rebuild_playlist=True):
+        self._cancel_reacquire()
         try:
             self.capture_stream.start_file(path)
         except OSError as error:
             self.status_label.set_text(
                 f"file playback failed: {error} (is ffmpeg installed?)")
             return
+        if rebuild_playlist:
+            self._build_playlist(path)
+        else:
+            self.playlist_index = self.playlist.index(path)
         self.playing_file = os.path.basename(path)
+        self._set_file_loaded(True)
         # reflect "running" in the toggle without re-triggering device capture
         self.capture_toggle.handler_block_by_func(self._on_capture_toggled)
         self.capture_toggle.set_active(True)
@@ -543,20 +687,110 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self.status_label.set_text(f"▶ {self.playing_file}")
         self._start_render_loop()
 
-    def _handle_stream_died(self):
-        if self.capture_toggle.get_active():
-            finished_file = self.playing_file
+    def _build_playlist(self, path):
+        """Folder-based discovery: every audio file beside the opened one."""
+        directory = os.path.dirname(path)
+        try:
+            names = sorted(os.listdir(directory), key=str.casefold)
+        except OSError:
+            names = []
+        self.playlist = [os.path.join(directory, name) for name in names
+                         if name.lower().endswith(AUDIO_FILE_EXTENSIONS)]
+        if path not in self.playlist:
+            self.playlist.insert(0, path)
+        self.playlist_index = self.playlist.index(path)
+
+    def _set_file_loaded(self, loaded):
+        if not loaded:
             self.playing_file = None
-            self.capture_toggle.handler_block_by_func(self._on_capture_toggled)
-            self.capture_toggle.set_active(False)
-            self.capture_toggle.handler_unblock_by_func(self._on_capture_toggled)
-            self.capture_stream.stop()
-            self.fade_out_frames_remaining = 90
-            if finished_file is not None:
-                self.status_label.set_text(f"finished: {finished_file}")
+        self.transport_box.set_no_show_all(not loaded)
+        if loaded:
+            self.transport_box.show_all()
+            self.play_pause_image.set_from_icon_name(
+                "media-playback-pause-symbolic", Gtk.IconSize.BUTTON)
+        else:
+            self.transport_box.hide()
+
+    def _step_playlist(self, step):
+        if not self.playlist:
+            return
+        index = (self.playlist_index + step) % len(self.playlist)
+        self.play_file(self.playlist[index], rebuild_playlist=False)
+
+    def play_next_track(self):
+        self._step_playlist(1)
+
+    def play_previous_track(self):
+        self._step_playlist(-1)
+
+    def _on_transport_play_pause(self):
+        if self.playing_file is None:
+            return
+        paused = not self.capture_stream.playback_paused
+        self.capture_stream.set_playback_paused(paused)
+        self.play_pause_image.set_from_icon_name(
+            "media-playback-start-symbolic" if paused
+            else "media-playback-pause-symbolic", Gtk.IconSize.BUTTON)
+        self.status_label.set_text(
+            f"{'⏸' if paused else '▶'} {self.playing_file}")
+        if not paused:
+            self.quiet_frame_count = 0
+            self._start_render_loop()
+
+    def _handle_stream_died(self):
+        if not self.capture_toggle.get_active():
+            return
+        finished_file = self.playing_file
+        died_target_id = self.settings.target_id or ""
+        self.capture_toggle.handler_block_by_func(self._on_capture_toggled)
+        self.capture_toggle.set_active(False)
+        self.capture_toggle.handler_unblock_by_func(self._on_capture_toggled)
+        self.capture_stream.stop()
+        self.fade_out_frames_remaining = 90
+        if finished_file is not None:
+            # natural end of a track: keep the album going
+            if self.playlist and self.playlist_index < len(self.playlist) - 1:
+                self.play_next_track()
             else:
-                self.status_label.set_text("stream ended — app stopped or device gone")
-                self._populate_targets()
+                self._set_file_loaded(False)
+                self.status_label.set_text(f"finished: {finished_file}")
+        elif died_target_id.startswith("app:"):
+            # app streams die between every song; wait for the app to play
+            # again instead of dumping the user onto another source
+            self._begin_app_reacquire(died_target_id)
+        else:
+            self.status_label.set_text("stream ended — app stopped or device gone")
+            self._populate_targets()
+
+    # ----------------------------------------------------- app reacquire --
+
+    def _begin_app_reacquire(self, combo_id):
+        self._cancel_reacquire()
+        self._reacquire_target_id = combo_id
+        self._reacquire_attempts = 0
+        application_name = combo_id.split(":", 1)[1]
+        self.status_label.set_text(f"waiting for {application_name} to play again…")
+        self._reacquire_source = GLib.timeout_add_seconds(1, self._poll_reacquire)
+
+    def _cancel_reacquire(self):
+        if self._reacquire_source is not None:
+            GLib.source_remove(self._reacquire_source)
+            self._reacquire_source = None
+
+    def _poll_reacquire(self):
+        self._reacquire_attempts += 1
+        if self._reacquire_attempts > REACQUIRE_POLL_LIMIT:
+            self._reacquire_source = None
+            self.status_label.set_text("idle — no capture, no CPU")
+            return GLib.SOURCE_REMOVE
+        if any(target.combo_id == self._reacquire_target_id
+               for target in list_capture_targets()):
+            self._reacquire_source = None
+            self._populate_targets()
+            self.target_combo.set_active_id(self._reacquire_target_id)
+            self.capture_toggle.set_active(True)
+            return GLib.SOURCE_REMOVE
+        return GLib.SOURCE_CONTINUE
 
     # --------------------------------------------------------- render loop --
 
@@ -568,6 +802,15 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         allocation = self.display_stack.get_allocation()
         if allocation.width < 2 or allocation.height < 2:
             return GLib.SOURCE_CONTINUE
+
+        now = time.monotonic()
+        if self.settings.max_fps > 0:
+            # skipped frames leave their samples queued, so the next drawn
+            # frame simply traces more audio — nothing is lost to the cap
+            if now - self._last_frame_time < 1.0 / self.settings.max_fps - 5e-4:
+                return GLib.SOURCE_CONTINUE
+        self._last_frame_time = now
+        self._count_fps_frame(now)
 
         if self.capture_stream.is_running:
             samples = self.capture_stream.take_stereo_samples()
@@ -586,6 +829,16 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                 self.tick_callback_id = None
                 return GLib.SOURCE_REMOVE
         return GLib.SOURCE_CONTINUE
+
+    def _count_fps_frame(self, now):
+        if not self.settings.show_fps:
+            return
+        self._fps_counter += 1
+        elapsed = now - self._fps_window_start
+        if elapsed >= 0.5:
+            self.fps_label.set_text(f"{self._fps_counter / elapsed:.0f} fps")
+            self._fps_counter = 0
+            self._fps_window_start = now
 
     def _advance_active_renderer(self, samples, allocation):
         renderer = self.active_renderer()
@@ -720,6 +973,17 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self.pin_toggle.set_visible(state)
         return False
 
+    def _on_show_fps_switched(self, _switch, state):
+        self.settings.show_fps = state
+        self.fps_label.set_visible(state)
+        self._fps_counter = 0
+        self._fps_window_start = time.monotonic()
+        return False
+
+    def _on_max_fps_changed(self, spin):
+        self.settings.max_fps = int(spin.get_value())
+        self.settings.save()
+
     def _on_grid_switched(self, _switch, state):
         self.settings.grid_enabled = state
         self._apply_theme()
@@ -805,42 +1069,61 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                              | Gdk.WindowState.TILED
                              | Gdk.WindowState.FULLSCREEN))
 
+    def _on_configure_event(self, _widget, _event):
+        """Continuously remember the normal-view geometry. Reading it lazily
+        at toggle time raced the window manager (and rapid M presses), which
+        is what used to restore half-screen tile sizes."""
+        if (self.is_mini_mode or self._geometry_tracking_suspended
+                or self._window_is_tiled_or_maximized()):
+            return False
+        if self.get_window() is not None:
+            self.settings.window_width, self.settings.window_height = self.get_size()
+            self.settings.window_x, self.settings.window_y = self.get_position()
+        return False
+
+    def _resume_geometry_tracking(self):
+        self._geometry_tracking_suspended = False
+        return False
+
     def set_mini_mode(self, enabled):
         if enabled == self.is_mini_mode:
             return
         self.is_mini_mode = enabled
+        # rapid toggles must not let a stale pending resize fire late
+        self._geometry_tracking_suspended = True
+        if self._geometry_apply_source is not None:
+            GLib.source_remove(self._geometry_apply_source)
+            self._geometry_apply_source = None
+
         if enabled:
-            # a tiled/maximized size is the window manager's, not ours — never
-            # remember it, or restoring would snap back to a half-screen view
-            if not self._window_is_tiled_or_maximized():
-                self.settings.window_width, self.settings.window_height = self.get_size()
-                self.settings.window_x, self.settings.window_y = self.get_position()
             self.unmaximize()
             self.controls_container.hide()
             self.header_bar.hide()
             self.set_decorated(False)
             self.set_keep_above(True)
-
-            def apply_mini_geometry():
-                self.resize(self.settings.mini_size, self.settings.mini_size)
-                if self.settings.mini_x is not None:
-                    self.move(self.settings.mini_x, self.settings.mini_y)
-                return False
+            width = height = self.settings.mini_size
+            x, y = self.settings.mini_x, self.settings.mini_y
         else:
             self.settings.mini_x, self.settings.mini_y = self.get_position()
             self.controls_container.show()
             self.header_bar.show()
             self.set_decorated(True)
             self.set_keep_above(self.settings.pinned)
+            width, height = self.settings.window_width, self.settings.window_height
+            x, y = self.settings.window_x, self.settings.window_y
 
-            def apply_mini_geometry():
-                self.resize(self.settings.window_width, self.settings.window_height)
-                if self.settings.window_x is not None:
-                    self.move(self.settings.window_x, self.settings.window_y)
-                return False
+        def apply_geometry():
+            self.resize(width, height)
+            if x is not None:
+                self.move(x, y)
+            self._geometry_apply_source = None
+            # tracking stays off until the WM has acted on our geometry
+            GLib.timeout_add(250, self._resume_geometry_tracking)
+            return False
+
         # let the decoration change settle before moving/resizing, otherwise
         # the window manager fights us and the window flickers or re-tiles
-        GLib.idle_add(apply_mini_geometry)
+        self._geometry_apply_source = GLib.timeout_add(50, apply_geometry)
         self._wake_renderer()
 
     def _resize_mini(self, size):
@@ -877,6 +1160,14 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         add_item("Pause capture" if capturing else "Resume capture",
                  lambda: self.capture_toggle.set_active(not capturing))
         add_item("Play audio file…  (O)", self.open_audio_file)
+        if self.playing_file is not None:
+            paused = self.capture_stream.playback_paused
+            add_item("Resume track" if paused else "Pause track",
+                     self._on_transport_play_pause)
+            add_item("Next track  ⏭", self.play_next_track,
+                     sensitive=len(self.playlist) > 1)
+            add_item("Previous track  ⏮", self.play_previous_track,
+                     sensitive=len(self.playlist) > 1)
         add_item("Snapshot  (S)", self.save_snapshot)
         add_item("Save last 10 s  (C)", self.save_clip)
         menu.append(Gtk.SeparatorMenuItem())
@@ -937,6 +1228,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         return True
 
     def _on_key_press(self, _widget, event):
+        if isinstance(self.get_focus(), Gtk.Entry):
+            return False    # typing in a percent box must not fire shortcuts
         key = event.keyval
         if key == Gdk.KEY_space:
             self.capture_toggle.set_active(not self.capture_toggle.get_active())
@@ -952,6 +1245,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             self.pin_toggle.set_active(not self.pin_toggle.get_active())
         elif key in (Gdk.KEY_g, Gdk.KEY_G):
             self.grid_switch.set_active(not self.settings.grid_enabled)
+        elif key in (Gdk.KEY_f, Gdk.KEY_F):
+            self.show_fps_switch.set_active(not self.settings.show_fps)
         elif key == Gdk.KEY_Escape:
             if self.is_mini_mode:
                 self.set_mini_mode(False)
@@ -974,15 +1269,16 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             self.move(self.settings.window_x, self.settings.window_y)
         if self.settings.pinned and not self.is_mini_mode:
             self.set_keep_above(True)
+        if not self.settings.start_in_mini:
+            # geometry tracking begins only after the remembered placement
+            # has been applied (set_mini_mode schedules its own resume)
+            GLib.timeout_add(500, self._resume_geometry_tracking)
 
     def _on_delete(self, _widget, _event):
         self.settings.start_in_mini = self.is_mini_mode
-        position = self.get_position()
         if self.is_mini_mode:
-            self.settings.mini_x, self.settings.mini_y = position
-        elif not self._window_is_tiled_or_maximized():
-            self.settings.window_width, self.settings.window_height = self.get_size()
-            self.settings.window_x, self.settings.window_y = position
+            self.settings.mini_x, self.settings.mini_y = self.get_position()
+        # normal-view geometry is already tracked via configure events
         self.settings.save()
         self.capture_stream.stop()
         return False

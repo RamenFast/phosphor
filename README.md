@@ -38,7 +38,16 @@ The source picker offers three kinds of target:
 
 Or skip capture entirely: **open an audio file** (`O`, the folder button,
 or the right-click menu) and Phosphor decodes it with ffmpeg, plays it out
-loud, and scopes it directly — no separate player needed.
+loud, and scopes it directly — no separate player needed. Opening a file
+discovers every track in its folder: transport buttons (⏮ ⏯ ⏭) appear in
+the title bar, tracks auto-advance, and pause freezes decode and playback
+in place. A speaker/mic/app icon beside the source picker shows what kind
+of target is selected.
+
+App targets are remembered **by application name**, not stream number —
+when Chrome finishes a song its stream dies, and Phosphor now waits for
+that same app to play again and re-grabs it automatically (up to 3 min)
+instead of dumping you onto another source.
 
 ## Modes
 
@@ -46,8 +55,10 @@ loud, and scopes it directly — no separate player needed.
 | --- | --- |
 | XY (scope art) | Oscilloscope music. The real deal. |
 | XY · goniometer | Ordinary songs: raw XY collapses stereo music into a diagonal line; rotated 45° the mono energy stands upright and stereo width blooms sideways. |
+| XY · dots | The same XY field as discrete sample dots, like a vectorscope's dot display — shows where the beam *dwells*. |
 | Waveform | Dual trace with rising-edge triggering so pitched sounds hold still. |
 | Spectrum | Log-frequency bars, fast attack / phosphor fall. |
+| Spectrum · radial | The same analysis swept around a circle, bass at twelve o'clock. |
 
 ## Controls
 
@@ -62,19 +73,26 @@ loud, and scopes it directly — no separate player needed.
   click and type an exact value. Scroll the scope to zoom gain; the
   graticule grows and shrinks with it, octave-stepped like a volts/div
   switch.
-- **⚙ settings** — renderer (GPU/CPU), GPU quality (2× supersampling) and
-  CPU resolution selectors, beam Focus (sharper beams keep dense scope-art
-  scenes from washing out), themes (P7 Green, Amber, Ice Blue, White,
-  Vaporwave, Red Phosphor, Ultraviolet, Solar Gold, Cyan Tube, Custom),
-  grid, AMOLED scope background, and UI style (System / Dark / AMOLED
-  black chrome).
+- **⚙ settings** — renderer (GPU/CPU), GPU quality (2×/3× supersampling)
+  and CPU resolution selectors, beam Focus (sharper beams keep dense
+  scope-art scenes from washing out), themes (P7 Green, Amber, Ice Blue,
+  White, Vaporwave, Red Phosphor, Ultraviolet, Solar Gold, Cyan Tube,
+  Custom), grid, AMOLED scope background, UI style (System / Dark / AMOLED
+  pink-on-black chrome with yellow selected states), FPS overlay, and a
+  Max FPS cap (0 = your monitor's refresh rate — 165 Hz panels get 165
+  updates a second).
+
+  The GPU beam uses an analytic erf line integral (the woscope trick):
+  consecutive segments join without double-depositing energy, which is
+  what keeps complex scenes like *72 Pantera* from blooming into fuzz.
 - **Mini** — borderless always-on-top square. Drag to move, Ctrl+scroll to
   resize (square stays square), right-click for the full menu (modes,
   themes, grid, pin, sizes…), double-click to restore. Window positions,
   sizes, and all settings are remembered in
   `~/.config/phosphor/settings.json`, including whether you quit in mini.
 - **Keys** — `Space` capture · `O` open file · `M` mini · `S` snapshot
-  · `C` clip · `P` pin · `G` grid · scroll = gain · `Q`/`Esc` quit.
+  · `C` clip · `P` pin · `G` grid · `F` fps · scroll = gain · `Q`/`Esc`
+  quit.
 
 ## Resource behavior (measured)
 

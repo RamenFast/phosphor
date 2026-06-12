@@ -205,16 +205,39 @@ flat in vec2 segment_p1;
 flat in float segment_intensity;
 uniform vec2 viewport_size;
 uniform float beam_sigma;
+uniform float beam_normalization;
 out vec4 out_energy;
+
+// Abramowitz & Stegun 7.1.27, max error ~5e-4 - plenty for beam energy.
+float erf_approximation(float x) {
+    float sign_x = sign(x);
+    float a = abs(x);
+    float d = 1.0 + (0.278393 + (0.230389 + 0.078108 * a * a) * a) * a;
+    d *= d;
+    return sign_x - sign_x / (d * d);
+}
+
 void main() {
     vec2 pixel = vec2(gl_FragCoord.x, viewport_size.y - gl_FragCoord.y);
     vec2 to_pixel = pixel - segment_p0;
-    vec2 along = segment_p1 - segment_p0;
-    float t = clamp(dot(to_pixel, along) / max(dot(along, along), 1e-6), 0.0, 1.0);
-    float distance_to_beam = length(to_pixel - along * t);
-    float falloff = exp(-distance_to_beam * distance_to_beam
-                        / (2.0 * beam_sigma * beam_sigma));
-    float energy = segment_intensity * falloff;
+    vec2 direction = segment_p1 - segment_p0;
+    float segment_length = length(direction);
+    vec2 tangent = segment_length > 1e-4 ? direction / segment_length
+                                         : vec2(1.0, 0.0);
+    float along = dot(to_pixel, tangent);
+    float perpendicular = dot(to_pixel, vec2(-tangent.y, tangent.x));
+
+    // Analytic line integral of the Gaussian beam swept over the segment.
+    // The erf() profile along the axis sums exactly across consecutive
+    // segments, so joints never double-deposit and dense scope-art scenes
+    // keep their detail instead of blooming into fuzz.
+    float inverse_sigma_sqrt2 = 0.70710678 / beam_sigma;
+    float along_integral = 0.5 * (erf_approximation(along * inverse_sigma_sqrt2)
+        - erf_approximation((along - segment_length) * inverse_sigma_sqrt2));
+    float cross_section = exp(-perpendicular * perpendicular
+                              / (2.0 * beam_sigma * beam_sigma));
+    float energy = segment_intensity * cross_section * along_integral
+                   * beam_normalization;
     out_energy = vec4(energy, energy * 0.85, 0.0, 1.0);
 }
 """
@@ -342,7 +365,8 @@ class GLBeamRenderer(Gtk.GLArea):
             self.beam_program = _compile_program(BEAM_VERTEX_SHADER,
                                                  BEAM_FRAGMENT_SHADER)
             self.beam_uniforms = _uniforms(self.beam_program,
-                                           ["viewport_size", "beam_radius", "beam_sigma"])
+                                           ["viewport_size", "beam_radius",
+                                            "beam_sigma", "beam_normalization"])
             self.composite_program = _compile_program(FULLSCREEN_VERTEX_SHADER,
                                                       COMPOSITE_FRAGMENT_SHADER)
             self.composite_uniforms = _uniforms(self.composite_program, [
@@ -470,6 +494,10 @@ class GLBeamRenderer(Gtk.GLArea):
         gl.glUniform2f(self.beam_uniforms["viewport_size"], width, height)
         gl.glUniform1f(self.beam_uniforms["beam_radius"], beam_sigma * 4.0)
         gl.glUniform1f(self.beam_uniforms["beam_sigma"], beam_sigma)
+        # normalized against the logical (not device) focus so changing focus
+        # or supersampling redistributes energy instead of dimming the trace
+        gl.glUniform1f(self.beam_uniforms["beam_normalization"],
+                       1.6 / max(0.4, self.beam_focus))
         gl.glBindVertexArray(self.beam_vao)
         gl.glBindBuffer(GL_ARRAY_BUFFER, self.instance_buffer)
         gl.glBufferData(GL_ARRAY_BUFFER, len(raw), raw, GL_STREAM_DRAW)
