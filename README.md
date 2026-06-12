@@ -20,7 +20,9 @@ python3 ~/Dev/ClaudeWorkspace/phosphor/phosphor.py
 Or use the **Phosphor** launcher (menu and desktop icon are installed).
 No dependencies beyond stock Mint: PyGObject, pycairo, `parec`, `ffmpeg`
 for clip export and file playback. The GPU renderer binds OpenGL through
-GTK's own libepoxy with ctypes — no PyOpenGL needed.
+GTK's own libepoxy with ctypes — no PyOpenGL needed. If `numpy` is
+present the signal path is vectorized (~7× faster, comfortably feeding
+high-refresh monitors); without it a pure-python fallback keeps working.
 
 To build an installable package:
 
@@ -90,9 +92,15 @@ instead of dumping you onto another source.
   themes, grid, pin, sizes…), double-click to restore. Window positions,
   sizes, and all settings are remembered in
   `~/.config/phosphor/settings.json`, including whether you quit in mini.
-- **Keys** — `Space` capture · `O` open file · `M` mini · `S` snapshot
-  · `C` clip · `P` pin · `G` grid · `F` fps · scroll = gain · `Q`/`Esc`
-  quit.
+- **Keys** — `Space` capture · `O` open file · `M` mini · `F11`
+  fullscreen scope (chrome-less; also the path to the monitor's full
+  refresh rate, since compositors unredirect fullscreen windows)
+  · `S` snapshot · `C` clip · `P` pin · `G` grid · `F` fps
+  · scroll = gain · `Q`/`Esc` quit.
+
+Trails grade continuously in time: each sample's deposit is pre-decayed
+by its age within the frame, so slowly drifting sweeps blend the way real
+phosphor does instead of leaving stepped duplicate lines.
 
 ## Resource behavior (measured)
 

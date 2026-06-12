@@ -16,6 +16,11 @@ look exactly like the screen.
 
 import cairo
 
+try:
+    import numpy
+except ImportError:
+    numpy = None
+
 ALPHA_BUCKET_COUNT = 10
 FLASH_DECAY_ALPHA = 0.50   # fraction of the flash layer removed every frame
 FLASH_STAMP_STRENGTH = 0.9
@@ -61,7 +66,7 @@ class CairoBeamCore:
             context.set_source_rgba(0, 0, 0, decay_alpha)
             context.paint()
 
-        if not segments:
+        if segments is None or len(segments) == 0:
             return
 
         scratch = cairo.Context(self.fresh_strokes)
@@ -74,10 +79,18 @@ class CairoBeamCore:
         scratch.set_line_width(max(0.8, self.beam_focus * 1.25))
         scratch.set_line_cap(cairo.LINE_CAP_ROUND)
 
-        segments_by_bucket = [[] for _ in range(ALPHA_BUCKET_COUNT)]
-        for start_x, start_y, end_x, end_y, intensity in segments:
-            bucket = min(ALPHA_BUCKET_COUNT - 1, int(intensity * ALPHA_BUCKET_COUNT))
-            segments_by_bucket[bucket].append((start_x, start_y, end_x, end_y))
+        if numpy is not None and isinstance(segments, numpy.ndarray):
+            bucket_indexes = numpy.clip(
+                (segments[:, 4] * ALPHA_BUCKET_COUNT).astype(int),
+                0, ALPHA_BUCKET_COUNT - 1)
+            segments_by_bucket = [
+                segments[bucket_indexes == bucket][:, :4].tolist()
+                for bucket in range(ALPHA_BUCKET_COUNT)]
+        else:
+            segments_by_bucket = [[] for _ in range(ALPHA_BUCKET_COUNT)]
+            for start_x, start_y, end_x, end_y, intensity in segments:
+                bucket = min(ALPHA_BUCKET_COUNT - 1, int(intensity * ALPHA_BUCKET_COUNT))
+                segments_by_bucket[bucket].append((start_x, start_y, end_x, end_y))
         for bucket, bucket_segments in enumerate(segments_by_bucket):
             if not bucket_segments:
                 continue

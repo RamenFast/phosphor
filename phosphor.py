@@ -37,7 +37,7 @@ from phosphor_settings import (CUSTOM_THEME_NAME, THEME_PRESETS, Settings,
 from phosphor_signal import SegmentComputer
 
 APPLICATION_ID = "io.github.ben.Phosphor"
-APPLICATION_VERSION = "2.2.0"
+APPLICATION_VERSION = "2.3.0"
 PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 QUIET_PEAK_THRESHOLD = 1e-4
 QUIET_FRAMES_BEFORE_SLEEP = 120
@@ -61,7 +61,7 @@ CPU_RESOLUTION_CHOICES = (("1.0", "Full resolution"),
                           ("0.75", "Balanced · 75%"),
                           ("0.5", "Fast · 50%"))
 UI_STYLE_CHOICES = (("system", "System"), ("dark", "Dark"),
-                    ("black", "AMOLED black"))
+                    ("light", "Light"), ("black", "AMOLED pink"))
 
 # Always loaded: just the FPS overlay chip.
 BASE_UI_CSS = b"""
@@ -75,54 +75,129 @@ BASE_UI_CSS = b"""
 }
 """
 
-# AMOLED UI style: pure-black chrome, pink for idle controls, yellow for
-# anything selected/active, and slimmer buttons. Scope themes stay separate.
+# AMOLED UI style: pure-black window, soft multi-shade pinks (filled
+# controls, not hollow outlines), warm yellow for anything selected/active.
 BLACK_UI_CSS = b"""
 window, headerbar, popover, popover.background, menu, .background {
     background-color: #000000;
-    color: #ff8fd5;
+    color: #f2aed8;
 }
-label { color: #ff8fd5; }
+label { color: #f2aed8; }
 headerbar {
     min-height: 32px;
     padding: 0 4px;
     box-shadow: none;
-    border-bottom: 1px solid #1c0414;
+    border-bottom: 1px solid #1d0916;
 }
-headerbar .title { color: #ff8fd5; }
+headerbar .title { color: #fbcfe8; }
 button {
-    background-color: #000000;
     background-image: none;
-    color: #ff8fd5;
-    border: 1px solid #38112a;
-    border-radius: 5px;
+    background-color: #1a0713;
+    color: #f2aed8;
+    border: 1px solid #57203f;
+    border-radius: 6px;
     padding: 1px 8px;
     min-height: 22px;
 }
-button:hover { border-color: #ff5ec4; }
+button:hover { background-color: #2b0d20; border-color: #b65c92; }
+button:active { background-color: #3c142d; }
 button:checked {
-    color: #ffd84d;
-    border-color: #ad8a20;
-    background-color: #120c00;
+    background-color: #2b2208;
+    color: #ffdf87;
+    border-color: #97772b;
 }
-button:checked label, button:checked image { color: #ffd84d; }
+button:checked label, button:checked image { color: #ffdf87; }
 entry, spinbutton, spinbutton entry {
-    background-color: #000000;
     background-image: none;
-    color: #ffd84d;
-    border: 1px solid #38112a;
+    background-color: #120510;
+    color: #ffdf87;
+    border: 1px solid #57203f;
     min-height: 20px;
 }
 combobox button.combo { padding: 1px 6px; }
-scale trough { background-color: #1b0712; border-color: #38112a; }
-scale highlight { background-color: #ff5ec4; }
-scale slider { background-color: #ff8fd5; border: 1px solid #38112a; }
-switch { background-color: #1b0712; border: 1px solid #38112a; }
-switch:checked { background-color: #ad1f80; }
-switch slider { background-color: #ff8fd5; }
-menu menuitem:hover, popover modelbutton:hover { background-color: #240a1b; }
-menu, popover { border: 1px solid #240a1b; }
-#fps-overlay { color: #ffd84d; }
+scale trough { background-color: #2b0d20; border: 1px solid #57203f; }
+scale highlight { background-color: #e078b8; }
+scale slider { background-color: #fbcfe8; border: 1px solid #b65c92; }
+switch {
+    background-image: none;
+    background-color: #2b0d20;
+    border: 1px solid #57203f;
+    border-radius: 999px;
+}
+switch:checked { background-color: #97276b; border-color: #e078b8; }
+switch slider {
+    background-image: none;
+    background-color: #fbcfe8;
+    border: 1px solid #b65c92;
+    border-radius: 999px;
+    min-width: 18px;
+    min-height: 18px;
+    margin: 2px;
+}
+menu menuitem:hover, popover modelbutton:hover { background-color: #2b0d20; }
+menu, popover { border: 1px solid #2b0d20; }
+#fps-overlay { color: #ffdf87; }
+"""
+
+# Light UI style: bright neutral chrome with a blue accent.
+LIGHT_UI_CSS = b"""
+window, headerbar, popover, popover.background, menu, .background {
+    background-color: #fafafa;
+    color: #303030;
+}
+label { color: #303030; }
+headerbar {
+    background-image: none;
+    background-color: #f0f0f0;
+    min-height: 32px;
+    padding: 0 4px;
+    box-shadow: none;
+    border-bottom: 1px solid #d8d8d8;
+}
+button {
+    background-image: none;
+    background-color: #ffffff;
+    color: #303030;
+    border: 1px solid #c9c9c9;
+    border-radius: 6px;
+    padding: 1px 8px;
+    min-height: 22px;
+}
+button:hover { border-color: #8f8f8f; }
+button:checked {
+    background-color: #dceaff;
+    color: #1c4e9e;
+    border-color: #7aa7e0;
+}
+button:checked label, button:checked image { color: #1c4e9e; }
+entry, spinbutton, spinbutton entry {
+    background-image: none;
+    background-color: #ffffff;
+    color: #222222;
+    border: 1px solid #c9c9c9;
+    min-height: 20px;
+}
+scale trough { background-color: #e4e4e4; border: 1px solid #cfcfcf; }
+scale highlight { background-color: #5a8fd6; }
+scale slider { background-color: #ffffff; border: 1px solid #9a9a9a; }
+switch {
+    background-image: none;
+    background-color: #e0e0e0;
+    border: 1px solid #c9c9c9;
+    border-radius: 999px;
+}
+switch:checked { background-color: #5a8fd6; }
+switch slider {
+    background-image: none;
+    background-color: #ffffff;
+    border: 1px solid #9a9a9a;
+    border-radius: 999px;
+    min-width: 18px;
+    min-height: 18px;
+    margin: 2px;
+}
+menu menuitem:hover, popover modelbutton:hover { background-color: #e8eef8; }
+#fps-overlay { background-color: rgba(255, 255, 255, 0.75); color: #1c4e9e; }
 """
 
 
@@ -218,7 +293,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self.fade_out_frames_remaining = 0
         self.quiet_frame_count = 0
         self.exporting = False
-        self._black_css_provider = None
+        self._style_css_provider = None
         self._reacquire_target_id = None
         self._reacquire_source = None
         self._reacquire_attempts = 0
@@ -226,6 +301,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         # suspended until the remembered view is applied, so startup configure
         # events can't overwrite the saved geometry with the WM's placement
         self._geometry_tracking_suspended = True
+        self._is_fullscreen = False
         self._last_frame_time = 0.0
         self._fps_counter = 0
         self._fps_window_start = time.monotonic()
@@ -245,6 +321,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
 
         self.connect("key-press-event", self._on_key_press)
         self.connect("configure-event", self._on_configure_event)
+        self.connect("window-state-event", self._on_window_state_event)
         self.connect("delete-event", self._on_delete)
 
     # ------------------------------------------------------------------ UI --
@@ -869,6 +946,10 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             renderer.theme = theme
             renderer.persistence = self.settings.persistence
             renderer.grid_enabled = self.settings.grid_enabled
+        # the signal layer pre-decays intensities by in-frame age using the
+        # same per-frame glow keep the renderers apply
+        self.segment_computer.frame_glow_keep = \
+            1.0 - max(0.02, (1.0 - self.settings.persistence) * 0.6)
         self._wake_renderer()
 
     def _apply_render_quality(self):
@@ -887,20 +968,21 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._wake_renderer()
 
     def _apply_ui_style(self):
-        gtk_settings = Gtk.Settings.get_default()
-        prefer_dark = self.settings.ui_style in ("dark", "black")
-        gtk_settings.set_property("gtk-application-prefer-dark-theme", prefer_dark)
+        style = self.settings.ui_style
+        Gtk.Settings.get_default().set_property(
+            "gtk-application-prefer-dark-theme", style in ("dark", "black"))
         screen = Gdk.Screen.get_default()
-        if self.settings.ui_style == "black":
-            if self._black_css_provider is None:
-                self._black_css_provider = Gtk.CssProvider()
-                self._black_css_provider.load_from_data(BLACK_UI_CSS)
-            Gtk.StyleContext.add_provider_for_screen(
-                screen, self._black_css_provider,
-                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-        elif self._black_css_provider is not None:
+        if self._style_css_provider is not None:
             Gtk.StyleContext.remove_provider_for_screen(
-                screen, self._black_css_provider)
+                screen, self._style_css_provider)
+            self._style_css_provider = None
+        style_css = {"black": BLACK_UI_CSS, "light": LIGHT_UI_CSS}.get(style)
+        if style_css is not None:
+            self._style_css_provider = Gtk.CssProvider()
+            self._style_css_provider.load_from_data(style_css)
+            Gtk.StyleContext.add_provider_for_screen(
+                screen, self._style_css_provider,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
     def _on_gain_changed(self, value):
         self.settings.gain = value
@@ -1085,6 +1167,31 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._geometry_tracking_suspended = False
         return False
 
+    # --------------------------------------------------------- fullscreen --
+
+    def toggle_fullscreen(self):
+        """Chrome-less fullscreen scope. Side benefit: compositors hand
+        fullscreen windows the direct scanout path, so the full monitor
+        refresh rate is reachable without the GL-compositing overhead."""
+        if self._is_fullscreen:
+            self.unfullscreen()
+        else:
+            self.fullscreen()
+
+    def _on_window_state_event(self, _widget, event):
+        fullscreen = bool(event.new_window_state & Gdk.WindowState.FULLSCREEN)
+        if fullscreen == self._is_fullscreen:
+            return False
+        self._is_fullscreen = fullscreen
+        if not self.is_mini_mode:
+            if fullscreen:
+                self.controls_container.hide()
+                self.header_bar.hide()
+            else:
+                self.controls_container.show()
+                self.header_bar.show()
+        return False
+
     def set_mini_mode(self, enabled):
         if enabled == self.is_mini_mode:
             return
@@ -1199,6 +1306,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             add_item("Restore window  (M)", lambda: self.set_mini_mode(False))
         else:
             add_item("Mini view  (M)", lambda: self.set_mini_mode(True))
+            add_item("Leave fullscreen  (F11)" if self._is_fullscreen
+                     else "Fullscreen scope  (F11)", self.toggle_fullscreen)
         menu.append(Gtk.SeparatorMenuItem())
         add_item("Quit  (Q)", self.close)
         menu.show_all()
@@ -1247,8 +1356,12 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             self.grid_switch.set_active(not self.settings.grid_enabled)
         elif key in (Gdk.KEY_f, Gdk.KEY_F):
             self.show_fps_switch.set_active(not self.settings.show_fps)
+        elif key == Gdk.KEY_F11:
+            self.toggle_fullscreen()
         elif key == Gdk.KEY_Escape:
-            if self.is_mini_mode:
+            if self._is_fullscreen:
+                self.unfullscreen()
+            elif self.is_mini_mode:
                 self.set_mini_mode(False)
             else:
                 self.close()

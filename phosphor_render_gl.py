@@ -21,6 +21,11 @@ How it works, per frame:
 import ctypes
 from array import array
 
+try:
+    import numpy
+except ImportError:
+    numpy = None
+
 import gi
 
 gi.require_version("Gtk", "3.0")
@@ -448,7 +453,7 @@ class GLBeamRenderer(Gtk.GLArea):
         if self.pending_segments is not None:
             segments, self.pending_segments = self.pending_segments, None
             self._decay_pass(texture_width, texture_height)
-            if segments:
+            if len(segments) > 0:
                 self._beam_pass(segments, texture_width, texture_height,
                                 scale * supersample)
 
@@ -472,17 +477,22 @@ class GLBeamRenderer(Gtk.GLArea):
         self.current_texture_index = target
 
     def _beam_pass(self, segments, width, height, pixel_scale):
-        instance_data = array("f")
-        for segment in segments:
-            instance_data.extend(segment)
-        raw = instance_data.tobytes()
-        if pixel_scale != 1:
+        if numpy is not None and isinstance(segments, numpy.ndarray):
             # segment coordinates are in logical pixels; scale to buffer pixels
-            scaled = array("f", instance_data)
-            for index in range(0, len(scaled), 5):
-                for offset in range(4):
-                    scaled[index + offset] *= pixel_scale
-            raw = scaled.tobytes()
+            if pixel_scale != 1:
+                segments = segments.copy()
+                segments[:, :4] *= pixel_scale
+            raw = numpy.ascontiguousarray(segments,
+                                          dtype=numpy.float32).tobytes()
+        else:
+            instance_data = array("f")
+            for segment in segments:
+                instance_data.extend(segment)
+            if pixel_scale != 1:
+                for index in range(0, len(instance_data), 5):
+                    for offset in range(4):
+                        instance_data[index + offset] *= pixel_scale
+            raw = instance_data.tobytes()
 
         beam_sigma = max(0.4, self.beam_focus) * pixel_scale
         gl.glBindFramebuffer(GL_FRAMEBUFFER,

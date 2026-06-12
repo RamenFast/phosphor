@@ -23,6 +23,11 @@ Modes:
 import math
 from array import array
 
+try:
+    import numpy
+except ImportError:        # pure-python fallback keeps the package light
+    numpy = None
+
 MAX_POINTS_PER_FRAME = 4000      # bound per-frame work if the UI hiccups
 WAVEFORM_WINDOW = 1600           # samples shown per trace
 WAVEFORM_HISTORY = 8192
@@ -88,10 +93,15 @@ class SegmentComputer:
         self.mode = "xy"
         self.gain = 1.0
         self.beam_energy = 8.0
+        # glow kept per frame; lets intensities pre-decay by age inside a
+        # frame so trails grade smoothly instead of stepping per frame
+        self.frame_glow_keep = 0.82
         self.last_beam_x = None
         self.last_beam_y = None
         self.waveform_history = array("f")
         self.fft = PurePythonFFT(FFT_SIZE)
+        self._numpy_fft_window = (numpy.hanning(FFT_SIZE)
+                                  if numpy is not None else None)
         self.spectrum_levels = [0.0] * SPECTRUM_BAR_COUNT
         self.frames_since_fft = 0
         self._bar_bin_ranges = self._compute_bar_bin_ranges()
@@ -119,10 +129,41 @@ class SegmentComputer:
 
     # -- XY -----------------------------------------------------------------
 
+    def _age_weights(self, count):
+        """Pre-decay factor per segment: the oldest audio in a frame has
+        nearly a full frame of phosphor decay behind it already. Stamping it
+        dimmer makes trails grade continuously in time instead of stepping
+        once per displayed frame (the 'duplicate line' artifact on slowly
+        drifting scope-music sweeps)."""
+        if count <= 1:
+            return None
+        if numpy is not None:
+            ages = (count - 1 - numpy.arange(count)) / count
+            return numpy.power(self.frame_glow_keep, ages)
+        return [self.frame_glow_keep ** ((count - 1 - index) / count)
+                for index in range(count)]
+
+    def _xy_points_numpy(self, samples, width, height, rotate):
+        frames = numpy.asarray(samples, dtype=numpy.float32).reshape(-1, 2)
+        left, right = frames[:, 0], frames[:, 1]
+        if rotate:
+            horizontal = (left - right) * SQRT_HALF   # stereo width (side)
+            vertical = (left + right) * SQRT_HALF     # mono energy (mid)
+        else:
+            horizontal, vertical = left, right
+        radius = min(width, height) * 0.45
+        x = width / 2 + horizontal * (self.gain * radius)
+        y = height / 2 - vertical * (self.gain * radius)
+        return x, y
+
     def _xy_segments(self, samples, width, height):
         if len(samples) > 2 * MAX_POINTS_PER_FRAME:
             samples = samples[-2 * MAX_POINTS_PER_FRAME:]
             self.last_beam_x = self.last_beam_y = None
+        if len(samples) < 2:
+            return []
+        if numpy is not None:
+            return self._xy_segments_numpy(samples, width, height)
 
         center_x, center_y = width / 2, height / 2
         radius = min(width, height) * 0.45
@@ -145,12 +186,53 @@ class SegmentComputer:
                 segments.append((previous_x, previous_y, x, y, intensity))
             previous_x, previous_y = x, y
         self.last_beam_x, self.last_beam_y = previous_x, previous_y
+
+        weights = self._age_weights(len(segments))
+        if weights is not None:
+            segments = [(x0, y0, x1, y1, intensity * weight)
+                        for (x0, y0, x1, y1, intensity), weight
+                        in zip(segments, weights)]
+        return segments
+
+    def _xy_segments_numpy(self, samples, width, height):
+        x, y = self._xy_points_numpy(samples, width, height,
+                                     rotate=self.mode == "xy45")
+        if self.last_beam_x is not None:
+            x = numpy.concatenate(([self.last_beam_x], x))
+            y = numpy.concatenate(([self.last_beam_y], y))
+        self.last_beam_x = float(x[-1])
+        self.last_beam_y = float(y[-1])
+        if len(x) < 2:
+            return []
+        distance = numpy.hypot(numpy.diff(x), numpy.diff(y))
+        intensity = numpy.minimum(1.0, self.beam_energy / (distance + 0.7))
+        weights = self._age_weights(len(intensity))
+        if weights is not None:
+            intensity = intensity * weights
+        segments = numpy.empty((len(intensity), 5), dtype=numpy.float32)
+        segments[:, 0] = x[:-1]
+        segments[:, 1] = y[:-1]
+        segments[:, 2] = x[1:]
+        segments[:, 3] = y[1:]
+        segments[:, 4] = intensity
         return segments
 
     def _xy_dot_segments(self, samples, width, height):
         """Discrete-dot vectorscope display: one short stamp per sample."""
         if len(samples) > 2 * MAX_POINTS_PER_FRAME:
             samples = samples[-2 * MAX_POINTS_PER_FRAME:]
+        if len(samples) < 2:
+            return []
+        if numpy is not None:
+            x, y = self._xy_points_numpy(samples, width, height, rotate=False)
+            weights = self._age_weights(len(x))
+            segments = numpy.empty((len(x), 5), dtype=numpy.float32)
+            segments[:, 0] = x - 0.8
+            segments[:, 1] = y
+            segments[:, 2] = x + 0.8
+            segments[:, 3] = y
+            segments[:, 4] = 1.0 if weights is None else weights
+            return segments
         center_x, center_y = width / 2, height / 2
         radius = min(width, height) * 0.45
         segments = []
@@ -220,12 +302,19 @@ class SegmentComputer:
         if frame_count >= FFT_SIZE and self.frames_since_fft >= 2:
             self.frames_since_fft = 0
             tail_start = 2 * (frame_count - FFT_SIZE)
-            mono = [
-                (self.waveform_history[tail_start + 2 * i]
-                 + self.waveform_history[tail_start + 2 * i + 1]) * 0.5
-                for i in range(FFT_SIZE)
-            ]
-            magnitudes = self.fft.magnitudes(mono)
+            if numpy is not None:
+                tail = numpy.asarray(self.waveform_history[tail_start:],
+                                     dtype=numpy.float32).reshape(-1, 2)
+                mono = tail.mean(axis=1)
+                magnitudes = numpy.abs(
+                    numpy.fft.rfft(mono * self._numpy_fft_window))
+            else:
+                mono = [
+                    (self.waveform_history[tail_start + 2 * i]
+                     + self.waveform_history[tail_start + 2 * i + 1]) * 0.5
+                    for i in range(FFT_SIZE)
+                ]
+                magnitudes = self.fft.magnitudes(mono)
             for bar, (low_bin, high_bin) in enumerate(self._bar_bin_ranges):
                 peak = max(magnitudes[low_bin:high_bin], default=0.0)
                 level = min(1.0, (peak / (FFT_SIZE / 8)) ** 0.5 * self.gain)

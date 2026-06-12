@@ -44,7 +44,7 @@ Priority: optional
 Architecture: all
 Installed-Size: $installed_size_kb
 Depends: python3, python3-gi, python3-gi-cairo, gir1.2-gtk-3.0, pulseaudio-utils
-Recommends: ffmpeg
+Recommends: ffmpeg, python3-numpy
 Maintainer: Ben <2bmillerb@gmail.com>
 Description: CRT-style XY oscilloscope for desktop audio
  Phosphor draws what your PC plays the way an analog scope would:
