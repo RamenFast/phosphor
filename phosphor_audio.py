@@ -92,6 +92,7 @@ class AudioCaptureStream:
 
     def __init__(self, on_stream_ended):
         self._process = None
+        self._playback_process = None      # pacat, only during file playback
         self._reader_thread = None
         self._pending_bytes = bytearray()
         self._history_bytes = bytearray()  # rolling last CLIP_SECONDS for export
@@ -117,35 +118,86 @@ class AudioCaptureStream:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
+        self._start_reader(self._process, playback=None)
+
+    def start_file(self, path):
+        """Play an audio file out loud while feeding the scope directly.
+
+        ffmpeg decodes to the scope's native format; pacat makes it audible.
+        pacat's pipe backpressure paces the reader loop, keeping the picture
+        in sync with the sound.
+        """
+        self.stop()
+        decoder = subprocess.Popen(
+            [
+                "ffmpeg", "-v", "quiet", "-i", path,
+                "-f", "f32le", "-ac", "2", "-ar", str(SAMPLE_RATE), "-",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        playback = subprocess.Popen(
+            [
+                "pacat",
+                "--format=float32le",
+                f"--rate={SAMPLE_RATE}",
+                "--channels=2",
+                "--latency-msec=60",
+                "--client-name=Phosphor",
+                "--raw",
+            ],
+            stdin=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        self._process = decoder
+        self._playback_process = playback
+        self._start_reader(decoder, playback)
+
+    def _start_reader(self, process, playback):
         self._reader_thread = threading.Thread(
-            target=self._reader_loop, args=(self._process,), daemon=True
+            target=self._reader_loop, args=(process, playback), daemon=True
         )
         self._reader_thread.start()
 
     def stop(self):
         process, self._process = self._process, None
-        if process is not None:
-            process.terminate()
+        playback, self._playback_process = self._playback_process, None
+        for child in (process, playback):
+            if child is None:
+                continue
+            child.terminate()
             try:
-                process.wait(timeout=2)
+                child.wait(timeout=2)
             except subprocess.TimeoutExpired:
-                process.kill()
+                child.kill()
         with self._lock:
             self._pending_bytes.clear()
             # history is kept so a clip can still be saved right after pausing
 
-    def _reader_loop(self, process):
+    def _reader_loop(self, process, playback):
         while True:
             chunk = process.stdout.read(8192)
             if not chunk:
                 break
+            if playback is not None:
+                try:
+                    playback.stdin.write(chunk)   # blocks → paces file playback
+                    playback.stdin.flush()
+                except (BrokenPipeError, OSError):
+                    break
             with self._lock:
                 self._pending_bytes.extend(chunk)
                 self._trim_front(self._pending_bytes, MAX_PENDING_BYTES)
                 self._history_bytes.extend(chunk)
                 self._trim_front(self._history_bytes, HISTORY_MAX_BYTES)
+        if playback is not None and playback.stdin is not None:
+            try:
+                playback.stdin.close()    # let the tail of the file drain
+                playback.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
         if self._process is process:
-            # The stream died on its own (app stopped playing, device gone…).
+            # The stream ended on its own (file finished, app stopped, device gone…).
             self._on_stream_ended()
 
     @staticmethod

@@ -44,8 +44,44 @@ THEME_PRESETS = {
         beam_color=(0.92, 0.95, 1.0), flash_color=(1.0, 1.0, 1.0),
         grid_color=(0.75, 0.8, 0.85), background_color=(0.016, 0.016, 0.02),
     ),
+    "Vaporwave": Theme(
+        beam_color=(1.0, 0.30, 0.88), flash_color=(0.65, 0.95, 1.0),
+        grid_color=(0.55, 0.40, 0.95), background_color=(0.02, 0.0, 0.03),
+    ),
+    "Red Phosphor": Theme(
+        beam_color=(1.0, 0.22, 0.16), flash_color=(1.0, 0.82, 0.70),
+        grid_color=(1.0, 0.28, 0.22), background_color=(0.03, 0.004, 0.0),
+    ),
+    "Ultraviolet": Theme(
+        beam_color=(0.62, 0.40, 1.0), flash_color=(0.86, 0.80, 1.0),
+        grid_color=(0.58, 0.40, 1.0), background_color=(0.014, 0.0, 0.03),
+    ),
+    "Solar Gold": Theme(
+        beam_color=(1.0, 0.84, 0.30), flash_color=(1.0, 1.0, 0.86),
+        grid_color=(0.92, 0.76, 0.30), background_color=(0.026, 0.018, 0.0),
+    ),
+    "Cyan Tube": Theme(
+        beam_color=(0.20, 1.0, 0.92), flash_color=(0.85, 1.0, 1.0),
+        grid_color=(0.22, 0.90, 0.85), background_color=(0.0, 0.024, 0.026),
+    ),
 }
 CUSTOM_THEME_NAME = "Custom"
+
+
+def grid_spacing_fraction(gain):
+    """Screen fraction of one graticule division.
+
+    A division represents a fixed signal amplitude (1/4 of full deflection at
+    unity gain), so the grid grows and shrinks as you zoom. Like a real
+    scope's volts/div switch, it steps by octaves to stay readable instead of
+    collapsing to mush or stretching off screen.
+    """
+    fraction = 0.45 * max(0.001, gain) / 4.0
+    while fraction < 0.05:
+        fraction *= 2.0
+    while fraction > 0.30:
+        fraction /= 2.0
+    return fraction
 
 
 def build_custom_theme(beam_color, grid_color):
@@ -70,6 +106,7 @@ class Settings:
         self.gain = 1.0
         self.persistence = 0.7
         self.beam_energy = 8.0
+        self.beam_focus = 1.6          # beam sigma in pixels: lower = sharper
         self.display_mode = "xy"
         self.pinned = False
         # appearance
@@ -79,6 +116,10 @@ class Settings:
         self.grid_enabled = True
         self.amoled_background = False
         self.renderer = "gl"
+        self.gl_supersample = 1        # GPU energy buffer scale: 1 or 2
+        self.cairo_resolution = 1.0    # CPU phosphor buffer scale: 0.5..1.0
+        self.ui_style = "dark"         # "system" | "dark" | "black"
+        self.show_pin_button = True
         # capture
         self.target_id = None
 

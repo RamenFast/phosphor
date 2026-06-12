@@ -46,6 +46,7 @@ GL_TEXTURE_MAG_FILTER = 0x2800
 GL_TEXTURE_WRAP_S = 0x2802
 GL_TEXTURE_WRAP_T = 0x2803
 GL_NEAREST = 0x2600
+GL_LINEAR = 0x2601
 GL_CLAMP_TO_EDGE = 0x812F
 GL_FRAMEBUFFER = 0x8D40
 GL_COLOR_ATTACHMENT0 = 0x8CE0
@@ -229,6 +230,7 @@ uniform vec3 flash_color;
 uniform vec3 grid_color;
 uniform vec3 background_color;
 uniform float grid_enabled;
+uniform float grid_spacing;   // device pixels per graticule division
 
 float grid_line(float coordinate, float spacing) {
     float distance_to_line = abs(coordinate - spacing * floor(coordinate / spacing + 0.5));
@@ -242,11 +244,12 @@ void main() {
 
     vec3 color = background_color;
     if (grid_enabled > 0.5) {
-        vec2 pixel = uv * viewport_size;
-        float minor = max(grid_line(pixel.x, viewport_size.x / 8.0),
-                          grid_line(pixel.y, viewport_size.y / 8.0));
-        float axis = max(1.0 - smoothstep(0.5, 1.2, abs(pixel.x - viewport_size.x * 0.5)),
-                         1.0 - smoothstep(0.5, 1.2, abs(pixel.y - viewport_size.y * 0.5)));
+        // grid is centered so divisions track the beam's amplitude scale (zoom)
+        vec2 from_center = uv * viewport_size - viewport_size * 0.5;
+        float minor = max(grid_line(from_center.x, grid_spacing),
+                          grid_line(from_center.y, grid_spacing));
+        float axis = max(1.0 - smoothstep(0.5, 1.2, abs(from_center.x)),
+                         1.0 - smoothstep(0.5, 1.2, abs(from_center.y)));
         color += grid_color * (minor * 0.07 + axis * 0.10);
     }
     color += beam_color * glow + flash_color * flash * 0.8;
@@ -255,7 +258,6 @@ void main() {
 """
 
 FLASH_KEEP_PER_FRAME = 0.50
-BEAM_SIGMA_PIXELS = 1.6
 
 
 def _compile_program(vertex_source, fragment_source):
@@ -303,6 +305,9 @@ class GLBeamRenderer(Gtk.GLArea):
         self.theme = None
         self.persistence = 0.7
         self.grid_enabled = True
+        self.grid_spacing_fraction = 0.1125  # of min(viewport); tracks gain/zoom
+        self.beam_focus = 1.6              # beam sigma in logical pixels
+        self.supersample = 1               # energy buffer scale: 1 = native, 2 = fine
         self.pending_segments = None       # set by advance(), consumed in render
         self.ready = False
         self._failed = False
@@ -342,7 +347,7 @@ class GLBeamRenderer(Gtk.GLArea):
                                                       COMPOSITE_FRAGMENT_SHADER)
             self.composite_uniforms = _uniforms(self.composite_program, [
                 "energy_texture", "viewport_size", "beam_color", "flash_color",
-                "grid_color", "background_color", "grid_enabled"])
+                "grid_color", "background_color", "grid_enabled", "grid_spacing"])
 
             vertex_arrays = (ctypes.c_uint * 2)()
             gl.glGenVertexArrays(2, vertex_arrays)
@@ -387,8 +392,9 @@ class GLBeamRenderer(Gtk.GLArea):
             gl.glBindTexture(GL_TEXTURE_2D, self.energy_textures[index])
             gl.glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, width, height, 0,
                             GL_RG, GL_FLOAT, None)
-            for parameter, value in ((GL_TEXTURE_MIN_FILTER, GL_NEAREST),
-                                     (GL_TEXTURE_MAG_FILTER, GL_NEAREST),
+            # linear so a supersampled energy buffer downfilters smoothly
+            for parameter, value in ((GL_TEXTURE_MIN_FILTER, GL_LINEAR),
+                                     (GL_TEXTURE_MAG_FILTER, GL_LINEAR),
                                      (GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE),
                                      (GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE)):
                 gl.glTexParameteri(GL_TEXTURE_2D, parameter, value)
@@ -412,12 +418,15 @@ class GLBeamRenderer(Gtk.GLArea):
         gtk_framebuffer = ctypes.c_int(0)
         gl.glGetIntegerv(GL_FRAMEBUFFER_BINDING, ctypes.byref(gtk_framebuffer))
 
-        self._ensure_energy_textures(width, height)
+        supersample = max(1, int(self.supersample))
+        texture_width, texture_height = width * supersample, height * supersample
+        self._ensure_energy_textures(texture_width, texture_height)
         if self.pending_segments is not None:
             segments, self.pending_segments = self.pending_segments, None
-            self._decay_pass(width, height)
+            self._decay_pass(texture_width, texture_height)
             if segments:
-                self._beam_pass(segments, width, height, scale)
+                self._beam_pass(segments, texture_width, texture_height,
+                                scale * supersample)
 
         self._composite_pass(gtk_framebuffer.value, width, height)
         return True
@@ -438,19 +447,20 @@ class GLBeamRenderer(Gtk.GLArea):
         gl.glDrawArrays(GL_TRIANGLES, 0, 3)
         self.current_texture_index = target
 
-    def _beam_pass(self, segments, width, height, scale):
+    def _beam_pass(self, segments, width, height, pixel_scale):
         instance_data = array("f")
         for segment in segments:
             instance_data.extend(segment)
         raw = instance_data.tobytes()
-        if scale != 1:
-            # segment coordinates are in logical pixels; scale to device pixels
+        if pixel_scale != 1:
+            # segment coordinates are in logical pixels; scale to buffer pixels
             scaled = array("f", instance_data)
             for index in range(0, len(scaled), 5):
                 for offset in range(4):
-                    scaled[index + offset] *= scale
+                    scaled[index + offset] *= pixel_scale
             raw = scaled.tobytes()
 
+        beam_sigma = max(0.4, self.beam_focus) * pixel_scale
         gl.glBindFramebuffer(GL_FRAMEBUFFER,
                              self.energy_framebuffers[self.current_texture_index])
         gl.glViewport(0, 0, width, height)
@@ -458,8 +468,8 @@ class GLBeamRenderer(Gtk.GLArea):
         gl.glBlendFunc(GL_ONE, GL_ONE)
         gl.glUseProgram(self.beam_program)
         gl.glUniform2f(self.beam_uniforms["viewport_size"], width, height)
-        gl.glUniform1f(self.beam_uniforms["beam_radius"], BEAM_SIGMA_PIXELS * 4.0 * scale)
-        gl.glUniform1f(self.beam_uniforms["beam_sigma"], BEAM_SIGMA_PIXELS * scale)
+        gl.glUniform1f(self.beam_uniforms["beam_radius"], beam_sigma * 4.0)
+        gl.glUniform1f(self.beam_uniforms["beam_sigma"], beam_sigma)
         gl.glBindVertexArray(self.beam_vao)
         gl.glBindBuffer(GL_ARRAY_BUFFER, self.instance_buffer)
         gl.glBufferData(GL_ARRAY_BUFFER, len(raw), raw, GL_STREAM_DRAW)
@@ -481,6 +491,8 @@ class GLBeamRenderer(Gtk.GLArea):
         gl.glUniform3f(uniforms["grid_color"], *self.theme.grid_color)
         gl.glUniform3f(uniforms["background_color"], *self.theme.background_color)
         gl.glUniform1f(uniforms["grid_enabled"], 1.0 if self.grid_enabled else 0.0)
+        gl.glUniform1f(uniforms["grid_spacing"],
+                       self.grid_spacing_fraction * min(width, height))
         gl.glBindVertexArray(self.fullscreen_vao)
         gl.glDrawArrays(GL_TRIANGLES, 0, 3)
         gl.glBindVertexArray(0)

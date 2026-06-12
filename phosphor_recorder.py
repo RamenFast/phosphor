@@ -18,6 +18,7 @@ from array import array
 
 from phosphor_audio import SAMPLE_RATE
 from phosphor_render_cairo import OfflineFrameRenderer
+from phosphor_settings import grid_spacing_fraction
 from phosphor_signal import SegmentComputer
 
 EXPORT_FPS = 60
@@ -37,7 +38,10 @@ def _build_offline_pipeline(settings, width, height):
     computer.gain = settings.gain
     computer.beam_energy = settings.beam_energy
     renderer = OfflineFrameRenderer(width, height, settings.current_theme(),
-                                    settings.persistence, settings.grid_enabled)
+                                    settings.persistence, settings.grid_enabled,
+                                    beam_focus=settings.beam_focus,
+                                    grid_spacing_fraction=grid_spacing_fraction(
+                                        settings.gain))
     return computer, renderer
 
 

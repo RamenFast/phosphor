@@ -8,9 +8,11 @@ Goniometer, waveform, and spectrum modes make ordinary music look good too.
 
 Capture taps PulseAudio/PipeWire monitors — whole outputs, single
 applications, or microphones — and costs nothing while toggled off.
+Audio files can also be played directly (decoded by ffmpeg, audible
+through pacat) so you can scope a track without a separate player.
 
-Keys:  Space capture · M mini · S snapshot · C save clip · P pin
-       G grid · scroll = gain (Ctrl+scroll in mini = resize) · Q quit
+Keys:  Space capture · O open file · M mini · S snapshot · C save clip
+       P pin · G grid · scroll = gain (Ctrl+scroll in mini = resize) · Q quit
 Mini mode: drag with the left button, double-click to restore,
 right-click anywhere for the menu.
 """
@@ -28,9 +30,12 @@ from phosphor_audio import (AudioCaptureStream, default_monitor_target_id,
                             list_capture_targets)
 from phosphor_render_cairo import CairoBeamCore
 from phosphor_render_gl import GL_BINDINGS_AVAILABLE, GLBeamRenderer
-from phosphor_settings import (CUSTOM_THEME_NAME, THEME_PRESETS, Settings)
+from phosphor_settings import (CUSTOM_THEME_NAME, THEME_PRESETS, Settings,
+                               grid_spacing_fraction)
 from phosphor_signal import SegmentComputer
 
+APPLICATION_ID = "io.github.ben.Phosphor"
+APPLICATION_VERSION = "2.1.0"
 PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 QUIET_PEAK_THRESHOLD = 1e-4
 QUIET_FRAMES_BEFORE_SLEEP = 120
@@ -43,39 +48,93 @@ DISPLAY_MODES = (
     ("spectrum", "Spectrum"),
 )
 
+GPU_QUALITY_CHOICES = (("1", "Standard"), ("2", "High · 2× supersampled"))
+CPU_RESOLUTION_CHOICES = (("1.0", "Full resolution"),
+                          ("0.75", "Balanced · 75%"),
+                          ("0.5", "Fast · 50%"))
+UI_STYLE_CHOICES = (("system", "System"), ("dark", "Dark"),
+                    ("black", "AMOLED black"))
+
+# Pure-black chrome for the AMOLED UI style; scope themes stay independent.
+BLACK_UI_CSS = b"""
+window, headerbar, popover, popover.background, menu, .background {
+    background-color: #000000;
+}
+headerbar {
+    box-shadow: none;
+    border-bottom: 1px solid #161616;
+}
+menu, popover {
+    border: 1px solid #1c1c1c;
+}
+"""
+
 
 class LiveCairoRenderer(Gtk.DrawingArea):
-    """CPU fallback renderer widget; same advance() interface as the GL one."""
+    """CPU renderer widget; signal math and phosphor decay run on a worker
+    thread with a latest-frame mailbox, so a slow frame drops instead of
+    bogging the UI down."""
 
-    def __init__(self):
+    def __init__(self, segment_computer, compute_lock):
         super().__init__()
         self.core = CairoBeamCore()
+        self.segment_computer = segment_computer
+        self.compute_lock = compute_lock
         self.theme = None
         self.persistence = 0.7
         self.grid_enabled = True
+        self.grid_spacing_fraction = 0.1125
+        self.resolution = 1.0
+        self.beam_focus = 1.6
+        self._core_lock = threading.Lock()
+        self._mailbox = None               # only the newest frame survives
+        self._mailbox_condition = threading.Condition()
+        worker = threading.Thread(target=self._worker_loop, daemon=True)
+        worker.start()
         self.connect("draw", self._on_draw)
 
-    def advance(self, segments):
+    def advance(self, samples):
+        """Queue this frame's samples; the worker does the heavy lifting."""
         allocation = self.get_allocation()
         if allocation.width < 2 or allocation.height < 2:
             return
-        self.core.ensure_size(allocation.width, allocation.height)
-        self.core.advance(segments, self.persistence)
-        self.queue_draw()
+        with self._mailbox_condition:
+            self._mailbox = (samples, allocation.width, allocation.height,
+                             self.persistence, self.resolution, self.beam_focus)
+            self._mailbox_condition.notify()
+
+    def _worker_loop(self):
+        while True:
+            with self._mailbox_condition:
+                while self._mailbox is None:
+                    self._mailbox_condition.wait()
+                (samples, width, height,
+                 persistence, resolution, beam_focus) = self._mailbox
+                self._mailbox = None
+            with self.compute_lock:
+                segments = self.segment_computer.compute(samples, width, height)
+            with self._core_lock:
+                self.core.beam_focus = beam_focus
+                self.core.ensure_size(width, height, resolution)
+                self.core.advance(segments, persistence)
+            GLib.idle_add(self.queue_draw)
 
     def _on_draw(self, _widget, context):
         allocation = self.get_allocation()
         if self.theme is None:
             return False
-        self.core.ensure_size(allocation.width, allocation.height)
-        self.core.composite(context, allocation.width, allocation.height,
-                            self.theme, self.grid_enabled)
+        with self._core_lock:
+            self.core.ensure_size(allocation.width, allocation.height,
+                                  self.resolution)
+            self.core.composite(context, allocation.width, allocation.height,
+                                self.theme, self.grid_enabled,
+                                self.grid_spacing_fraction)
         return False
 
 
-class OscilloscopeWindow(Gtk.Window):
-    def __init__(self):
-        super().__init__(title="Phosphor")
+class OscilloscopeWindow(Gtk.ApplicationWindow):
+    def __init__(self, application):
+        super().__init__(application=application, title="Phosphor")
         self.settings = Settings.load()
         self.set_default_size(self.settings.window_width, self.settings.window_height)
 
@@ -90,28 +149,34 @@ class OscilloscopeWindow(Gtk.Window):
         self.segment_computer.mode = self.settings.display_mode
         self.segment_computer.gain = self.settings.gain
         self.segment_computer.beam_energy = self.settings.beam_energy
+        self.compute_lock = threading.Lock()
 
         self.capture_stream = AudioCaptureStream(
             on_stream_ended=lambda: GLib.idle_add(self._handle_stream_died))
         self.capture_targets = {}
+        self.playing_file = None
         self.is_mini_mode = False
         self.tick_callback_id = None
         self.fade_out_frames_remaining = 0
         self.quiet_frame_count = 0
         self.exporting = False
+        self._black_css_provider = None
 
         self._build_renderers()
         self._build_user_interface()
         self._apply_theme()
+        self._apply_render_quality()
+        self._apply_grid_geometry()
+        self._apply_ui_style()
 
         self.connect("key-press-event", self._on_key_press)
         self.connect("delete-event", self._on_delete)
-        self.connect("destroy", lambda _w: Gtk.main_quit())
 
     # ------------------------------------------------------------------ UI --
 
     def _build_renderers(self):
-        self.cairo_renderer = LiveCairoRenderer()
+        self.cairo_renderer = LiveCairoRenderer(self.segment_computer,
+                                                self.compute_lock)
         self.gl_available = GL_BINDINGS_AVAILABLE
         self.gl_renderer = GLBeamRenderer(on_failure=self._on_gl_failure) \
             if self.gl_available else None
@@ -135,6 +200,8 @@ class OscilloscopeWindow(Gtk.Window):
         return self.cairo_renderer
 
     def _build_user_interface(self):
+        self._build_header_bar()
+
         layout = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.controls_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.controls_container.pack_start(self._build_main_toolbar_row(), False, False, 0)
@@ -149,6 +216,37 @@ class OscilloscopeWindow(Gtk.Window):
         layout.pack_start(event_box, True, True, 0)
         self.add(layout)
 
+    def _build_header_bar(self):
+        self.header_bar = Gtk.HeaderBar()
+        self.header_bar.set_show_close_button(True)
+        self.header_bar.set_title("Phosphor")
+        self.set_titlebar(self.header_bar)
+
+        open_button = Gtk.Button.new_from_icon_name("document-open-symbolic",
+                                                    Gtk.IconSize.BUTTON)
+        open_button.set_tooltip_text("Play an audio file on the scope (O)")
+        open_button.connect("clicked", lambda _b: self.open_audio_file())
+        self.header_bar.pack_start(open_button)
+
+        settings_button = self._build_settings_button()
+        self.header_bar.pack_end(settings_button)
+
+        self.pin_toggle = Gtk.ToggleButton()
+        self.pin_toggle.add(Gtk.Image.new_from_icon_name("view-pin-symbolic",
+                                                         Gtk.IconSize.BUTTON))
+        self.pin_toggle.set_tooltip_text("Keep window above others (P)")
+        self.pin_toggle.set_active(self.settings.pinned)
+        self.pin_toggle.connect("toggled", self._on_pin_toggled)
+        self.header_bar.pack_end(self.pin_toggle)
+
+        mini_button = Gtk.Button.new_from_icon_name("view-restore-symbolic",
+                                                    Gtk.IconSize.BUTTON)
+        mini_button.set_tooltip_text(
+            "Borderless always-on-top mini view (M).\n"
+            "Drag to move, Ctrl+scroll to resize, double-click to restore.")
+        mini_button.connect("clicked", lambda _b: self.set_mini_mode(True))
+        self.header_bar.pack_end(mini_button)
+
     def _build_main_toolbar_row(self):
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         for edge in ("start", "end"):
@@ -160,56 +258,44 @@ class OscilloscopeWindow(Gtk.Window):
         self.capture_toggle.connect("toggled", self._on_capture_toggled)
         row.pack_start(self.capture_toggle, False, False, 0)
 
-        self.target_combo = Gtk.ComboBoxText()
-        self.target_combo.set_tooltip_text(
-            "What to scope: APP = one playing application, "
-            "OUT = everything on that output, IN = microphones")
-        self._populate_targets()
-        self.target_combo.connect("changed", self._on_target_changed)
-        row.pack_start(self.target_combo, False, False, 0)
+        # status sits right beside the Live button so the capture state and
+        # its explanation read as one unit
+        self.status_label = Gtk.Label(label="idle")
+        self.status_label.set_ellipsize(3)  # Pango.EllipsizeMode.END
+        self.status_label.set_xalign(0.0)
+        self.status_label.set_max_width_chars(34)
+        row.pack_start(self.status_label, True, True, 0)
 
-        refresh_button = Gtk.Button.new_from_icon_name("view-refresh-symbolic",
-                                                       Gtk.IconSize.BUTTON)
-        refresh_button.set_tooltip_text("Re-scan devices and playing apps")
-        refresh_button.connect("clicked", lambda _b: self._populate_targets())
-        row.pack_start(refresh_button, False, False, 0)
+        clip_button = Gtk.Button(label="⏺")
+        clip_button.set_tooltip_text("Save the last 10 s as mp4 with sound (C)")
+        clip_button.connect("clicked", lambda _b: self.save_clip())
+        row.pack_end(clip_button, False, False, 0)
+
+        snapshot_button = Gtk.Button(label="📷")
+        snapshot_button.set_tooltip_text("Snapshot to ~/Pictures/Phosphor (S)")
+        snapshot_button.connect("clicked", lambda _b: self.save_snapshot())
+        row.pack_end(snapshot_button, False, False, 0)
 
         self.mode_combo = Gtk.ComboBoxText()
         for mode_id, mode_label in DISPLAY_MODES:
             self.mode_combo.append(mode_id, mode_label)
         self.mode_combo.set_active_id(self.settings.display_mode)
         self.mode_combo.connect("changed", self._on_mode_changed)
-        row.pack_start(self.mode_combo, False, False, 0)
+        row.pack_end(self.mode_combo, False, False, 0)
 
-        self.pin_toggle = Gtk.ToggleButton(label="📌")
-        self.pin_toggle.set_tooltip_text("Keep window above others (P)")
-        self.pin_toggle.set_active(self.settings.pinned)
-        self.pin_toggle.connect("toggled", self._on_pin_toggled)
-        row.pack_start(self.pin_toggle, False, False, 0)
+        refresh_button = Gtk.Button.new_from_icon_name("view-refresh-symbolic",
+                                                       Gtk.IconSize.BUTTON)
+        refresh_button.set_tooltip_text("Re-scan devices and playing apps")
+        refresh_button.connect("clicked", lambda _b: self._populate_targets())
+        row.pack_end(refresh_button, False, False, 0)
 
-        snapshot_button = Gtk.Button(label="📷")
-        snapshot_button.set_tooltip_text("Snapshot to ~/Pictures/Phosphor (S)")
-        snapshot_button.connect("clicked", lambda _b: self.save_snapshot())
-        row.pack_start(snapshot_button, False, False, 0)
-
-        clip_button = Gtk.Button(label="⏺")
-        clip_button.set_tooltip_text("Save the last 10 s as mp4 with sound (C)")
-        clip_button.connect("clicked", lambda _b: self.save_clip())
-        row.pack_start(clip_button, False, False, 0)
-
-        row.pack_start(self._build_settings_button(), False, False, 0)
-
-        mini_button = Gtk.Button(label="Mini")
-        mini_button.set_tooltip_text(
-            "Borderless always-on-top mini view (M).\n"
-            "Drag to move, Ctrl+scroll to resize, double-click to restore.")
-        mini_button.connect("clicked", lambda _b: self.set_mini_mode(True))
-        row.pack_end(mini_button, False, False, 0)
-
-        self.status_label = Gtk.Label(label="idle")
-        self.status_label.set_ellipsize(3)  # Pango.EllipsizeMode.END
-        self.status_label.set_xalign(1.0)
-        row.pack_end(self.status_label, True, True, 0)
+        self.target_combo = Gtk.ComboBoxText()
+        self.target_combo.set_tooltip_text(
+            "What to scope: APP = one playing application, "
+            "OUT = everything on that output, IN = microphones")
+        self._populate_targets()
+        self.target_combo.connect("changed", self._on_target_changed)
+        row.pack_end(self.target_combo, False, False, 0)
         return row
 
     def _build_slider_toolbar_row(self):
@@ -224,14 +310,38 @@ class OscilloscopeWindow(Gtk.Window):
             scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL,
                                              low, high, (high - low) / 200)
             scale.set_value(initial)
-            scale.set_draw_value(True)
-            scale.set_value_pos(Gtk.PositionType.RIGHT)
-            scale.connect("format-value",
-                          lambda _s, value: f"{value / high * 100:3.0f}%")
-            scale.set_size_request(150, -1)
+            scale.set_draw_value(False)
+            scale.set_size_request(130, -1)
             scale.set_tooltip_text(tooltip)
-            scale.connect("value-changed", lambda widget: on_change(widget.get_value()))
+            # the percent box is editable: click and type an exact value
+            percent_spin = Gtk.SpinButton.new_with_range(low / high * 100, 100, 1)
+            percent_spin.set_digits(0)
+            percent_spin.set_width_chars(3)
+            percent_spin.set_tooltip_text(f"{name} as percent — type a value")
+            syncing = {"busy": False}
+
+            def scale_changed(widget):
+                value = widget.get_value()
+                if not syncing["busy"]:
+                    syncing["busy"] = True
+                    percent_spin.set_value(value / high * 100)
+                    syncing["busy"] = False
+                on_change(value)
+
+            def spin_changed(widget):
+                if syncing["busy"]:
+                    return
+                syncing["busy"] = True
+                scale.set_value(widget.get_value() / 100 * high)
+                syncing["busy"] = False
+                on_change(scale.get_value())
+
+            scale.connect("value-changed", scale_changed)
+            percent_spin.connect("value-changed", spin_changed)
+            percent_spin.set_value(initial / high * 100)
             box.pack_start(scale, True, True, 0)
+            box.pack_start(percent_spin, False, False, 0)
+            box.pack_start(Gtk.Label(label="%"), False, False, 0)
             row.pack_start(box, True, True, 0)
             return scale
 
@@ -251,23 +361,56 @@ class OscilloscopeWindow(Gtk.Window):
         grid = Gtk.Grid(row_spacing=8, column_spacing=10)
         for edge in ("start", "end", "top", "bottom"):
             getattr(grid, f"set_margin_{edge}")(12)
+        next_row = [0]
 
-        grid.attach(Gtk.Label(label="Renderer", xalign=0), 0, 0, 1, 1)
+        def attach(label, widget):
+            grid.attach(Gtk.Label(label=label, xalign=0), 0, next_row[0], 1, 1)
+            grid.attach(widget, 1, next_row[0], 1, 1)
+            next_row[0] += 1
+            return widget
+
+        def combo(choices, active_id, on_changed):
+            box = Gtk.ComboBoxText()
+            for choice_id, choice_label in choices:
+                box.append(choice_id, choice_label)
+            box.set_active_id(active_id)
+            box.connect("changed", on_changed)
+            return box
+
         self.renderer_combo = Gtk.ComboBoxText()
         if self.gl_available:
             self.renderer_combo.append("gl", "GPU · CRT beam (recommended)")
         self.renderer_combo.append("cairo", "CPU · cairo")
         self.renderer_combo.set_active_id(self.settings.renderer)
         self.renderer_combo.connect("changed", self._on_renderer_changed)
-        grid.attach(self.renderer_combo, 1, 0, 1, 1)
+        attach("Renderer", self.renderer_combo)
 
-        grid.attach(Gtk.Label(label="Theme", xalign=0), 0, 1, 1, 1)
+        attach("GPU quality", combo(GPU_QUALITY_CHOICES,
+                                    str(self.settings.gl_supersample),
+                                    self._on_gpu_quality_changed))
+        resolution_id = min(
+            (choice_id for choice_id, _ in CPU_RESOLUTION_CHOICES),
+            key=lambda choice_id:
+                abs(float(choice_id) - self.settings.cairo_resolution))
+        attach("CPU resolution", combo(CPU_RESOLUTION_CHOICES, resolution_id,
+                                       self._on_cpu_resolution_changed))
+
+        focus_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL,
+                                               0.6, 3.0, 0.1)
+        focus_scale.set_value(self.settings.beam_focus)
+        focus_scale.set_draw_value(False)
+        focus_scale.set_size_request(140, -1)
+        focus_scale.set_tooltip_text(
+            "Beam focus — narrower keeps dense scenes from washing out")
+        focus_scale.connect("value-changed", self._on_focus_changed)
+        attach("Focus", focus_scale)
+
         self.theme_combo = Gtk.ComboBoxText()
         for theme_name in list(THEME_PRESETS) + [CUSTOM_THEME_NAME]:
             self.theme_combo.append(theme_name, theme_name)
         self.theme_combo.set_active_id(self.settings.theme_name)
         self.theme_combo.connect("changed", self._on_theme_changed)
-        grid.attach(self.theme_combo, 1, 1, 1, 1)
+        attach("Theme", self.theme_combo)
 
         def color_button(initial_rgb, on_set):
             rgba = Gdk.RGBA()
@@ -280,36 +423,36 @@ class OscilloscopeWindow(Gtk.Window):
             button.connect("color-set", changed)
             return button
 
-        grid.attach(Gtk.Label(label="Custom beam", xalign=0), 0, 2, 1, 1)
-        self.custom_beam_button = color_button(
+        self.custom_beam_button = attach("Custom beam", color_button(
             self.settings.custom_beam_color,
-            lambda rgb: setattr(self.settings, "custom_beam_color", rgb))
-        grid.attach(self.custom_beam_button, 1, 2, 1, 1)
-
-        grid.attach(Gtk.Label(label="Custom grid", xalign=0), 0, 3, 1, 1)
-        self.custom_grid_button = color_button(
+            lambda rgb: setattr(self.settings, "custom_beam_color", rgb)))
+        self.custom_grid_button = attach("Custom grid", color_button(
             self.settings.custom_grid_color,
-            lambda rgb: setattr(self.settings, "custom_grid_color", rgb))
-        grid.attach(self.custom_grid_button, 1, 3, 1, 1)
+            lambda rgb: setattr(self.settings, "custom_grid_color", rgb)))
 
-        def add_switch(label, active, row_index, on_state):
-            grid.attach(Gtk.Label(label=label, xalign=0), 0, row_index, 1, 1)
-            switch = Gtk.Switch(halign=Gtk.Align.START)
-            switch.set_active(active)
-            switch.connect("state-set", on_state)
-            grid.attach(switch, 1, row_index, 1, 1)
-            return switch
+        def switch(active, on_state):
+            widget = Gtk.Switch(halign=Gtk.Align.START)
+            widget.set_active(active)
+            widget.connect("state-set", on_state)
+            return widget
 
-        add_switch("Grid", self.settings.grid_enabled, 4, self._on_grid_switched)
-        add_switch("AMOLED black", self.settings.amoled_background, 5,
-                   self._on_amoled_switched)
+        self.grid_switch = attach("Grid", switch(self.settings.grid_enabled,
+                                                 self._on_grid_switched))
+        attach("AMOLED scope", switch(self.settings.amoled_background,
+                                      self._on_amoled_switched))
+        attach("UI style", combo(UI_STYLE_CHOICES, self.settings.ui_style,
+                                 self._on_ui_style_changed))
+        attach("Pin button", switch(self.settings.show_pin_button,
+                                    self._on_show_pin_switched))
 
         grid.show_all()
         popover.add(grid)
         self._update_custom_color_sensitivity()
 
-        settings_button = Gtk.MenuButton(label="⚙")
-        settings_button.set_tooltip_text("Renderer, theme, grid, AMOLED")
+        settings_button = Gtk.MenuButton()
+        settings_button.add(Gtk.Image.new_from_icon_name(
+            "emblem-system-symbolic", Gtk.IconSize.BUTTON))
+        settings_button.set_tooltip_text("Renderer, quality, theme, UI style")
         settings_button.set_popover(popover)
         return settings_button
 
@@ -339,13 +482,14 @@ class OscilloscopeWindow(Gtk.Window):
         if target_id is None:
             return
         self.settings.target_id = target_id
-        if self.capture_stream.is_running:
+        if self.capture_stream.is_running and self.playing_file is None:
             self.capture_stream.start(self.capture_targets[target_id])
 
     # -------------------------------------------------------------- capture --
 
     def _on_capture_toggled(self, toggle):
         if toggle.get_active():
+            self.playing_file = None
             target_id = self.target_combo.get_active_id()
             if target_id is None or target_id not in self.capture_targets:
                 toggle.set_active(False)
@@ -361,14 +505,58 @@ class OscilloscopeWindow(Gtk.Window):
             self._start_render_loop()
         else:
             self.capture_stream.stop()
+            self.playing_file = None
             self.status_label.set_text("idle — no capture, no CPU")
             self.fade_out_frames_remaining = 90
 
+    def open_audio_file(self):
+        dialog = Gtk.FileChooserNative.new("Play audio file", self,
+                                           Gtk.FileChooserAction.OPEN,
+                                           "_Play", "_Cancel")
+        audio_filter = Gtk.FileFilter()
+        audio_filter.set_name("Audio files")
+        audio_filter.add_mime_type("audio/*")
+        dialog.add_filter(audio_filter)
+        everything_filter = Gtk.FileFilter()
+        everything_filter.set_name("All files")
+        everything_filter.add_pattern("*")
+        dialog.add_filter(everything_filter)
+        if dialog.run() == Gtk.ResponseType.ACCEPT:
+            path = dialog.get_filename()
+            if path:
+                self.play_file(path)
+        dialog.destroy()
+
+    def play_file(self, path):
+        try:
+            self.capture_stream.start_file(path)
+        except OSError as error:
+            self.status_label.set_text(
+                f"file playback failed: {error} (is ffmpeg installed?)")
+            return
+        self.playing_file = os.path.basename(path)
+        # reflect "running" in the toggle without re-triggering device capture
+        self.capture_toggle.handler_block_by_func(self._on_capture_toggled)
+        self.capture_toggle.set_active(True)
+        self.capture_toggle.handler_unblock_by_func(self._on_capture_toggled)
+        self.quiet_frame_count = 0
+        self.status_label.set_text(f"▶ {self.playing_file}")
+        self._start_render_loop()
+
     def _handle_stream_died(self):
         if self.capture_toggle.get_active():
+            finished_file = self.playing_file
+            self.playing_file = None
+            self.capture_toggle.handler_block_by_func(self._on_capture_toggled)
             self.capture_toggle.set_active(False)
-            self.status_label.set_text("stream ended — app stopped or device gone")
-            self._populate_targets()
+            self.capture_toggle.handler_unblock_by_func(self._on_capture_toggled)
+            self.capture_stream.stop()
+            self.fade_out_frames_remaining = 90
+            if finished_file is not None:
+                self.status_label.set_text(f"finished: {finished_file}")
+            else:
+                self.status_label.set_text("stream ended — app stopped or device gone")
+                self._populate_targets()
 
     # --------------------------------------------------------- render loop --
 
@@ -390,16 +578,24 @@ class OscilloscopeWindow(Gtk.Window):
             self.quiet_frame_count = self.quiet_frame_count + 1 if is_quiet else 0
             if self.quiet_frame_count > QUIET_FRAMES_BEFORE_SLEEP:
                 return GLib.SOURCE_CONTINUE
-            segments = self.segment_computer.compute(
-                samples, allocation.width, allocation.height)
-            self.active_renderer().advance(segments)
+            self._advance_active_renderer(samples, allocation)
         else:
-            self.active_renderer().advance([])
+            self._advance_active_renderer([], allocation)
             self.fade_out_frames_remaining -= 1
             if self.fade_out_frames_remaining <= 0:
                 self.tick_callback_id = None
                 return GLib.SOURCE_REMOVE
         return GLib.SOURCE_CONTINUE
+
+    def _advance_active_renderer(self, samples, allocation):
+        renderer = self.active_renderer()
+        if isinstance(renderer, LiveCairoRenderer):
+            renderer.advance(samples)      # worker thread computes + decays
+        else:
+            with self.compute_lock:
+                segments = self.segment_computer.compute(
+                    samples, allocation.width, allocation.height)
+            renderer.advance(segments)
 
     def _wake_renderer(self):
         """Repaint once after appearance changes, even while quiet/idle."""
@@ -422,9 +618,41 @@ class OscilloscopeWindow(Gtk.Window):
             renderer.grid_enabled = self.settings.grid_enabled
         self._wake_renderer()
 
+    def _apply_render_quality(self):
+        if self.gl_renderer is not None:
+            self.gl_renderer.supersample = self.settings.gl_supersample
+            self.gl_renderer.beam_focus = self.settings.beam_focus
+        self.cairo_renderer.resolution = self.settings.cairo_resolution
+        self.cairo_renderer.beam_focus = self.settings.beam_focus
+        self._wake_renderer()
+
+    def _apply_grid_geometry(self):
+        fraction = grid_spacing_fraction(self.settings.gain)
+        if self.gl_renderer is not None:
+            self.gl_renderer.grid_spacing_fraction = fraction
+        self.cairo_renderer.grid_spacing_fraction = fraction
+        self._wake_renderer()
+
+    def _apply_ui_style(self):
+        gtk_settings = Gtk.Settings.get_default()
+        prefer_dark = self.settings.ui_style in ("dark", "black")
+        gtk_settings.set_property("gtk-application-prefer-dark-theme", prefer_dark)
+        screen = Gdk.Screen.get_default()
+        if self.settings.ui_style == "black":
+            if self._black_css_provider is None:
+                self._black_css_provider = Gtk.CssProvider()
+                self._black_css_provider.load_from_data(BLACK_UI_CSS)
+            Gtk.StyleContext.add_provider_for_screen(
+                screen, self._black_css_provider,
+                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        elif self._black_css_provider is not None:
+            Gtk.StyleContext.remove_provider_for_screen(
+                screen, self._black_css_provider)
+
     def _on_gain_changed(self, value):
         self.settings.gain = value
         self.segment_computer.gain = value
+        self._apply_grid_geometry()
 
     def _on_persistence_changed(self, value):
         self.settings.persistence = value
@@ -434,13 +662,18 @@ class OscilloscopeWindow(Gtk.Window):
         self.settings.beam_energy = value
         self.segment_computer.beam_energy = value
 
+    def _on_focus_changed(self, scale):
+        self.settings.beam_focus = scale.get_value()
+        self._apply_render_quality()
+
     def _on_mode_changed(self, combo):
         mode = combo.get_active_id()
         if mode is None:
             return
         self.settings.display_mode = mode
-        self.segment_computer.mode = mode
-        self.segment_computer.reset()
+        with self.compute_lock:
+            self.segment_computer.mode = mode
+            self.segment_computer.reset()
         self.settings.save()
 
     def _on_theme_changed(self, combo):
@@ -460,6 +693,32 @@ class OscilloscopeWindow(Gtk.Window):
         self.display_stack.set_visible_child_name(renderer_id)
         self._apply_theme()
         self.settings.save()
+
+    def _on_gpu_quality_changed(self, combo):
+        if combo.get_active_id() is None:
+            return
+        self.settings.gl_supersample = int(combo.get_active_id())
+        self._apply_render_quality()
+        self.settings.save()
+
+    def _on_cpu_resolution_changed(self, combo):
+        if combo.get_active_id() is None:
+            return
+        self.settings.cairo_resolution = float(combo.get_active_id())
+        self._apply_render_quality()
+        self.settings.save()
+
+    def _on_ui_style_changed(self, combo):
+        if combo.get_active_id() is None:
+            return
+        self.settings.ui_style = combo.get_active_id()
+        self._apply_ui_style()
+        self.settings.save()
+
+    def _on_show_pin_switched(self, _switch, state):
+        self.settings.show_pin_button = state
+        self.pin_toggle.set_visible(state)
+        return False
 
     def _on_grid_switched(self, _switch, state):
         self.settings.grid_enabled = state
@@ -537,29 +796,51 @@ class OscilloscopeWindow(Gtk.Window):
 
     # ------------------------------------------------------------ mini mode --
 
+    def _window_is_tiled_or_maximized(self):
+        gdk_window = self.get_window()
+        if gdk_window is None:
+            return False
+        state = gdk_window.get_state()
+        return bool(state & (Gdk.WindowState.MAXIMIZED
+                             | Gdk.WindowState.TILED
+                             | Gdk.WindowState.FULLSCREEN))
+
     def set_mini_mode(self, enabled):
         if enabled == self.is_mini_mode:
             return
         self.is_mini_mode = enabled
         if enabled:
-            self.settings.window_width, self.settings.window_height = self.get_size()
-            position = self.get_position()
-            self.settings.window_x, self.settings.window_y = position
+            # a tiled/maximized size is the window manager's, not ours — never
+            # remember it, or restoring would snap back to a half-screen view
+            if not self._window_is_tiled_or_maximized():
+                self.settings.window_width, self.settings.window_height = self.get_size()
+                self.settings.window_x, self.settings.window_y = self.get_position()
+            self.unmaximize()
             self.controls_container.hide()
+            self.header_bar.hide()
             self.set_decorated(False)
             self.set_keep_above(True)
-            self.resize(self.settings.mini_size, self.settings.mini_size)
-            if self.settings.mini_x is not None:
-                self.move(self.settings.mini_x, self.settings.mini_y)
+
+            def apply_mini_geometry():
+                self.resize(self.settings.mini_size, self.settings.mini_size)
+                if self.settings.mini_x is not None:
+                    self.move(self.settings.mini_x, self.settings.mini_y)
+                return False
         else:
-            position = self.get_position()
-            self.settings.mini_x, self.settings.mini_y = position
+            self.settings.mini_x, self.settings.mini_y = self.get_position()
             self.controls_container.show()
+            self.header_bar.show()
             self.set_decorated(True)
             self.set_keep_above(self.settings.pinned)
-            self.resize(self.settings.window_width, self.settings.window_height)
-            if self.settings.window_x is not None:
-                self.move(self.settings.window_x, self.settings.window_y)
+
+            def apply_mini_geometry():
+                self.resize(self.settings.window_width, self.settings.window_height)
+                if self.settings.window_x is not None:
+                    self.move(self.settings.window_x, self.settings.window_y)
+                return False
+        # let the decoration change settle before moving/resizing, otherwise
+        # the window manager fights us and the window flickers or re-tiles
+        GLib.idle_add(apply_mini_geometry)
         self._wake_renderer()
 
     def _resize_mini(self, size):
@@ -572,23 +853,58 @@ class OscilloscopeWindow(Gtk.Window):
     def _show_context_menu(self, event):
         menu = Gtk.Menu()
 
-        def add_item(label, callback, sensitive=True):
+        def add_item(label, callback, sensitive=True, target_menu=None):
             item = Gtk.MenuItem(label=label)
             item.connect("activate", lambda _i: callback())
             item.set_sensitive(sensitive)
+            (target_menu or menu).append(item)
+
+        def add_check_item(label, active, callback, radio=False, target_menu=None):
+            item = Gtk.CheckMenuItem(label=label)
+            item.set_draw_as_radio(radio)
+            item.set_active(active)
+            item.connect("toggled", lambda widget: callback(widget.get_active()))
+            (target_menu or menu).append(item)
+
+        def add_submenu(label):
+            submenu = Gtk.Menu()
+            item = Gtk.MenuItem(label=label)
+            item.set_submenu(submenu)
             menu.append(item)
+            return submenu
 
         capturing = self.capture_toggle.get_active()
         add_item("Pause capture" if capturing else "Resume capture",
                  lambda: self.capture_toggle.set_active(not capturing))
+        add_item("Play audio file…  (O)", self.open_audio_file)
         add_item("Snapshot  (S)", self.save_snapshot)
         add_item("Save last 10 s  (C)", self.save_clip)
         menu.append(Gtk.SeparatorMenuItem())
+
+        mode_menu = add_submenu("Display mode")
+        for mode_id, mode_label in DISPLAY_MODES:
+            add_check_item(mode_label, mode_id == self.settings.display_mode,
+                           lambda active, m=mode_id:
+                               active and self.mode_combo.set_active_id(m),
+                           radio=True, target_menu=mode_menu)
+
+        theme_menu = add_submenu("Theme")
+        for theme_name in list(THEME_PRESETS) + [CUSTOM_THEME_NAME]:
+            add_check_item(theme_name, theme_name == self.settings.theme_name,
+                           lambda active, t=theme_name:
+                               active and self.theme_combo.set_active_id(t),
+                           radio=True, target_menu=theme_menu)
+
+        add_check_item("Grid  (G)", self.settings.grid_enabled,
+                       lambda active: self.grid_switch.set_active(active))
+        add_check_item("Pin above  (P)", self.settings.pinned,
+                       lambda active: self.pin_toggle.set_active(active))
+        menu.append(Gtk.SeparatorMenuItem())
+
         if self.is_mini_mode:
             for preset_label, preset_size in MINI_SIZE_PRESETS:
-                size = preset_size
                 add_item(f"Mini size: {preset_label}",
-                         lambda s=size: self._resize_mini(s))
+                         lambda s=preset_size: self._resize_mini(s))
             add_item("Restore window  (M)", lambda: self.set_mini_mode(False))
         else:
             add_item("Mini view  (M)", lambda: self.set_mini_mode(True))
@@ -624,6 +940,8 @@ class OscilloscopeWindow(Gtk.Window):
         key = event.keyval
         if key == Gdk.KEY_space:
             self.capture_toggle.set_active(not self.capture_toggle.get_active())
+        elif key in (Gdk.KEY_o, Gdk.KEY_O):
+            self.open_audio_file()
         elif key in (Gdk.KEY_m, Gdk.KEY_M):
             self.set_mini_mode(not self.is_mini_mode)
         elif key in (Gdk.KEY_s, Gdk.KEY_S):
@@ -633,8 +951,7 @@ class OscilloscopeWindow(Gtk.Window):
         elif key in (Gdk.KEY_p, Gdk.KEY_P):
             self.pin_toggle.set_active(not self.pin_toggle.get_active())
         elif key in (Gdk.KEY_g, Gdk.KEY_G):
-            self.settings.grid_enabled = not self.settings.grid_enabled
-            self._apply_theme()
+            self.grid_switch.set_active(not self.settings.grid_enabled)
         elif key == Gdk.KEY_Escape:
             if self.is_mini_mode:
                 self.set_mini_mode(False)
@@ -650,6 +967,7 @@ class OscilloscopeWindow(Gtk.Window):
 
     def apply_remembered_view(self):
         """Restore where and how the window was last time."""
+        self.pin_toggle.set_visible(self.settings.show_pin_button)
         if self.settings.start_in_mini:
             self.set_mini_mode(True)
         elif self.settings.window_x is not None:
@@ -662,7 +980,7 @@ class OscilloscopeWindow(Gtk.Window):
         position = self.get_position()
         if self.is_mini_mode:
             self.settings.mini_x, self.settings.mini_y = position
-        else:
+        elif not self._window_is_tiled_or_maximized():
             self.settings.window_width, self.settings.window_height = self.get_size()
             self.settings.window_x, self.settings.window_y = position
         self.settings.save()
@@ -670,12 +988,23 @@ class OscilloscopeWindow(Gtk.Window):
         return False
 
 
+class PhosphorApplication(Gtk.Application):
+    def __init__(self):
+        super().__init__(application_id=APPLICATION_ID)
+
+    def do_activate(self):
+        window = self.props.active_window
+        if window is None:
+            window = OscilloscopeWindow(application=self)
+            window.show_all()
+            window.apply_remembered_view()
+            window.capture_toggle.set_active(True)  # start live; off is free
+        window.present()
+
+
 def main():
-    window = OscilloscopeWindow()
-    window.show_all()
-    window.apply_remembered_view()
-    window.capture_toggle.set_active(True)  # start live; toggling off is free
-    Gtk.main()
+    GLib.set_prgname("phosphor")   # ties the window to phosphor.desktop's icon
+    PhosphorApplication().run(None)
 
 
 if __name__ == "__main__":

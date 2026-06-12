@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Phosphor
+GenericName=XY Oscilloscope
+Comment=CRT-style oscilloscope visualizer for everything your PC plays
+Exec=phosphor
+Icon=phosphor-scope
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=oscilloscope;scope;XY;goniometer;visualizer;audio;music;
+StartupWMClass=phosphor
