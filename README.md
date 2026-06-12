@@ -2,12 +2,14 @@
 
 A software XY oscilloscope for everything your PC plays — built to watch
 "oscilloscope music" (Jerobeam Fenderson et al.) draw its hidden pictures,
-and to visualize any system audio the rest of the time.
+and to make any system audio look good.
 
-![concept] In XY mode the left channel moves the beam horizontally and the
-right channel moves it vertically. Scope music is composed so this traces
-actual drawings. Beam brightness falls with beam speed (like a real CRT),
-which is what makes the images look right.
+In XY mode the left channel moves the beam horizontally and the right
+channel moves it vertically; scope music is composed so this traces actual
+drawings. Beam brightness falls as the beam moves faster and the phosphor
+decays in two layers (a blue-white flash where the beam lands, a colored
+glow that lingers) — P7 phosphor physics, the details that make it look
+like the real instrument.
 
 ## Run
 
@@ -15,46 +17,60 @@ which is what makes the images look right.
 python3 ~/Dev/ClaudeWorkspace/phosphor/phosphor.py
 ```
 
-No dependencies beyond what Mint ships: PyGObject (GTK3), pycairo, and
-`parec` from pulseaudio-utils. Audio is tapped from the PipeWire/PulseAudio
-monitor of the default output, so nothing needs rerouting — just play the
-music anywhere (YouTube, mpv, …) and watch.
+Or use the **Phosphor** launcher (menu and desktop icon are installed).
+No dependencies beyond stock Mint: PyGObject, pycairo, `parec`, `ffmpeg`
+for clip export. The GPU renderer binds OpenGL through GTK's own libepoxy
+with ctypes — no PyOpenGL needed.
+
+## What to scope
+
+The source picker offers three kinds of target:
+- **APP** — one playing application (game audio without the music player,
+  or vice versa); these come and go, the refresh button re-scans
+- **OUT** — everything a given output plays (default: your default output)
+- **IN** — microphones (hum into the Q2U for live Lissajous figures)
+
+## Modes
+
+| Mode | What it's for |
+| --- | --- |
+| XY (scope art) | Oscilloscope music. The real deal. |
+| XY · goniometer | Ordinary songs: raw XY collapses stereo music into a diagonal line; rotated 45° the mono energy stands upright and stereo width blooms sideways. |
+| Waveform | Dual trace with rising-edge triggering so pitched sounds hold still. |
+| Spectrum | Log-frequency bars, fast attack / phosphor fall. |
 
 ## Controls
 
-| Control | What it does |
+- **⏻ Live** — capture on/off. Off = stream closed, render loop stopped, ~0% CPU.
+- **📌** — pin the window above others.
+- **📷 / ⏺** — snapshot to `~/Pictures/Phosphor`, save the last 10 s as
+  mp4 *with sound* to `~/Videos/Phosphor`. Both re-render the captured
+  audio offline, so exports look exactly like the screen did.
+- **⚙** — renderer (GPU/CPU), themes (P7 Green, Amber, Ice Blue, White,
+  Custom with color pickers), grid on/off, AMOLED black background.
+- **Mini** — borderless always-on-top square. Drag to move, Ctrl+scroll to
+  resize (square stays square), right-click for the menu, double-click to
+  restore. Window positions, sizes, and all settings are remembered in
+  `~/.config/phosphor/settings.json`, including whether you quit in mini.
+- **Keys** — `Space` capture · `M` mini · `S` snapshot · `C` clip · `P` pin
+  · `G` grid · scroll = gain · `Q`/`Esc` quit.
+
+## Resource behavior (measured)
+
+| State | CPU |
 | --- | --- |
-| ⏻ Live | Toggle capture. Off = stream closed, render loop stopped, ~0% CPU. |
-| Source | Any output's monitor (`OUT`) or microphone (`IN`), refresh button re-scans. |
-| XY / Waveform | Scope-art mode vs. conventional dual-channel trace. |
-| Gain / Glow / Beam | Deflection scale, phosphor persistence, beam brightness. |
-| Mini | Borderless always-on-top square — drag to move, double-click to restore. |
-| Keys | `Space` capture · `M` mini mode · scroll = gain · `Q`/`Esc` quit. |
-
-## Resource behavior
-
-- Capture off: parec killed, render loop removed → effectively zero cost;
-  PipeWire re-suspends the monitor source.
-- Armed but silent: silence is detected by content and rendering stops once
-  the glow fades (<1% CPU measured).
-- Live rendering: ~25% of one core (cairo at 60 fps).
+| Capture off | ~0% (parec killed, render loop removed, PipeWire suspends the source) |
+| Armed but silent | <1% (silence detected by content; monitors deliver zeros, so an empty-buffer check doesn't work) |
+| Live, GPU renderer | ~10% of one core |
+| Live, CPU renderer | ~25–35% of one core |
 
 ## Things to try
 
-- Jerobeam Fenderson — *How To Draw Mushrooms* (the classic), and
-  https://oscilloscopemusic.com for whole albums made for this.
-- Switch the source to your Samson Q2U and hum — Lissajous figures live.
+- Jerobeam Fenderson — *How To Draw Mushrooms*; whole albums at
+  https://oscilloscopemusic.com
+- Put on any normal song in **XY · goniometer** and watch the stereo image dance.
 
-## Launcher (optional)
+## Future
 
-Create `~/.local/share/applications/phosphor.desktop`:
-
-```ini
-[Desktop Entry]
-Type=Application
-Name=Phosphor
-Comment=XY oscilloscope for system audio
-Exec=python3 /home/ben/Dev/ClaudeWorkspace/phosphor/phosphor.py
-Icon=utilities-system-monitor
-Categories=AudioVideo;Audio;
-```
+See [FUTURE.md](FUTURE.md) — top of the list: draw a shape, and Phosphor
+generates the audio that draws it (make your own oscilloscope music).
