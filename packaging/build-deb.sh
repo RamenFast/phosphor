@@ -28,6 +28,9 @@ install -m 644 "$project_directory/phosphor-scope.svg" \
     "$staging_directory/usr/share/icons/hicolor/scalable/apps/phosphor-scope.svg"
 install -m 644 "$packaging_directory/phosphor.desktop" \
     "$staging_directory/usr/share/applications/"
+install -d "$staging_directory/usr/share/doc/phosphor"
+install -m 644 "$project_directory/LICENSE" \
+    "$staging_directory/usr/share/doc/phosphor/copyright"
 
 cat > "$staging_directory/usr/bin/phosphor" <<'LAUNCHER'
 #!/bin/sh
