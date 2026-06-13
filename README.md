@@ -23,6 +23,17 @@ instrument.
 > The animation above is a real Phosphor capture, exported straight from the
 > app's own clip recorder.
 
+## Drawn by sound
+
+A few real captures, straight from Phosphor's snapshot button — each shape is
+just a stereo audio file, traced live by the beam:
+
+<p align="center">
+  <img src="docs/gallery-ufo.png" width="240" alt="A flying saucer traced by the oscilloscope beam">
+  <img src="docs/gallery-heart.png" width="240" alt="A heart traced by the oscilloscope beam">
+  <img src="docs/gallery-sphere.png" width="240" alt="A wireframe sphere traced by the oscilloscope beam">
+</p>
+
 ## Install
 
 **Debian / Ubuntu / Linux Mint — prebuilt package**
