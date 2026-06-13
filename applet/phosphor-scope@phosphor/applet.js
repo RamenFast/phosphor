@@ -77,7 +77,6 @@ PhosphorScopeApplet.prototype = {
         this.settings.bind("phosphorTheme", "phosphorTheme", () => this._repaintAll());
         this.settings.bind("background", "background", () => this._repaintAll());
         this.settings.bind("panelWidth", "panelWidth", () => this._applyPanelSize());
-        this.settings.bind("squareInPanel", "squareInPanel", () => this._applyPanelSize());
         this.settings.bind("openOnHover", "openOnHover", null);
         this.settings.bind("mode", "mode", () => this._onModeSetting());
         this.settings.bind("fps", "fps", () => this._sendFps());
@@ -95,8 +94,7 @@ PhosphorScopeApplet.prototype = {
 
     _applyPanelSize: function() {
         let height = Math.max(16, this._areaHeight - 4);
-        let width = this.squareInPanel ? height : this.panelWidth;
-        this._panelArea.set_size(width, height);
+        this._panelArea.set_size(this.panelWidth, height);
         this._panelArea.queue_repaint();
     },
 
