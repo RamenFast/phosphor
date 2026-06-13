@@ -42,6 +42,8 @@ const MODES = [
     ["spectrum_radial", "Spectrum · radial"]
 ];
 
+const TRAIL_FRAMES = 5;   // recent frames kept for a phosphor-style trail (kills flicker)
+
 function PhosphorScopeApplet(metadata, orientation, panelHeight, instanceId) {
     this._init(metadata, orientation, panelHeight, instanceId);
 }
@@ -54,13 +56,14 @@ PhosphorScopeApplet.prototype = {
 
         this._metadata = metadata;
         this._areaHeight = panelHeight;   // _panelHeight is a getter-only prop on the base applet
-        this._segments = [];          // flat [x0, y0, x1, y1, intensity, ...] in a 0..1000 box
+        this._frameHistory = [];      // recent frames of segments, for a phosphor-style trail
         this._closeTimerId = 0;
 
         this.settings = new Settings.AppletSettings(this, UUID, instanceId);
         this.settings.bind("colorMode", "colorMode", () => this._repaintAll());
         this.settings.bind("phosphorTheme", "phosphorTheme", () => this._repaintAll());
         this.settings.bind("panelWidth", "panelWidth", () => this._applyPanelSize());
+        this.settings.bind("squareInPanel", "squareInPanel", () => this._applyPanelSize());
         this.settings.bind("mode", "mode", () => this._onModeSetting());
 
         this._panelArea = new St.DrawingArea({ style_class: "phosphor-panel-scope" });
@@ -76,7 +79,8 @@ PhosphorScopeApplet.prototype = {
 
     _applyPanelSize: function() {
         let height = Math.max(16, this._areaHeight - 4);
-        this._panelArea.set_size(this.panelWidth, height);
+        let width = this.squareInPanel ? height : this.panelWidth;
+        this._panelArea.set_size(width, height);
         this._panelArea.queue_repaint();
     },
 
@@ -157,8 +161,9 @@ PhosphorScopeApplet.prototype = {
 
     _setMode: function(id) {
         this.mode = id;
-        this.settings.setValue("mode", id);   // also triggers _onModeSetting
+        this.settings.setValue("mode", id);
         this._refreshModeMarks();
+        this._sendMode();   // programmatic setValue may not fire the bound callback, so send directly
     },
 
     _onModeSetting: function() {
@@ -228,7 +233,8 @@ PhosphorScopeApplet.prototype = {
             global.logError("[phosphor-scope] feed: " + data.error);
             return;
         }
-        this._segments = data.s || [];
+        this._frameHistory.push(data.s || []);
+        if (this._frameHistory.length > TRAIL_FRAMES) this._frameHistory.shift();
         this._panelArea.queue_repaint();
         if (this.menu && this.menu.isOpen && this._popupArea) {
             this._popupArea.queue_repaint();
@@ -270,9 +276,13 @@ PhosphorScopeApplet.prototype = {
         cr.paint();
         cr.setOperator(Cairo.Operator.OVER);
 
-        let segments = this._segments;
-        if (!segments || segments.length < 5) {
-            // No signal (silence / suspended sink): a faint resting dot.
+        let history = this._frameHistory;
+        let hasData = false;
+        for (let h = 0; h < history.length; h++) {
+            if (history[h].length >= 5) { hasData = true; break; }
+        }
+        if (!hasData) {
+            // Silence / suspended sink: a faint resting dot.
             cr.setSourceRGBA(r, g, b, 0.45);
             cr.arc(width / 2, height / 2, Math.max(1, height * 0.03), 0, 2 * Math.PI);
             cr.fill();
@@ -283,21 +293,26 @@ PhosphorScopeApplet.prototype = {
         let sx = width / 1000, sy = height / 1000;
         cr.setLineCap(Cairo.LineCap.ROUND);
         cr.setLineJoin(Cairo.LineJoin.ROUND);
+        let glowWidth = isPopup ? 3.0 : 2.2;
+        let coreWidth = isPopup ? 1.2 : 1.0;
 
-        // Two passes: a soft wide glow, then a bright thin core — a cheap but
-        // convincing phosphor look without an offscreen accumulation buffer.
-        let passes = [
-            [isPopup ? 3.0 : 2.2, 0.16],
-            [isPopup ? 1.2 : 1.0, 0.92]
-        ];
-        for (let p = 0; p < passes.length; p++) {
-            cr.setLineWidth(passes[p][0]);
-            cr.setSourceRGBA(r, g, b, passes[p][1]);
-            for (let i = 0; i + 5 <= segments.length; i += 5) {
-                cr.moveTo(segments[i] * sx, segments[i + 1] * sy);
-                cr.lineTo(segments[i + 2] * sx, segments[i + 3] * sy);
+        // Draw recent frames oldest-to-newest with rising brightness, so the
+        // trace leaves a short phosphor trail instead of flickering frame to
+        // frame. Each frame gets a soft wide glow then a bright thin core.
+        for (let h = 0; h < history.length; h++) {
+            let frame = history[h];
+            if (frame.length < 5) continue;
+            let age = (h + 1) / history.length;   // newest frame = 1.0
+            let passes = [[glowWidth, 0.16 * age], [coreWidth, 0.92 * age]];
+            for (let p = 0; p < passes.length; p++) {
+                cr.setLineWidth(passes[p][0]);
+                cr.setSourceRGBA(r, g, b, passes[p][1]);
+                for (let i = 0; i + 5 <= frame.length; i += 5) {
+                    cr.moveTo(frame[i] * sx, frame[i + 1] * sy);
+                    cr.lineTo(frame[i + 2] * sx, frame[i + 3] * sy);
+                }
+                cr.stroke();
             }
-            cr.stroke();
         }
         cr.$dispose();
     },

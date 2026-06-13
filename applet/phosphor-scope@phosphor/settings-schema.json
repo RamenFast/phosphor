@@ -37,6 +37,11 @@
             "Spectrum · radial": "spectrum_radial"
         }
     },
+    "squareInPanel": {
+        "type": "checkbox",
+        "default": false,
+        "description": "Make it a true square (match the panel height)"
+    },
     "panelWidth": {
         "type": "spinbutton",
         "default": 48,
@@ -44,6 +49,7 @@
         "max": 200,
         "step": 4,
         "units": "px",
-        "description": "Width in the panel"
+        "description": "Width in the panel (ignored when 'true square' is on)",
+        "dependency": "!squareInPanel"
     }
 }
