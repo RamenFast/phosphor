@@ -53,7 +53,7 @@ PhosphorScopeApplet.prototype = {
         Applet.Applet.prototype._init.call(this, orientation, panelHeight, instanceId);
 
         this._metadata = metadata;
-        this._panelHeight = panelHeight;
+        this._areaHeight = panelHeight;   // _panelHeight is a getter-only prop on the base applet
         this._segments = [];          // flat [x0, y0, x1, y1, intensity, ...] in a 0..1000 box
         this._closeTimerId = 0;
 
@@ -75,13 +75,13 @@ PhosphorScopeApplet.prototype = {
     // -- sizing --------------------------------------------------------------
 
     _applyPanelSize: function() {
-        let height = Math.max(16, this._panelHeight - 4);
+        let height = Math.max(16, this._areaHeight - 4);
         this._panelArea.set_size(this.panelWidth, height);
         this._panelArea.queue_repaint();
     },
 
     on_panel_height_changed: function() {
-        if (this.panel) this._panelHeight = this.panel.height;
+        this._areaHeight = this._panelHeight;   // read the live base getter
         this._applyPanelSize();
     },
 
