@@ -44,6 +44,16 @@ const MODES = [
 
 const TRAIL_FRAMES = 5;   // recent frames kept for a phosphor-style trail (kills flicker)
 
+function roundedRectPath(cr, x, y, w, h, r) {
+    r = Math.min(r, w / 2, h / 2);
+    cr.newSubPath();
+    cr.arc(x + w - r, y + r, r, -Math.PI / 2, 0);
+    cr.arc(x + w - r, y + h - r, r, 0, Math.PI / 2);
+    cr.arc(x + r, y + h - r, r, Math.PI / 2, Math.PI);
+    cr.arc(x + r, y + r, r, Math.PI, 1.5 * Math.PI);
+    cr.closePath();
+}
+
 function PhosphorScopeApplet(metadata, orientation, panelHeight, instanceId) {
     this._init(metadata, orientation, panelHeight, instanceId);
 }
@@ -62,9 +72,11 @@ PhosphorScopeApplet.prototype = {
         this.settings = new Settings.AppletSettings(this, UUID, instanceId);
         this.settings.bind("colorMode", "colorMode", () => this._repaintAll());
         this.settings.bind("phosphorTheme", "phosphorTheme", () => this._repaintAll());
+        this.settings.bind("background", "background", () => this._repaintAll());
         this.settings.bind("panelWidth", "panelWidth", () => this._applyPanelSize());
         this.settings.bind("squareInPanel", "squareInPanel", () => this._applyPanelSize());
         this.settings.bind("mode", "mode", () => this._onModeSetting());
+        this.settings.bind("fps", "fps", () => this._restartFeed());
 
         this._panelArea = new St.DrawingArea({ style_class: "phosphor-panel-scope" });
         this._panelArea.connect("repaint", (area) => this._paint(area, false));
@@ -196,7 +208,7 @@ PhosphorScopeApplet.prototype = {
                      | Gio.SubprocessFlags.STDOUT_PIPE
                      | Gio.SubprocessFlags.STDERR_SILENCE
             });
-            this._proc = launcher.spawnv(["python3", this._helperPath()]);
+            this._proc = launcher.spawnv(["python3", this._helperPath(), "--fps", String(this.fps)]);
         } catch (e) {
             global.logError("[phosphor-scope] could not start feed: " + e);
             return;
@@ -276,6 +288,22 @@ PhosphorScopeApplet.prototype = {
         cr.paint();
         cr.setOperator(Cairo.Operator.OVER);
 
+        // Optional standout background: a rounded panel in AMOLED black or a
+        // dark tint of the trace colour, framed by a faint border in the trace
+        // colour, so the scope reads as its own little instrument. The hover
+        // popup always gets one (never fully transparent) for readability.
+        let bgStyle = (isPopup && this.background === "transparent") ? "amoled" : this.background;
+        if (bgStyle && bgStyle !== "transparent") {
+            let radius = Math.max(3, Math.min(width, height) * 0.12);
+            roundedRectPath(cr, 0.5, 0.5, width - 1, height - 1, radius);
+            if (bgStyle === "amoled") cr.setSourceRGBA(0, 0, 0, 0.82);
+            else cr.setSourceRGBA(r * 0.07, g * 0.07, b * 0.07, 0.85);   // themed dark tint
+            cr.fillPreserve();
+            cr.setSourceRGBA(r, g, b, 0.28);
+            cr.setLineWidth(1);
+            cr.stroke();
+        }
+
         let history = this._frameHistory;
         let hasData = false;
         for (let h = 0; h < history.length; h++) {
@@ -319,18 +347,27 @@ PhosphorScopeApplet.prototype = {
 
     // -- teardown ------------------------------------------------------------
 
-    on_applet_removed_from_panel: function() {
-        this._cancelClose();
-        if (this._cancellable) this._cancellable.cancel();
+    _stopFeed: function() {
+        if (this._cancellable) { this._cancellable.cancel(); this._cancellable = null; }
         try {
-            if (this._stdin) {
-                this._stdin.put_string("quit\n", null);
-                this._stdin.flush(null);
-            }
+            if (this._stdin) { this._stdin.put_string("quit\n", null); this._stdin.flush(null); }
         } catch (e) {}
         try {
             if (this._proc) this._proc.force_exit();
         } catch (e) {}
+        this._proc = null;
+        this._stdin = null;
+        this._stdout = null;
+    },
+
+    _restartFeed: function() {
+        this._stopFeed();
+        this._startFeed();
+    },
+
+    on_applet_removed_from_panel: function() {
+        this._cancelClose();
+        this._stopFeed();
         if (this.settings) this.settings.finalize();
     }
 };

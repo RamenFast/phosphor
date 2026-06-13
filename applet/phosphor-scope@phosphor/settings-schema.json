@@ -24,6 +24,16 @@
             "Cyan Tube": "Cyan Tube"
         }
     },
+    "background": {
+        "type": "combobox",
+        "default": "transparent",
+        "description": "Scope background",
+        "options": {
+            "Transparent (blend into panel)": "transparent",
+            "AMOLED black": "amoled",
+            "Themed (tint of the trace colour)": "themed"
+        }
+    },
     "mode": {
         "type": "combobox",
         "default": "xy",
@@ -51,5 +61,15 @@
         "units": "px",
         "description": "Width in the panel (ignored when 'true square' is on)",
         "dependency": "!squareInPanel"
+    },
+    "fps": {
+        "type": "combobox",
+        "default": 30,
+        "description": "Refresh rate (lower = less CPU)",
+        "options": {
+            "Battery saver (15 fps)": 15,
+            "Balanced (30 fps)": 30,
+            "Smooth (60 fps)": 60
+        }
     }
 }

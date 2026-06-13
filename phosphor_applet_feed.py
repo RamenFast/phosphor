@@ -126,7 +126,14 @@ def main():
         on_stream_ended=lambda: None, sample_rate=CAPTURE_SAMPLE_RATE)
     stream.start(target)
 
-    frame_interval = 1.0 / FRAMES_PER_SECOND
+    fps = FRAMES_PER_SECOND
+    for index, argument in enumerate(sys.argv):
+        if argument == "--fps" and index + 1 < len(sys.argv):
+            try:
+                fps = max(5, min(60, int(sys.argv[index + 1])))
+            except ValueError:
+                pass
+    frame_interval = 1.0 / fps
     tracked_peak = 0.0
     try:
         while True:
