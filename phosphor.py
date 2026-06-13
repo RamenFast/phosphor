@@ -22,6 +22,7 @@ resize, double-click to restore, right-click anywhere for the menu.
 """
 
 import os
+import sys
 import threading
 import time
 
@@ -46,7 +47,7 @@ from phosphor_settings import (CUSTOM_THEME_NAME, THEME_PRESETS, Settings,
 from phosphor_signal import SegmentComputer
 
 APPLICATION_ID = "io.github.ben.Phosphor"
-APPLICATION_VERSION = "2.5.0"
+APPLICATION_VERSION = "2.6.0"
 PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 QUIET_PEAK_THRESHOLD = 1e-4
 QUIET_FRAMES_BEFORE_SLEEP = 120
@@ -1981,8 +1982,9 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
 
 
 class PhosphorApplication(Gtk.Application):
-    def __init__(self):
+    def __init__(self, start_in_mini=False):
         super().__init__(application_id=APPLICATION_ID)
+        self.start_in_mini = start_in_mini
 
     def do_activate(self):
         window = self.props.active_window
@@ -1990,13 +1992,27 @@ class PhosphorApplication(Gtk.Application):
             window = OscilloscopeWindow(application=self)
             window.show_all()
             window.apply_remembered_view()
+            if self.start_in_mini:        # launched as a floating preview (--mini)
+                window.set_mini_mode(True)
             window.capture_toggle.set_active(True)  # start live; off is free
         window.present()
 
 
+def _set_process_name(name):
+    """Label the process (PR_SET_NAME) so it shows as `name` in task managers."""
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        buffer = ctypes.create_string_buffer(name.encode()[:15])
+        libc.prctl(15, ctypes.byref(buffer), 0, 0, 0)  # 15 = PR_SET_NAME
+    except Exception:
+        pass
+
+
 def main():
+    _set_process_name("phosphor")
     GLib.set_prgname("phosphor")   # ties the window to phosphor.desktop's icon
-    PhosphorApplication().run(None)
+    PhosphorApplication(start_in_mini="--mini" in sys.argv[1:]).run(None)
 
 
 if __name__ == "__main__":

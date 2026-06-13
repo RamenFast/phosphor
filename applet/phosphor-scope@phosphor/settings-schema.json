@@ -1,0 +1,73 @@
+{
+    "colorMode": {
+        "type": "combobox",
+        "default": "theme",
+        "description": "Trace colour",
+        "options": {
+            "Follow panel theme": "theme",
+            "Phosphor colour": "phosphor"
+        }
+    },
+    "phosphorTheme": {
+        "type": "combobox",
+        "default": "P7 Green",
+        "description": "Phosphor colour (when not following the theme)",
+        "options": {
+            "P7 Green": "P7 Green",
+            "Amber": "Amber",
+            "Ice Blue": "Ice Blue",
+            "White": "White",
+            "Vaporwave": "Vaporwave",
+            "Red Phosphor": "Red Phosphor",
+            "Ultraviolet": "Ultraviolet",
+            "Solar Gold": "Solar Gold",
+            "Cyan Tube": "Cyan Tube"
+        }
+    },
+    "background": {
+        "type": "combobox",
+        "default": "transparent",
+        "description": "Scope background",
+        "options": {
+            "Transparent (blend into panel)": "transparent",
+            "AMOLED black": "amoled",
+            "Themed (tint of the trace colour)": "themed"
+        }
+    },
+    "openOnHover": {
+        "type": "checkbox",
+        "default": true,
+        "description": "Open the popup on hover (off = click only)"
+    },
+    "mode": {
+        "type": "combobox",
+        "default": "xy",
+        "description": "Scope mode",
+        "options": {
+            "XY · scope art": "xy",
+            "Goniometer": "xy45",
+            "XY · dots": "xy_dots",
+            "Waveform": "waveform",
+            "Spectrum": "spectrum",
+            "Spectrum · radial": "spectrum_radial"
+        }
+    },
+    "panelWidth": {
+        "type": "spinbutton",
+        "default": 48,
+        "min": 24,
+        "max": 200,
+        "step": 4,
+        "units": "px",
+        "description": "Width in the panel"
+    },
+    "fps": {
+        "type": "spinbutton",
+        "default": 60,
+        "min": 10,
+        "max": 240,
+        "step": 5,
+        "units": "fps",
+        "description": "Refresh rate — match your monitor (e.g. 165); higher = more CPU"
+    }
+}
