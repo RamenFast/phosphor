@@ -47,7 +47,7 @@ from phosphor_settings import (CUSTOM_THEME_NAME, THEME_PRESETS, Settings,
 from phosphor_signal import SegmentComputer
 
 APPLICATION_ID = "io.github.ben.Phosphor"
-APPLICATION_VERSION = "2.5.0"
+APPLICATION_VERSION = "2.6.0"
 PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 QUIET_PEAK_THRESHOLD = 1e-4
 QUIET_FRAMES_BEFORE_SLEEP = 120
