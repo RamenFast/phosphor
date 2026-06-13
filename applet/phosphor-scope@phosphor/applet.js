@@ -68,6 +68,11 @@ PhosphorScopeApplet.prototype = {
         this._areaHeight = panelHeight;   // _panelHeight is a getter-only prop on the base applet
         this._frameHistory = [];      // recent frames of segments, for a phosphor-style trail
         this._closeTimerId = 0;
+        this._displayOn = true;
+        this._powering = null;        // "off" while the CRT power-down animation plays
+        this._crtPhase = 1.0;
+        this._crtTimerId = 0;
+        this._frozenFrame = [];       // last frame, frozen for the power-off collapse
 
         this.settings = new Settings.AppletSettings(this, UUID, instanceId);
         this.settings.bind("colorMode", "colorMode", () => this._repaintAll());
@@ -129,6 +134,10 @@ PhosphorScopeApplet.prototype = {
         this._refreshModeMarks();
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        this._powerItem = new PopupMenu.PopupMenuItem("⏻  Turn off display");
+        this._powerItem.connect("activate", () => this._togglePower());
+        this.menu.addMenuItem(this._powerItem);
 
         let openItem = new PopupMenu.PopupMenuItem("Open Phosphor");
         openItem.connect("activate", () => Util.spawnCommandLine("phosphor"));
@@ -193,6 +202,55 @@ PhosphorScopeApplet.prototype = {
             let active = (id === this.mode);
             item.label.text = (active ? "● " : "    ") + item._phosphorLabel;
         }
+    },
+
+    // -- power (CRT off/on) --------------------------------------------------
+
+    _togglePower: function() {
+        if (this._displayOn) this._powerOff();
+        else this._powerOn();
+    },
+
+    _powerOff: function() {
+        // Freeze the latest non-empty frame for the collapse, then cut the feed
+        // (zero CPU while off).
+        this._frozenFrame = [];
+        for (let h = this._frameHistory.length - 1; h >= 0; h--) {
+            if (this._frameHistory[h].length >= 5) { this._frozenFrame = this._frameHistory[h]; break; }
+        }
+        this._stopFeed();
+        this._displayOn = false;
+        this._powering = "off";
+        this._crtPhase = 1.0;
+        if (this._powerItem) this._powerItem.label.text = "⏻  Turn on display";
+        this._stopCrtTimer();
+        this._crtTimerId = Mainloop.timeout_add(16, () => {
+            this._crtPhase -= 0.06;
+            if (this._crtPhase <= 0) {
+                this._crtPhase = 0;
+                this._crtTimerId = 0;
+                this._powering = null;
+                this._frameHistory = [];
+                this._repaintAll();
+                return false;
+            }
+            this._repaintAll();
+            return true;
+        });
+    },
+
+    _powerOn: function() {
+        this._stopCrtTimer();
+        this._powering = null;
+        this._displayOn = true;
+        this._frameHistory = [];
+        if (this._powerItem) this._powerItem.label.text = "⏻  Turn off display";
+        this._startFeed();
+        this._repaintAll();
+    },
+
+    _stopCrtTimer: function() {
+        if (this._crtTimerId) { Mainloop.source_remove(this._crtTimerId); this._crtTimerId = 0; }
     },
 
     // -- the feed subprocess -------------------------------------------------
@@ -281,6 +339,35 @@ PhosphorScopeApplet.prototype = {
         if (this._popupArea) this._popupArea.queue_repaint();
     },
 
+    _paintCrtCollapse: function(cr, width, height, r, g, b, isPopup) {
+        let p = this._crtPhase;            // 1 -> 0
+        let cx = width / 2, cy = height / 2;
+        cr.setLineCap(Cairo.LineCap.ROUND);
+        if (p > 0.4) {
+            // Squash the frozen trace vertically toward the centre line.
+            let vScale = (p - 0.4) / 0.6;
+            let sx = width / 1000, sy = height / 1000;
+            let frame = this._frozenFrame;
+            cr.setLineWidth(isPopup ? 1.2 : 1.0);
+            cr.setSourceRGBA(r, g, b, 0.9);
+            for (let i = 0; i + 5 <= frame.length; i += 5) {
+                cr.moveTo(frame[i] * sx, cy + (frame[i + 1] * sy - cy) * vScale);
+                cr.lineTo(frame[i + 2] * sx, cy + (frame[i + 3] * sy - cy) * vScale);
+            }
+            cr.stroke();
+        } else {
+            // A bright horizontal line collapsing to a centre dot, fading out.
+            let hScale = p / 0.4;          // 1 -> 0
+            let half = width * 0.5 * hScale + 1;
+            cr.setLineWidth(2);
+            cr.setSourceRGBA(Math.min(1, r + 0.3), Math.min(1, g + 0.3), Math.min(1, b + 0.3),
+                             0.4 + 0.6 * hScale);
+            cr.moveTo(cx - half, cy);
+            cr.lineTo(cx + half, cy);
+            cr.stroke();
+        }
+    },
+
     _paint: function(area, isPopup) {
         let cr = area.get_context();
         let [width, height] = area.get_surface_size();
@@ -305,6 +392,18 @@ PhosphorScopeApplet.prototype = {
             cr.setSourceRGBA(r, g, b, 0.28);
             cr.setLineWidth(1);
             cr.stroke();
+        }
+
+        // Power states: fully off shows just the (dark) frame; the power-off
+        // collapse animates the frozen trace into a centre line, then a dot.
+        if (!this._displayOn && this._powering !== "off") {
+            cr.$dispose();
+            return;
+        }
+        if (this._powering === "off") {
+            this._paintCrtCollapse(cr, width, height, r, g, b, isPopup);
+            cr.$dispose();
+            return;
         }
 
         let history = this._frameHistory;
@@ -370,6 +469,7 @@ PhosphorScopeApplet.prototype = {
 
     on_applet_removed_from_panel: function() {
         this._cancelClose();
+        this._stopCrtTimer();
         this._stopFeed();
         if (this.settings) this.settings.finalize();
     }
