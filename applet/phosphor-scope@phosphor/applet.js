@@ -75,6 +75,7 @@ PhosphorScopeApplet.prototype = {
         this.settings.bind("background", "background", () => this._repaintAll());
         this.settings.bind("panelWidth", "panelWidth", () => this._applyPanelSize());
         this.settings.bind("squareInPanel", "squareInPanel", () => this._applyPanelSize());
+        this.settings.bind("openOnHover", "openOnHover", null);
         this.settings.bind("mode", "mode", () => this._onModeSetting());
         this.settings.bind("fps", "fps", () => this._restartFeed());
 
@@ -151,11 +152,13 @@ PhosphorScopeApplet.prototype = {
     },
 
     _hoverOpen: function() {
+        if (!this.openOnHover) return;   // click-only mode
         this._cancelClose();
         if (!this.menu.isOpen) this.menu.open();
     },
 
     _scheduleClose: function() {
+        if (!this.openOnHover) return;
         this._cancelClose();
         this._closeTimerId = Mainloop.timeout_add(350, () => {
             this._closeTimerId = 0;

@@ -40,6 +40,18 @@ if "/usr/lib/phosphor" not in sys.path:
 import phosphor_audio
 import phosphor_signal
 
+
+def set_process_name(name):
+    """Label this process so it's identifiable in task managers (Linux)."""
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        buffer = ctypes.create_string_buffer(name.encode()[:15])
+        libc.prctl(15, ctypes.byref(buffer), 0, 0, 0)  # 15 = PR_SET_NAME
+    except Exception:
+        pass
+
+
 COORDINATE_BOX = 1000.0      # segments are emitted in a 0..COORDINATE_BOX square
 FRAMES_PER_SECOND = 30
 # A panel scope is tiny, so a modest feed rate is plenty and keeps each line
@@ -114,6 +126,7 @@ def write_line(payload):
 
 
 def main():
+    set_process_name("phosphor-feed")
     computer = phosphor_signal.SegmentComputer()
     computer.set_sample_rate(CAPTURE_SAMPLE_RATE)
 

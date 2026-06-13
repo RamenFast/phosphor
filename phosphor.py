@@ -1998,7 +1998,19 @@ class PhosphorApplication(Gtk.Application):
         window.present()
 
 
+def _set_process_name(name):
+    """Label the process (PR_SET_NAME) so it shows as `name` in task managers."""
+    try:
+        import ctypes
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        buffer = ctypes.create_string_buffer(name.encode()[:15])
+        libc.prctl(15, ctypes.byref(buffer), 0, 0, 0)  # 15 = PR_SET_NAME
+    except Exception:
+        pass
+
+
 def main():
+    _set_process_name("phosphor")
     GLib.set_prgname("phosphor")   # ties the window to phosphor.desktop's icon
     PhosphorApplication(start_in_mini="--mini" in sys.argv[1:]).run(None)
 

@@ -34,6 +34,11 @@
             "Themed (tint of the trace colour)": "themed"
         }
     },
+    "openOnHover": {
+        "type": "checkbox",
+        "default": true,
+        "description": "Open the popup on hover (off = click only)"
+    },
     "mode": {
         "type": "combobox",
         "default": "xy",
