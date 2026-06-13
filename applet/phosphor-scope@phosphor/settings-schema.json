@@ -69,5 +69,10 @@
         "step": 5,
         "units": "fps",
         "description": "Refresh rate — match your monitor (e.g. 165); higher = more CPU"
+    },
+    "showFps": {
+        "type": "checkbox",
+        "default": false,
+        "description": "Show a live FPS readout on the scope"
     }
 }

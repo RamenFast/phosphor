@@ -71,6 +71,9 @@ PhosphorScopeApplet.prototype = {
         this._crtPhase = 1.0;
         this._crtTimerId = 0;
         this._frozenFrame = [];       // last frame, frozen for the power-off collapse
+        this._fpsCount = 0;
+        this._fpsSince = Date.now();
+        this._measuredFps = 0;
 
         this.settings = new Settings.AppletSettings(this, UUID, instanceId);
         this.settings.bind("colorMode", "colorMode", () => this._repaintAll());
@@ -80,6 +83,7 @@ PhosphorScopeApplet.prototype = {
         this.settings.bind("openOnHover", "openOnHover", null);
         this.settings.bind("mode", "mode", () => this._onModeSetting());
         this.settings.bind("fps", "fps", () => this._sendFps());
+        this.settings.bind("showFps", "showFps", () => this._repaintAll());
 
         this._panelArea = new St.DrawingArea({ style_class: "phosphor-panel-scope" });
         this._panelArea.connect("repaint", (area) => this._paint(area, false));
@@ -130,6 +134,14 @@ PhosphorScopeApplet.prototype = {
         this._refreshModeMarks();
 
         this.menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
+
+        this._fpsToggle = new PopupMenu.PopupSwitchMenuItem("Show FPS", this.showFps);
+        this._fpsToggle.connect("toggled", (item, state) => {
+            this.showFps = state;
+            this.settings.setValue("showFps", state);
+            this._repaintAll();
+        });
+        this.menu.addMenuItem(this._fpsToggle);
 
         this._powerItem = new PopupMenu.PopupMenuItem("⏻  Turn off display");
         this._powerItem.connect("activate", () => this._togglePower());
@@ -307,6 +319,13 @@ PhosphorScopeApplet.prototype = {
         // (so high refresh rates still show a dense trace), capped for cost.
         let maxTrail = Math.max(4, Math.min(10, Math.round(this.fps / 6)));
         while (this._frameHistory.length > maxTrail) this._frameHistory.shift();
+        this._fpsCount++;
+        let now = Date.now();
+        if (now - this._fpsSince >= 500) {
+            this._measuredFps = Math.round(this._fpsCount * 1000 / (now - this._fpsSince));
+            this._fpsCount = 0;
+            this._fpsSince = now;
+        }
         this._panelArea.queue_repaint();
         if (this.menu && this.menu.isOpen && this._popupArea) {
             this._popupArea.queue_repaint();
@@ -455,6 +474,15 @@ PhosphorScopeApplet.prototype = {
                 cr.stroke();
             }
         }
+
+        if (this.showFps) {
+            cr.setSourceRGBA(r, g, b, 0.85);
+            cr.selectFontFace("Sans", Cairo.FontSlant.NORMAL, Cairo.FontWeight.NORMAL);
+            cr.setFontSize(isPopup ? 14 : Math.max(7, Math.min(11, height * 0.3)));
+            cr.moveTo(3, height - 3);
+            cr.showText(String(this._measuredFps));
+        }
+
         cr.$dispose();
     },
 
