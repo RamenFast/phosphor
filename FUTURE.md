@@ -11,10 +11,14 @@ Still open from the original idea:
 - import an SVG instead of drawing by hand
 - multi-stroke shapes (needs retrace-blanking decisions)
 
-## Cinnamon panel applet
-A true panel-embedded mini scope (St/Clutter canvas applet that reads the
-same monitor source), click to open the full window. The mini window covers
-this for now.
+## Cinnamon panel applet — ✅ shipped in 2.6
+A live panel vectorscope (`applet/phosphor-scope@phosphor`) fed by a headless
+helper (`phosphor_applet_feed.py`) that reuses the app's capture + signal
+path. Hover popup, mode switching, theme-follow / Phosphor colours, AMOLED
+background, type-your-own fps, and a CRT power-off toggle. Opens the full app
+or a pinned floating preview (`phosphor --mini`).
+Still open: a true St/Clutter render (vs the current Cairo draw), and shipping
+it to the Cinnamon Spices store.
 
 ## .deb package
 Proper packaging once features settle: `/usr/bin/phosphor-scope`,

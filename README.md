@@ -61,11 +61,14 @@ Shipped to GitHub by Claude&nbsp;Opus&nbsp;4.8, the day Fable&nbsp;5 went dark (
 Download the `.deb` from the [latest release](https://github.com/RamenFast/phosphor/releases/latest), then:
 
 ```bash
-sudo apt install ./phosphor_2.5.0_all.deb
+sudo apt install ./phosphor_2.6.0_all.deb
 ```
 
 That installs the **Phosphor** launcher (applications menu + desktop icon)
-and pulls in the dependencies below automatically.
+and pulls in the dependencies below automatically. (A harmless
+`N: Download is performed unsandboxed…` note just means apt couldn't read the
+file as its sandbox user from your home directory — the install still
+succeeds; install from `/tmp` to avoid it.)
 
 **From source**
 
@@ -99,6 +102,21 @@ PipeWire or PulseAudio.
 ```bash
 packaging/build-deb.sh     # -> packaging/dist/phosphor_<version>_all.deb
 ```
+
+## Panel applet (Cinnamon)
+
+A live vectorscope right in your Cinnamon panel — like a CPU monitor, but it
+draws your audio. It reuses Phosphor's exact signal path through a tiny
+headless feed, so the panel traces the signal identically to the full app.
+
+```bash
+applet/install.sh   # then add "Phosphor Scope" from Menu -> Applets
+```
+
+Hover for a bigger scope, switch modes, follow your panel theme or pick a
+Phosphor colour (AMOLED background included), set the refresh rate to match
+your monitor, and a ⏻ toggle gives it a proper CRT power-off. See
+[`applet/README.md`](applet/README.md).
 
 ## What to scope
 
