@@ -19,8 +19,8 @@ stdout: one JSON object per line, ``{"s": [x0, y0, x1, y1, i, x0, y0, ...]}``
         — a flat run of 5-int segments (coordinates in a 0..1000 box, the
         beam intensity 0..255). ``{"error": "..."}`` if capture can't start.
 stdin : optional one-per-line commands the applet sends —
-        ``mode <xy|xy45|xy_dots|waveform|spectrum|spectrum_radial>`` or
-        ``quit``.
+        ``mode <xy|xy45|xy_dots|waveform|spectrum|spectrum_radial>``,
+        ``fps <n>``, or ``quit``.
 
 Run standalone to watch it work:  (sleep 3) | python3 phosphor_applet_feed.py
 """
@@ -80,8 +80,8 @@ def find_default_monitor():
     return None
 
 
-def apply_command(line, computer):
-    """Update the computer from one stdin command line. Returns False on quit."""
+def apply_command(line, computer, timing):
+    """Update state from one stdin command line. Returns False on quit."""
     parts = line.split()
     if not parts:
         return True
@@ -91,6 +91,11 @@ def apply_command(line, computer):
         if parts[1] != computer.mode:
             computer.mode = parts[1]
             computer.reset()
+    elif parts[0] == "fps" and len(parts) > 1:
+        try:
+            timing["interval"] = 1.0 / max(5, min(240, int(parts[1])))
+        except ValueError:
+            pass
     return True
 
 
@@ -143,10 +148,10 @@ def main():
     for index, argument in enumerate(sys.argv):
         if argument == "--fps" and index + 1 < len(sys.argv):
             try:
-                fps = max(5, min(60, int(sys.argv[index + 1])))
+                fps = max(5, min(240, int(sys.argv[index + 1])))
             except ValueError:
                 pass
-    frame_interval = 1.0 / fps
+    timing = {"interval": 1.0 / fps}
     tracked_peak = 0.0
     try:
         while True:
@@ -158,7 +163,7 @@ def main():
                 command = sys.stdin.readline()
                 if command == "":
                     return
-                if not apply_command(command.strip(), computer):
+                if not apply_command(command.strip(), computer, timing):
                     return
 
             samples = stream.take_stereo_samples()
@@ -175,7 +180,7 @@ def main():
             if not write_line({"s": encode_segments(segments)}):
                 return
 
-            time.sleep(max(0.0, frame_interval - (time.monotonic() - frame_start)))
+            time.sleep(max(0.0, timing["interval"] - (time.monotonic() - frame_start)))
     finally:
         stream.stop()
 

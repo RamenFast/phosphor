@@ -68,13 +68,12 @@
         "dependency": "!squareInPanel"
     },
     "fps": {
-        "type": "combobox",
-        "default": 30,
-        "description": "Refresh rate (lower = less CPU)",
-        "options": {
-            "Battery saver (15 fps)": 15,
-            "Balanced (30 fps)": 30,
-            "Smooth (60 fps)": 60
-        }
+        "type": "spinbutton",
+        "default": 60,
+        "min": 10,
+        "max": 240,
+        "step": 5,
+        "units": "fps",
+        "description": "Refresh rate — match your monitor (e.g. 165); higher = more CPU"
     }
 }

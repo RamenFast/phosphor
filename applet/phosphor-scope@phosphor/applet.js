@@ -42,8 +42,6 @@ const MODES = [
     ["spectrum_radial", "Spectrum · radial"]
 ];
 
-const TRAIL_FRAMES = 5;   // recent frames kept for a phosphor-style trail (kills flicker)
-
 function roundedRectPath(cr, x, y, w, h, r) {
     r = Math.min(r, w / 2, h / 2);
     cr.newSubPath();
@@ -82,7 +80,7 @@ PhosphorScopeApplet.prototype = {
         this.settings.bind("squareInPanel", "squareInPanel", () => this._applyPanelSize());
         this.settings.bind("openOnHover", "openOnHover", null);
         this.settings.bind("mode", "mode", () => this._onModeSetting());
-        this.settings.bind("fps", "fps", () => this._restartFeed());
+        this.settings.bind("fps", "fps", () => this._sendFps());
 
         this._panelArea = new St.DrawingArea({ style_class: "phosphor-panel-scope" });
         this._panelArea.connect("repaint", (area) => this._paint(area, false));
@@ -307,7 +305,10 @@ PhosphorScopeApplet.prototype = {
             return;
         }
         this._frameHistory.push(data.s || []);
-        if (this._frameHistory.length > TRAIL_FRAMES) this._frameHistory.shift();
+        // Keep a roughly constant ~150ms persistence window regardless of fps
+        // (so high refresh rates still show a dense trace), capped for cost.
+        let maxTrail = Math.max(4, Math.min(10, Math.round(this.fps / 6)));
+        while (this._frameHistory.length > maxTrail) this._frameHistory.shift();
         this._panelArea.queue_repaint();
         if (this.menu && this.menu.isOpen && this._popupArea) {
             this._popupArea.queue_repaint();
@@ -322,6 +323,14 @@ PhosphorScopeApplet.prototype = {
         } catch (e) {
             // helper not ready yet, or pipe gone; harmless
         }
+    },
+
+    _sendFps: function() {
+        if (!this._stdin) return;   // restarts at the new rate next time it starts
+        try {
+            this._stdin.put_string("fps " + this.fps + "\n", null);
+            this._stdin.flush(null);
+        } catch (e) {}
     },
 
     // -- drawing -------------------------------------------------------------
@@ -397,6 +406,10 @@ PhosphorScopeApplet.prototype = {
         // Power states: fully off shows just the (dark) frame; the power-off
         // collapse animates the frozen trace into a centre line, then a dot.
         if (!this._displayOn && this._powering !== "off") {
+            // Off: a faint standby dot so the applet stays locatable.
+            cr.setSourceRGBA(r, g, b, 0.18);
+            cr.arc(width / 2, height / 2, Math.max(1, height * 0.025), 0, 2 * Math.PI);
+            cr.fill();
             cr.$dispose();
             return;
         }
@@ -460,11 +473,6 @@ PhosphorScopeApplet.prototype = {
         this._proc = null;
         this._stdin = null;
         this._stdout = null;
-    },
-
-    _restartFeed: function() {
-        this._stopFeed();
-        this._startFeed();
     },
 
     on_applet_removed_from_panel: function() {
