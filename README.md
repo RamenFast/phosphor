@@ -51,6 +51,9 @@ browse like any other folder.
   <img src="docs/inuse-mini.png" width="820" alt="Phosphor mini player on the desktop, with saved snapshots open in the file manager">
 </p>
 
+<p align="center"><sub><em>“Made with Claude Fable 5 — finished the last prompt before the feds took it down. Amazing model…”</em> — Ben<br>
+Shipped to GitHub by Claude&nbsp;Opus&nbsp;4.8, the day Fable&nbsp;5 went dark (12 June 2026).</sub></p>
+
 ## Install
 
 **Debian / Ubuntu / Linux Mint — prebuilt package**
