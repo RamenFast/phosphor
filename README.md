@@ -1,30 +1,69 @@
 # Phosphor
 
-A software XY oscilloscope for everything your PC plays — built to watch
-"oscilloscope music" (Jerobeam Fenderson et al.) draw its hidden pictures,
-and to make any system audio look good.
+<p align="center">
+  <img src="docs/phosphor-demo.gif" alt="Phosphor tracing a Lissajous figure from live audio" width="420"><br>
+  <em>A software XY oscilloscope for everything your PC plays.</em>
+</p>
 
-In XY mode the left channel moves the beam horizontally and the right
-channel moves it vertically; scope music is composed so this traces actual
-drawings. Beam brightness falls as the beam moves faster and the phosphor
-decays in two layers (a blue-white flash where the beam lands, a colored
-glow that lingers) — P7 phosphor physics, the details that make it look
-like the real instrument.
+<p align="center">
+  <a href="LICENSE"><img alt="License: GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPLv3-blue.svg"></a>
+  <a href="https://github.com/RamenFast/phosphor/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/RamenFast/phosphor"></a>
+  <img alt="Platform: Linux" src="https://img.shields.io/badge/platform-Linux-555">
+</p>
 
-## Run
+Phosphor watches "oscilloscope music" (Jerobeam Fenderson et al.) draw its
+hidden pictures, and makes any system audio look good. In XY mode the left
+channel moves the beam horizontally and the right channel moves it
+vertically; scope music is composed so this traces actual drawings. Beam
+brightness falls as the beam moves faster and the phosphor decays in two
+layers (a blue-white flash where the beam lands, a colored glow that
+lingers) — P7 phosphor physics, the details that make it look like the real
+instrument.
+
+> The animation above is a real Phosphor capture, exported straight from the
+> app's own clip recorder.
+
+## Install
+
+**Debian / Ubuntu / Linux Mint — prebuilt package**
+
+Download the `.deb` from the [latest release](https://github.com/RamenFast/phosphor/releases/latest), then:
 
 ```bash
-python3 ~/Dev/ClaudeWorkspace/phosphor/phosphor.py
+sudo apt install ./phosphor_2.5.0_all.deb
 ```
 
-Or use the **Phosphor** launcher (menu and desktop icon are installed).
-No dependencies beyond stock Mint: PyGObject, pycairo, `parec`, `ffmpeg`
-for clip export and file playback. The GPU renderer binds OpenGL through
-GTK's own libepoxy with ctypes — no PyOpenGL needed. If `numpy` is
-present the signal path is vectorized (~7× faster, comfortably feeding
-high-refresh monitors); without it a pure-python fallback keeps working.
+That installs the **Phosphor** launcher (applications menu + desktop icon)
+and pulls in the dependencies below automatically.
 
-To build an installable package:
+**From source**
+
+```bash
+git clone https://github.com/RamenFast/phosphor.git
+cd phosphor
+python3 phosphor.py
+```
+
+Dependencies, all in the stock Mint / Ubuntu repositories:
+
+```bash
+sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 \
+                 pulseaudio-utils ffmpeg python3-numpy
+```
+
+- **PyGObject + GTK 3** — the application and its UI
+- **`parec` / `pacat`** (pulseaudio-utils) — audio capture and playback,
+  over PulseAudio or PipeWire
+- **`ffmpeg`** — audio-file decoding and clip (mp4) export
+- **`numpy`** *(optional)* — vectorizes the signal path (~7× faster,
+  comfortably feeding high-refresh monitors); a pure-python fallback keeps
+  working without it
+
+The GPU renderer binds OpenGL through GTK's own libepoxy with ctypes — no
+PyOpenGL needed. Phosphor targets Linux desktops (X11 or Wayland) running
+PipeWire or PulseAudio.
+
+**Build the package yourself**
 
 ```bash
 packaging/build-deb.sh     # -> packaging/dist/phosphor_<version>_all.deb
