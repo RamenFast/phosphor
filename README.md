@@ -34,6 +34,23 @@ just a stereo audio file, traced live by the beam:
   <img src="docs/gallery-sphere.png" width="240" alt="A wireframe sphere traced by the oscilloscope beam">
 </p>
 
+## In use
+
+The **full window** — headerbar transport, source picker, and the slider rail
+down the side — running on a normal Linux desktop:
+
+<p align="center">
+  <img src="docs/inuse-full.png" width="820" alt="Phosphor's full window running on a Linux Mint desktop">
+</p>
+
+And the **mini player**: a borderless, always-on-top square you tuck into a
+corner while you work. Snapshots (`S`) drop into `~/Pictures/Phosphor` and
+browse like any other folder.
+
+<p align="center">
+  <img src="docs/inuse-mini.png" width="820" alt="Phosphor mini player on the desktop, with saved snapshots open in the file manager">
+</p>
+
 ## Install
 
 **Debian / Ubuntu / Linux Mint — prebuilt package**
