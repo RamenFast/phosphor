@@ -41,10 +41,27 @@ The source picker offers three kinds of target:
 Or skip capture entirely: **open an audio file** (`O`, the folder button,
 or the right-click menu) and Phosphor decodes it with ffmpeg, plays it out
 loud, and scopes it directly — no separate player needed. Opening a file
-discovers every track in its folder: transport buttons (⏮ ⏯ ⏭) appear in
-the title bar, tracks auto-advance, and pause freezes decode and playback
-in place. A speaker/mic/app icon beside the source picker shows what kind
-of target is selected.
+discovers every track in its folder: transport buttons (⏮ ⏯ ⏭) and a seek
+slider with an elapsed/total readout appear in the title bar, tracks
+auto-advance, and pause freezes decode and playback in place. A
+speaker/mic/app icon beside the source picker shows what kind of target
+is selected.
+
+## Compose (draw your own oscilloscope music)
+
+The scope, run in reverse. Hit the ✏ pencil (or `D`), draw a shape on the
+screen, release — Phosphor resamples your path into a closed audio loop
+traversed at constant speed (left channel = X, right channel = Y), plays
+it out loud, and the scope draws it back. Draw a mushroom, hear the
+mushroom.
+
+- **scroll** retunes the loop frequency (20–400 Hz): same shape, new pitch
+- draw again to replace the shape; `Esc` or the pencil exits
+- right-click → **Export drawing as WAV** writes 10 s to
+  `~/Music/Phosphor/` — that file draws your shape on *any* XY
+  oscilloscope (or in Phosphor itself, or sent to a friend)
+- snapshots (`S`) and clips (`C`) work while a loop plays, so you can
+  keep a picture or a video of your drawing drawing itself
 
 App targets are remembered **by application name**, not stream number —
 when Chrome finishes a song its stream dies, and Phosphor now waits for
@@ -74,29 +91,40 @@ instead of dumping you onto another source.
 - **Sliders** — Gain / Glow / Beam, each with an editable percent box:
   click and type an exact value. Scroll the scope to zoom gain; the
   graticule grows and shrinks with it, octave-stepped like a volts/div
-  switch.
+  switch. Or flip on **Auto gain** (settings or right-click) and the trace
+  autosizes to the screen: gain follows the signal's peak — instant attack
+  when something would clip off-screen, slow glide as it fades.
 - **⚙ settings** — renderer (GPU/CPU), GPU quality (2×/3× supersampling)
-  and CPU resolution selectors, beam Focus (sharper beams keep dense
+  and CPU resolution selectors, **Scope detail** (feed sample rate:
+  48/96/192 kHz — higher rates resample with proper sinc reconstruction,
+  so the scope traces the true curves *between* samples and fine scope-art
+  detail stops washing out), beam Focus (sharper beams keep dense
   scope-art scenes from washing out), themes (P7 Green, Amber, Ice Blue,
   White, Vaporwave, Red Phosphor, Ultraviolet, Solar Gold, Cyan Tube,
-  Custom), grid, AMOLED scope background, UI style (System / Dark / AMOLED
-  pink-on-black chrome with yellow selected states), FPS overlay, and a
-  Max FPS cap (0 = your monitor's refresh rate — 165 Hz panels get 165
-  updates a second).
+  Custom), grid, AMOLED scope background, UI style (System / Dark / Light
+  / AMOLED pink-on-black chrome with yellow selected states), FPS overlay
+  (now also shows python ms per frame — if that's tiny and fps is below
+  refresh, the GPU or compositor is the limit), and a Max FPS cap (leave
+  at **0** to follow the monitor's refresh rate; setting it equal to the
+  refresh rate makes the cap race vsync and drop frames).
 
   The GPU beam uses an analytic erf line integral (the woscope trick):
   consecutive segments join without double-depositing energy, which is
   what keeps complex scenes like *72 Pantera* from blooming into fuzz.
-- **Mini** — borderless always-on-top square. Drag to move, Ctrl+scroll to
-  resize (square stays square), right-click for the full menu (modes,
-  themes, grid, pin, sizes…), double-click to restore. Window positions,
+  Compositing happens in linear light with output dithering: faint trail
+  detail is no longer crushed by display gamma, and dark glow falloff has
+  no banding rings.
+- **Mini** — borderless always-on-top square. Drag to move, drag the
+  bottom-right corner or Ctrl+scroll to resize (square stays square, up
+  to 1000 px), right-click for the full menu (modes, themes, grid, pin,
+  sizes up to Extra large…), double-click to restore. Window positions,
   sizes, and all settings are remembered in
   `~/.config/phosphor/settings.json`, including whether you quit in mini.
-- **Keys** — `Space` capture · `O` open file · `M` mini · `F11`
-  fullscreen scope (chrome-less; also the path to the monitor's full
-  refresh rate, since compositors unredirect fullscreen windows)
-  · `S` snapshot · `C` clip · `P` pin · `G` grid · `F` fps
-  · scroll = gain · `Q`/`Esc` quit.
+- **Keys** — `Space` capture · `O` open file · `D` compose (draw) · `M`
+  mini · `F11` fullscreen scope (chrome-less; also the path to the
+  monitor's full refresh rate, since compositors unredirect fullscreen
+  windows) · `S` snapshot · `C` clip · `P` pin · `G` grid · `F` fps
+  · scroll = gain (pitch while composing) · `Q`/`Esc` quit.
 
 Trails grade continuously in time: each sample's deposit is pre-decayed
 by its age within the frame, so slowly drifting sweeps blend the way real
@@ -119,5 +147,10 @@ phosphor does instead of leaving stepped duplicate lines.
 
 ## Future
 
-See [FUTURE.md](FUTURE.md) — top of the list: draw a shape, and Phosphor
-generates the audio that draws it (make your own oscilloscope music).
+See [FUTURE.md](FUTURE.md) — compose mode shipped in 2.4; next candidates:
+SVG import for compose, GL bloom, multi-app mixing, a Cinnamon applet.
+
+## License
+
+GPL-3.0-or-later — see [LICENSE](LICENSE). Free as in phosphorescence:
+use it, read it, change it, share it; derivatives stay free too.

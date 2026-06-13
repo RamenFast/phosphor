@@ -2,15 +2,14 @@
 
 Agreed-on ideas, roughly in the order we got excited about them.
 
-## Draw-your-own oscilloscope music ("the inverse")
-A compose mode: sketch a shape on the scope (or import an SVG), Phosphor
-resamples the path into a closed loop at audio rate — left channel = X,
-right channel = Y — and plays/exports it as a WAV that draws that shape on
-any oscilloscope, including itself. Draw a mushroom, hear the mushroom.
-- path resampling needs constant *speed*, not constant parameter, so the
-  beam brightness stays even
-- loop at ~50–200 Hz; pitch control = loop frequency
-- export to WAV + live preview while drawing
+## Draw-your-own oscilloscope music ("the inverse") — ✅ shipped in 2.4
+Compose mode: pencil button / `D`, draw on the scope, release to hear it.
+Constant-speed resampling, scroll-to-retune (20–400 Hz), live preview
+while drawing, seamless loop playback through the existing file pipeline
+(so snapshots/clips of drawings work), WAV export to ~/Music/Phosphor.
+Still open from the original idea:
+- import an SVG instead of drawing by hand
+- multi-stroke shapes (needs retrace-blanking decisions)
 
 ## Cinnamon panel applet
 A true panel-embedded mini scope (St/Clutter canvas applet that reads the

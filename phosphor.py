@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Phosphor — a software XY oscilloscope for everything your PC plays.
 
 In XY mode the left audio channel drives the beam horizontally and the
@@ -10,26 +11,34 @@ Capture taps PulseAudio/PipeWire monitors — whole outputs, single
 applications, or microphones — and costs nothing while toggled off.
 Audio files can also be played directly (decoded by ffmpeg, audible
 through pacat) so you can scope a track without a separate player.
+Compose mode runs the whole machine in reverse: draw a shape on the
+scope and it becomes a constant-speed audio loop that draws itself.
 
-Keys:  Space capture · O open file · M mini · S snapshot · C save clip
-       P pin · G grid · F fps · scroll = gain (Ctrl+scroll in mini = resize)
-       Q quit
-Mini mode: drag with the left button, double-click to restore,
-right-click anywhere for the menu.
+Keys:  Space capture · O open file · D draw (compose) · M mini
+       S snapshot · C save clip · P pin · G grid · F fps · F11 fullscreen
+       scroll = gain (compose: pitch · Ctrl+scroll in mini: resize) · Q quit
+Mini mode: drag with the left button, drag the bottom-right corner to
+resize, double-click to restore, right-click anywhere for the menu.
 """
 
 import os
 import threading
 import time
 
+try:
+    import numpy
+except ImportError:
+    numpy = None
+
 import gi
 
 gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gdk, GLib  # noqa: E402
 
+import phosphor_compose
 import phosphor_recorder
 from phosphor_audio import (AudioCaptureStream, default_monitor_target_id,
-                            list_capture_targets)
+                            list_capture_targets, probe_duration_seconds)
 from phosphor_render_cairo import CairoBeamCore
 from phosphor_render_gl import GL_BINDINGS_AVAILABLE, GLBeamRenderer
 from phosphor_settings import (CUSTOM_THEME_NAME, THEME_PRESETS, Settings,
@@ -37,11 +46,15 @@ from phosphor_settings import (CUSTOM_THEME_NAME, THEME_PRESETS, Settings,
 from phosphor_signal import SegmentComputer
 
 APPLICATION_ID = "io.github.ben.Phosphor"
-APPLICATION_VERSION = "2.3.0"
+APPLICATION_VERSION = "2.5.0"
 PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 QUIET_PEAK_THRESHOLD = 1e-4
 QUIET_FRAMES_BEFORE_SLEEP = 120
-MINI_SIZE_PRESETS = (("Small", 200), ("Medium", 280), ("Large", 380))
+MINI_SIZE_PRESETS = (("Small", 200), ("Medium", 280), ("Large", 380),
+                     ("Extra large", 520))
+MINI_RESIZE_CORNER_PIXELS = 26       # bottom-right drag-to-resize hot zone
+COMPOSE_PREVIEW_INTENSITY = 0.25     # restamped every frame while drawing
+COMPOSE_MINIMUM_POINTS = 8
 AUDIO_FILE_EXTENSIONS = (".mp3", ".flac", ".ogg", ".oga", ".opus", ".wav",
                          ".m4a", ".aac", ".wma", ".aif", ".aiff", ".mka")
 REACQUIRE_POLL_LIMIT = 180   # seconds to wait for a dead app stream to return
@@ -62,6 +75,12 @@ CPU_RESOLUTION_CHOICES = (("1.0", "Full resolution"),
                           ("0.5", "Fast · 50%"))
 UI_STYLE_CHOICES = (("system", "System"), ("dark", "Dark"),
                     ("light", "Light"), ("black", "AMOLED pink"))
+# scope feed rate: above 48 kHz the resampler reconstructs the true curves
+# between samples, so fine scope-art detail stops washing out
+SCOPE_RATE_CHOICES = (("48000", "Standard · 48 kHz"),
+                      ("96000", "Fine · 96 kHz"),
+                      ("192000", "Ultra · 192 kHz"))
+VALID_SCOPE_RATES = (48000, 96000, 192000)
 
 # Always loaded: just the FPS overlay chip.
 BASE_UI_CSS = b"""
@@ -75,47 +94,55 @@ BASE_UI_CSS = b"""
 }
 """
 
-# AMOLED UI style: pure-black window, soft multi-shade pinks (filled
-# controls, not hollow outlines), warm yellow for anything selected/active.
+# AMOLED UI style: pure-black window, soft multi-shade pinks, warm yellow
+# for anything selected/active. Controls are flat — they sit flush with
+# the black and only fill on hover/press/toggle, no outline boxes.
 BLACK_UI_CSS = b"""
-window, headerbar, popover, popover.background, menu, .background {
+window, headerbar, dialog, popover, popover.background, menu, .background {
     background-color: #000000;
     color: #f2aed8;
 }
-label { color: #f2aed8; }
+/* explicit label/cell colors win over the system theme, so popover and
+   dropdown text stays readable no matter which GTK theme is underneath */
+label, popover label, menu label, cellview { color: #f2aed8; }
+menu check, menu radio { color: #e078b8; }
 headerbar {
     min-height: 32px;
     padding: 0 4px;
     box-shadow: none;
     border-bottom: 1px solid #1d0916;
 }
-headerbar .title { color: #fbcfe8; }
-button {
+headerbar .title, headerbar label { color: #fbcfe8; }
+button, combobox button.combo, spinbutton button, button.color {
     background-image: none;
-    background-color: #1a0713;
+    background-color: transparent;
     color: #f2aed8;
-    border: 1px solid #57203f;
-    border-radius: 6px;
+    border: 1px solid transparent;
+    border-radius: 5px;
     padding: 1px 8px;
     min-height: 22px;
+    box-shadow: none;
 }
-button:hover { background-color: #2b0d20; border-color: #b65c92; }
+spinbutton button { padding: 1px 5px; }
+button:hover { background-color: #2b0d20; }
 button:active { background-color: #3c142d; }
-button:checked {
-    background-color: #2b2208;
-    color: #ffdf87;
-    border-color: #97772b;
-}
+button:checked { background-color: #2b2208; color: #ffdf87; }
 button:checked label, button:checked image { color: #ffdf87; }
+/* entries are flat too; a box appears only while editing */
 entry, spinbutton, spinbutton entry {
     background-image: none;
-    background-color: #120510;
+    background-color: transparent;
     color: #ffdf87;
-    border: 1px solid #57203f;
+    border: 1px solid transparent;
+    border-radius: 5px;
     min-height: 20px;
+    box-shadow: none;
 }
-combobox button.combo { padding: 1px 6px; }
-scale trough { background-color: #2b0d20; border: 1px solid #57203f; }
+entry:focus, spinbutton entry:focus {
+    background-color: #120510;
+    border-color: #57203f;
+}
+scale trough { background-color: #2b0d20; border: none; }
 scale highlight { background-color: #e078b8; }
 scale slider { background-color: #fbcfe8; border: 1px solid #b65c92; }
 switch {
@@ -135,17 +162,40 @@ switch slider {
     margin: 2px;
 }
 menu menuitem:hover, popover modelbutton:hover { background-color: #2b0d20; }
+menu menuitem:hover label { color: #fbcfe8; }
 menu, popover { border: 1px solid #2b0d20; }
+tooltip, tooltip.background {
+    background-color: #120510;
+    color: #fbcfe8;
+    border: 1px solid #57203f;
+}
+/* file chooser, kept on-theme: pink on black */
+dialog headerbar { background-color: #000000; }
+filechooser, filechooser box, filechooser paned { background-color: #000000; }
+placessidebar, placessidebar list { background-color: #0d040a; }
+placessidebar row label { color: #f2aed8; }
+placessidebar row:selected { background-color: #97276b; }
+placessidebar row:selected label { color: #ffdf87; }
+treeview.view { background-color: #0d040a; color: #f2aed8; }
+treeview.view:selected { background-color: #97276b; color: #ffdf87; }
+treeview.view header button { background-color: #120510; color: #f2aed8; }
+actionbar { background-color: #000000; }
+*:selected { background-color: #97276b; color: #ffdf87; }
 #fps-overlay { color: #ffdf87; }
 """
 
-# Light UI style: bright neutral chrome with a blue accent.
+# Light UI style: bright neutral chrome with a blue accent. Everything is
+# flat — buttons, combos, and spin steppers sit flush with the background
+# (one shared corner radius) and only show chrome on hover/press/toggle.
 LIGHT_UI_CSS = b"""
-window, headerbar, popover, popover.background, menu, .background {
+window, headerbar, dialog, popover, popover.background, menu, .background {
     background-color: #fafafa;
     color: #303030;
 }
-label { color: #303030; }
+/* explicit label/cell colors win over the system theme, so popover and
+   dropdown text stays readable even on top of a dark GTK theme */
+label, popover label, menu label, cellview { color: #303030; }
+menu check, menu radio { color: #1c4e9e; }
 headerbar {
     background-image: none;
     background-color: #f0f0f0;
@@ -154,30 +204,37 @@ headerbar {
     box-shadow: none;
     border-bottom: 1px solid #d8d8d8;
 }
-button {
+headerbar .title, headerbar label { color: #303030; }
+button, combobox button.combo, spinbutton button, button.color {
     background-image: none;
-    background-color: #ffffff;
+    background-color: transparent;
     color: #303030;
-    border: 1px solid #c9c9c9;
-    border-radius: 6px;
+    border: 1px solid transparent;
+    border-radius: 5px;
     padding: 1px 8px;
     min-height: 22px;
+    box-shadow: none;
 }
-button:hover { border-color: #8f8f8f; }
-button:checked {
-    background-color: #dceaff;
-    color: #1c4e9e;
-    border-color: #7aa7e0;
-}
+spinbutton button { padding: 1px 5px; }
+button:hover { background-color: #e7e7e7; }
+button:active { background-color: #dadada; }
+button:checked { background-color: #dceaff; color: #1c4e9e; }
 button:checked label, button:checked image { color: #1c4e9e; }
+/* entries are flat too; a box appears only while editing */
 entry, spinbutton, spinbutton entry {
     background-image: none;
-    background-color: #ffffff;
+    background-color: transparent;
     color: #222222;
-    border: 1px solid #c9c9c9;
+    border: 1px solid transparent;
+    border-radius: 5px;
     min-height: 20px;
+    box-shadow: none;
 }
-scale trough { background-color: #e4e4e4; border: 1px solid #cfcfcf; }
+entry:focus, spinbutton entry:focus {
+    background-color: #ffffff;
+    border-color: #7aa7e0;
+}
+scale trough { background-color: #e4e4e4; border: none; }
 scale highlight { background-color: #5a8fd6; }
 scale slider { background-color: #ffffff; border: 1px solid #9a9a9a; }
 switch {
@@ -197,6 +254,23 @@ switch slider {
     margin: 2px;
 }
 menu menuitem:hover, popover modelbutton:hover { background-color: #e8eef8; }
+tooltip, tooltip.background {
+    background-color: #303030;
+    color: #fafafa;
+}
+/* file chooser: force the whole dialog light so it can't come up in the
+   system dark theme with our dark label color on top (unreadable) */
+dialog headerbar { background-color: #f0f0f0; }
+filechooser, filechooser box, filechooser paned { background-color: #fafafa; }
+placessidebar, placessidebar list { background-color: #f0f0f0; }
+placessidebar row label { color: #303030; }
+placessidebar row:selected { background-color: #5a8fd6; }
+placessidebar row:selected label { color: #ffffff; }
+treeview.view { background-color: #ffffff; color: #303030; }
+treeview.view:selected { background-color: #5a8fd6; color: #ffffff; }
+treeview.view header button { background-color: #f0f0f0; color: #303030; }
+actionbar { background-color: #f0f0f0; }
+*:selected { background-color: #5a8fd6; color: #ffffff; }
 #fps-overlay { background-color: rgba(255, 255, 255, 0.75); color: #1c4e9e; }
 """
 
@@ -226,11 +300,19 @@ class LiveCairoRenderer(Gtk.DrawingArea):
 
     def advance(self, samples):
         """Queue this frame's samples; the worker does the heavy lifting."""
+        self._post_to_worker("samples", samples)
+
+    def advance_segments(self, segments):
+        """Queue precomputed segments (compose-mode preview strokes)."""
+        self._post_to_worker("segments", segments)
+
+    def _post_to_worker(self, payload_kind, payload):
         allocation = self.get_allocation()
         if allocation.width < 2 or allocation.height < 2:
             return
         with self._mailbox_condition:
-            self._mailbox = (samples, allocation.width, allocation.height,
+            self._mailbox = (payload_kind, payload,
+                             allocation.width, allocation.height,
                              self.persistence, self.resolution, self.beam_focus)
             self._mailbox_condition.notify()
 
@@ -239,11 +321,15 @@ class LiveCairoRenderer(Gtk.DrawingArea):
             with self._mailbox_condition:
                 while self._mailbox is None:
                     self._mailbox_condition.wait()
-                (samples, width, height,
+                (payload_kind, payload, width, height,
                  persistence, resolution, beam_focus) = self._mailbox
                 self._mailbox = None
-            with self.compute_lock:
-                segments = self.segment_computer.compute(samples, width, height)
+            if payload_kind == "segments":
+                segments = payload
+            else:
+                with self.compute_lock:
+                    segments = self.segment_computer.compute(payload, width,
+                                                             height)
             with self._core_lock:
                 self.core.beam_focus = beam_focus
                 self.core.ensure_size(width, height, resolution)
@@ -276,16 +362,23 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             except GLib.Error:
                 pass
 
+        if self.settings.scope_sample_rate not in VALID_SCOPE_RATES:
+            self.settings.scope_sample_rate = 96000
+
         self.segment_computer = SegmentComputer()
         self.segment_computer.mode = self.settings.display_mode
         self.segment_computer.gain = self.settings.gain
         self.segment_computer.beam_energy = self.settings.beam_energy
+        self.segment_computer.set_sample_rate(self.settings.scope_sample_rate)
         self.compute_lock = threading.Lock()
 
         self.capture_stream = AudioCaptureStream(
-            on_stream_ended=lambda: GLib.idle_add(self._handle_stream_died))
+            on_stream_ended=lambda: GLib.idle_add(self._handle_stream_died),
+            sample_rate=self.settings.scope_sample_rate)
         self.capture_targets = {}
         self.playing_file = None
+        self.playing_path = None
+        self.track_duration_seconds = None
         self.playlist = []
         self.playlist_index = -1
         self.is_mini_mode = False
@@ -305,6 +398,23 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._last_frame_time = 0.0
         self._fps_counter = 0
         self._fps_window_start = time.monotonic()
+        self._frame_work_seconds = 0.0     # python time per frame, for the chip
+        self._worst_frame_gap = 0.0        # longest frame-to-frame stall
+        # auto gain: the gain actually applied; tracks the slider unless
+        # autosize is on, in which case it follows the signal's peak
+        self._effective_gain = self.settings.gain
+        self._grid_gain = self.settings.gain
+        self._auto_gain_peak = 0.0
+        # compose mode (draw a shape, hear it)
+        self.is_composing = False
+        self._compose_drawing = False
+        self._compose_points = []          # widget pixels while drawing
+        self._compose_loop_points = None   # finished shape in signal space
+        self._compose_regenerate_source = None
+        # mini-mode corner resize and track seeking
+        self._mini_resize_start = None     # (start size, x_root, y_root)
+        self._position_update_source = None
+        self._seek_debounce_source = None
 
         base_css_provider = Gtk.CssProvider()
         base_css_provider.load_from_data(BASE_UI_CSS)
@@ -361,10 +471,16 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         layout.pack_start(self.controls_container, False, False, 0)
 
         event_box = Gtk.EventBox()
-        event_box.add_events(Gdk.EventMask.BUTTON_PRESS_MASK | Gdk.EventMask.SCROLL_MASK)
+        event_box.add_events(Gdk.EventMask.BUTTON_PRESS_MASK
+                             | Gdk.EventMask.BUTTON_RELEASE_MASK
+                             | Gdk.EventMask.POINTER_MOTION_MASK
+                             | Gdk.EventMask.SCROLL_MASK)
         event_box.connect("button-press-event", self._on_button_press)
+        event_box.connect("button-release-event", self._on_button_release)
+        event_box.connect("motion-notify-event", self._on_motion)
         event_box.connect("scroll-event", self._on_scroll)
         event_box.add(self.display_stack)
+        self.scope_event_box = event_box   # cursor changes target its window
 
         self.fps_label = Gtk.Label(label="… fps")
         self.fps_label.set_name("fps-overlay")
@@ -393,6 +509,16 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         open_button.connect("clicked", lambda _b: self.open_audio_file())
         self.header_bar.pack_start(open_button)
 
+        self.compose_toggle = Gtk.ToggleButton()
+        self.compose_toggle.add(Gtk.Image.new_from_icon_name(
+            "document-edit-symbolic", Gtk.IconSize.BUTTON))
+        self.compose_toggle.set_tooltip_text(
+            "Compose: draw a shape on the scope and hear it (D).\n"
+            "Release to play the loop, scroll to tune the pitch,\n"
+            "right-click to export it as oscilloscope-music WAV.")
+        self.compose_toggle.connect("toggled", self._on_compose_toggled)
+        self.header_bar.pack_start(self.compose_toggle)
+
         # transport appears only while a file is loaded
         self.transport_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
         self.transport_box.get_style_context().add_class("linked")
@@ -416,6 +542,23 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self.transport_box.set_no_show_all(True)
         self.header_bar.pack_start(self.transport_box)
 
+        # track position: a seek slider plus elapsed/total readout, shown
+        # beside the transport whenever a file with a known length plays
+        self.position_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
+                                    spacing=6)
+        self.position_scale = Gtk.Scale.new_with_range(
+            Gtk.Orientation.HORIZONTAL, 0.0, 1.0, 1.0)
+        self.position_scale.set_draw_value(False)
+        self.position_scale.set_size_request(170, -1)
+        self.position_scale.set_tooltip_text("Track position — drag to seek")
+        self.position_scale.connect("change-value",
+                                    self._on_position_slider_moved)
+        self.position_box.pack_start(self.position_scale, True, True, 0)
+        self.time_label = Gtk.Label(label="0:00 / 0:00")
+        self.position_box.pack_start(self.time_label, False, False, 0)
+        self.position_box.set_no_show_all(True)
+        self.header_bar.pack_start(self.position_box)
+
         settings_button = self._build_settings_button()
         self.header_bar.pack_end(settings_button)
 
@@ -431,7 +574,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                                                     Gtk.IconSize.BUTTON)
         mini_button.set_tooltip_text(
             "Borderless always-on-top mini view (M).\n"
-            "Drag to move, Ctrl+scroll to resize, double-click to restore.")
+            "Drag to move, drag the bottom-right corner or Ctrl+scroll\n"
+            "to resize, double-click to restore.")
         mini_button.connect("clicked", lambda _b: self.set_mini_mode(True))
         self.header_bar.pack_end(mini_button)
 
@@ -551,6 +695,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self.gain_scale = add_slider(
             "Gain", "Deflection scale (also mouse scroll)", 0.1, 6.0,
             self.settings.gain, self._on_gain_changed)
+        self.gain_scale.set_sensitive(not self.settings.auto_gain)
         add_slider(
             "Glow", "Phosphor persistence — how long trails linger", 0.0, 0.98,
             self.settings.persistence, self._on_persistence_changed)
@@ -591,6 +736,13 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         attach("GPU quality", combo(GPU_QUALITY_CHOICES,
                                     str(self.settings.gl_supersample),
                                     self._on_gpu_quality_changed))
+        scope_rate_combo = combo(SCOPE_RATE_CHOICES,
+                                 str(self.settings.scope_sample_rate),
+                                 self._on_scope_rate_changed)
+        scope_rate_combo.set_tooltip_text(
+            "Scope feed sample rate — higher rates trace the true curves\n"
+            "between samples, recovering fine scope-art detail")
+        attach("Scope detail", scope_rate_combo)
         resolution_id = min(
             (choice_id for choice_id, _ in CPU_RESOLUTION_CHOICES),
             key=lambda choice_id:
@@ -639,6 +791,11 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             widget.connect("state-set", on_state)
             return widget
 
+        self.auto_gain_switch = attach("Auto gain", switch(
+            self.settings.auto_gain, self._on_auto_gain_switched))
+        self.auto_gain_switch.set_tooltip_text(
+            "Autosize the trace to the screen — gain follows the signal's\n"
+            "peak so quiet tracks still fill the display")
         self.grid_switch = attach("Grid", switch(self.settings.grid_enabled,
                                                  self._on_grid_switched))
         attach("AMOLED scope", switch(self.settings.amoled_background,
@@ -696,14 +853,27 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._cancel_reacquire()
         self.settings.target_id = target_id
         self._update_target_kind_icon()
-        if self.capture_stream.is_running and self.playing_file is None:
+        if (self.capture_stream.is_running and self.playing_file is None
+                and not self.is_composing):
             self.capture_stream.start(self.capture_targets[target_id])
 
     # -------------------------------------------------------------- capture --
 
     def _on_capture_toggled(self, toggle):
         self._cancel_reacquire()
+        # while a file is loaded, the Live button means sound on/off for the
+        # track: off pauses it in place (SIGSTOP - still zero CPU), on
+        # resumes it. Unloading it here made Live-on come back as silent
+        # device capture, which read as "won't turn back on".
+        if self.playing_file is not None and self.capture_stream.is_running:
+            if toggle.get_active() != self.capture_stream.playback_paused:
+                return
+            self._on_transport_play_pause()
+            if not toggle.get_active():
+                self.fade_out_frames_remaining = 90
+            return
         if toggle.get_active():
+            self._exit_compose_mode(stop_loop=False)
             self._set_file_loaded(False)
             target_id = self.target_combo.get_active_id()
             if target_id is None or target_id not in self.capture_targets:
@@ -744,6 +914,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
 
     def play_file(self, path, rebuild_playlist=True):
         self._cancel_reacquire()
+        self._exit_compose_mode(stop_loop=False)
         try:
             self.capture_stream.start_file(path)
         except OSError as error:
@@ -755,7 +926,9 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         else:
             self.playlist_index = self.playlist.index(path)
         self.playing_file = os.path.basename(path)
+        self.playing_path = path
         self._set_file_loaded(True)
+        self._setup_position_slider(path)
         # reflect "running" in the toggle without re-triggering device capture
         self.capture_toggle.handler_block_by_func(self._on_capture_toggled)
         self.capture_toggle.set_active(True)
@@ -780,6 +953,9 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
     def _set_file_loaded(self, loaded):
         if not loaded:
             self.playing_file = None
+            self.playing_path = None
+            self.track_duration_seconds = None
+            self.position_box.hide()
         self.transport_box.set_no_show_all(not loaded)
         if loaded:
             self.transport_box.show_all()
@@ -787,6 +963,86 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                 "media-playback-pause-symbolic", Gtk.IconSize.BUTTON)
         else:
             self.transport_box.hide()
+
+    # ------------------------------------------------------ track position --
+
+    @staticmethod
+    def _format_time(seconds):
+        return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
+
+    def _setup_position_slider(self, path):
+        """Show the seek slider whenever ffprobe can tell us the length.
+        The probe runs on a worker thread so track starts never stall the
+        render loop or audio pipeline."""
+        self.track_duration_seconds = None
+        self.position_box.hide()
+
+        def probe_worker():
+            duration = probe_duration_seconds(path)
+            GLib.idle_add(self._show_position_slider, path, duration)
+        threading.Thread(target=probe_worker, daemon=True).start()
+
+    def _show_position_slider(self, path, duration):
+        if path != self.playing_path or duration is None or duration <= 0:
+            return False    # track changed while probing, or length unknown
+        self.track_duration_seconds = duration
+        self.position_scale.set_range(0.0, duration)
+        self.position_scale.set_value(0.0)
+        self._refresh_time_label(0.0)
+        self.position_box.set_no_show_all(False)
+        self.position_box.show_all()
+        if self._position_update_source is None:
+            self._position_update_source = GLib.timeout_add(
+                250, self._update_position_display)
+        return False
+
+    def _refresh_time_label(self, position_seconds):
+        self.time_label.set_text(
+            f"{self._format_time(position_seconds)} / "
+            f"{self._format_time(self.track_duration_seconds or 0)}")
+
+    def _update_position_display(self):
+        if self.playing_file is None or self.track_duration_seconds is None:
+            self._position_update_source = None
+            return GLib.SOURCE_REMOVE
+        # while a user drag is pending, the slider belongs to the user
+        if self._seek_debounce_source is None:
+            position = min(self.capture_stream.playback_position_seconds,
+                           self.track_duration_seconds)
+            self.position_scale.set_value(position)
+            self._refresh_time_label(position)
+        return GLib.SOURCE_CONTINUE
+
+    def _on_position_slider_moved(self, _scale, _scroll_type, value):
+        """User input on the seek slider; seeks are debounced so dragging
+        doesn't restart the decoder dozens of times."""
+        if self.playing_path is None or self.track_duration_seconds is None:
+            return False
+        target = max(0.0, min(float(value), self.track_duration_seconds))
+        self._refresh_time_label(target)
+        if self._seek_debounce_source is not None:
+            GLib.source_remove(self._seek_debounce_source)
+        self._seek_debounce_source = GLib.timeout_add(
+            250, self._perform_seek, target)
+        return False    # let the slider follow the pointer
+
+    def _perform_seek(self, target_seconds):
+        self._seek_debounce_source = None
+        if self.playing_path is None:
+            return GLib.SOURCE_REMOVE
+        was_paused = self.capture_stream.playback_paused
+        try:
+            self.capture_stream.start_file(self.playing_path,
+                                           seek_seconds=target_seconds)
+        except OSError as error:
+            self.status_label.set_text(f"seek failed: {error}")
+            return GLib.SOURCE_REMOVE
+        if was_paused:
+            self.capture_stream.set_playback_paused(True)
+        else:
+            self.quiet_frame_count = 0
+            self._start_render_loop()
+        return GLib.SOURCE_REMOVE
 
     def _step_playlist(self, step):
         if not self.playlist:
@@ -808,6 +1064,10 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self.play_pause_image.set_from_icon_name(
             "media-playback-start-symbolic" if paused
             else "media-playback-pause-symbolic", Gtk.IconSize.BUTTON)
+        # the Live toggle mirrors whether the track is audible
+        self.capture_toggle.handler_block_by_func(self._on_capture_toggled)
+        self.capture_toggle.set_active(not paused)
+        self.capture_toggle.handler_unblock_by_func(self._on_capture_toggled)
         self.status_label.set_text(
             f"{'⏸' if paused else '▶'} {self.playing_file}")
         if not paused:
@@ -824,6 +1084,11 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self.capture_toggle.handler_unblock_by_func(self._on_capture_toggled)
         self.capture_stream.stop()
         self.fade_out_frames_remaining = 90
+        if self.is_composing:
+            # the drawn loop repeats forever; if its decoder dies it was
+            # killed externally — just invite another stroke
+            self.status_label.set_text("✏ loop stopped — draw to start again")
+            return
         if finished_file is not None:
             # natural end of a track: keep the album going
             if self.playlist and self.playlist_index < len(self.playlist) - 1:
@@ -886,21 +1151,35 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             # frame simply traces more audio — nothing is lost to the cap
             if now - self._last_frame_time < 1.0 / self.settings.max_fps - 5e-4:
                 return GLib.SOURCE_CONTINUE
+        if self._last_frame_time > 0.0:
+            self._worst_frame_gap = max(self._worst_frame_gap,
+                                        now - self._last_frame_time)
         self._last_frame_time = now
         self._count_fps_frame(now)
 
+        if self._compose_drawing:
+            # the stroke in progress previews directly as segments; any
+            # still-playing loop audio is drained so it can't burst in later
+            if self.capture_stream.is_running:
+                self.capture_stream.take_stereo_samples()
+            self._advance_compose_preview()
+            return GLib.SOURCE_CONTINUE
         if self.capture_stream.is_running:
             samples = self.capture_stream.take_stereo_samples()
             # The monitor delivers zeros while nothing plays; detect silence by
             # content and stop redrawing once the glow has settled.
-            is_quiet = (not samples
-                        or max(max(samples), -min(samples)) < QUIET_PEAK_THRESHOLD)
+            peak = max(max(samples), -min(samples)) if samples else 0.0
+            is_quiet = peak < QUIET_PEAK_THRESHOLD
             self.quiet_frame_count = self.quiet_frame_count + 1 if is_quiet else 0
             if self.quiet_frame_count > QUIET_FRAMES_BEFORE_SLEEP:
                 return GLib.SOURCE_CONTINUE
+            if not is_quiet:
+                self._update_auto_gain(peak)
             self._advance_active_renderer(samples, allocation)
         else:
             self._advance_active_renderer([], allocation)
+            if self.is_composing:
+                return GLib.SOURCE_CONTINUE    # stay ready for the next stroke
             self.fade_out_frames_remaining -= 1
             if self.fade_out_frames_remaining <= 0:
                 self.tick_callback_id = None
@@ -913,11 +1192,26 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._fps_counter += 1
         elapsed = now - self._fps_window_start
         if elapsed >= 0.5:
-            self.fps_label.set_text(f"{self._fps_counter / elapsed:.0f} fps")
+            python_seconds = self._frame_work_seconds
+            if self.gl_renderer is not None:
+                python_seconds += self.gl_renderer.cpu_seconds_accumulated
+                self.gl_renderer.cpu_seconds_accumulated = 0.0
+            milliseconds = python_seconds / max(1, self._fps_counter) * 1000.0
+            renderer_name = "GPU" if self.settings.renderer == "gl" else "CPU"
+            # "py" is python time per frame (not which renderer is active);
+            # "max" is the worst gap between drawn frames — a big number
+            # there during a hitch tells us the main loop stalled
+            self.fps_label.set_text(
+                f"{renderer_name} · {self._fps_counter / elapsed:.0f} fps · "
+                f"{milliseconds:.1f}ms py · "
+                f"max {self._worst_frame_gap * 1000.0:.0f}ms")
+            self._frame_work_seconds = 0.0
+            self._worst_frame_gap = 0.0
             self._fps_counter = 0
             self._fps_window_start = now
 
     def _advance_active_renderer(self, samples, allocation):
+        work_started = time.perf_counter()
         renderer = self.active_renderer()
         if isinstance(renderer, LiveCairoRenderer):
             renderer.advance(samples)      # worker thread computes + decays
@@ -926,6 +1220,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                 segments = self.segment_computer.compute(
                     samples, allocation.width, allocation.height)
             renderer.advance(segments)
+        self._frame_work_seconds += time.perf_counter() - work_started
 
     def _wake_renderer(self):
         """Repaint once after appearance changes, even while quiet/idle."""
@@ -961,7 +1256,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._wake_renderer()
 
     def _apply_grid_geometry(self):
-        fraction = grid_spacing_fraction(self.settings.gain)
+        self._grid_gain = self._effective_gain
+        fraction = grid_spacing_fraction(self._effective_gain)
         if self.gl_renderer is not None:
             self.gl_renderer.grid_spacing_fraction = fraction
         self.cairo_renderer.grid_spacing_fraction = fraction
@@ -984,10 +1280,41 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                 screen, self._style_css_provider,
                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
 
+    def _update_auto_gain(self, peak):
+        """Autosize: scale the trace to fill the screen. The tracked peak
+        attacks instantly (nothing clips off-screen) and releases slowly,
+        and the applied gain glides so the picture breathes rather than
+        jumping between loud and quiet passages."""
+        if not self.settings.auto_gain:
+            return
+        self._auto_gain_peak = max(peak, self._auto_gain_peak * 0.999)
+        target_gain = min(6.0, max(0.1, 0.92 / max(self._auto_gain_peak, 0.01)))
+        self._set_effective_gain(
+            self._effective_gain + (target_gain - self._effective_gain) * 0.05)
+
+    def _set_effective_gain(self, gain):
+        self._effective_gain = gain
+        self.segment_computer.gain = gain
+        # the graticule tracks gain (volts/div); re-derive it only on real
+        # movement so auto-gain's tiny per-frame glides stay free
+        if abs(gain - self._grid_gain) > self._grid_gain * 0.02:
+            self._apply_grid_geometry()
+
+    def _on_auto_gain_switched(self, _switch, state):
+        self.settings.auto_gain = state
+        self.gain_scale.set_sensitive(not state)
+        if state:
+            self._auto_gain_peak = 0.0     # re-measure from the next sound
+        else:
+            self._set_effective_gain(self.settings.gain)
+            self._apply_grid_geometry()
+        return False
+
     def _on_gain_changed(self, value):
         self.settings.gain = value
-        self.segment_computer.gain = value
-        self._apply_grid_geometry()
+        if not self.settings.auto_gain:
+            self._set_effective_gain(value)
+            self._apply_grid_geometry()
 
     def _on_persistence_changed(self, value):
         self.settings.persistence = value
@@ -1034,6 +1361,34 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             return
         self.settings.gl_supersample = int(combo.get_active_id())
         self._apply_render_quality()
+        self.settings.save()
+
+    def _on_scope_rate_changed(self, combo):
+        if combo.get_active_id() is None:
+            return
+        rate = int(combo.get_active_id())
+        if rate == self.settings.scope_sample_rate:
+            return
+        # capture the playback position before the stream's clock changes
+        resume_seconds = self.capture_stream.playback_position_seconds
+        self.settings.scope_sample_rate = rate
+        self.capture_stream.configure_sample_rate(rate)
+        with self.compute_lock:
+            self.segment_computer.set_sample_rate(rate)
+            self.segment_computer.reset()
+        # restart whatever is flowing so the new rate applies immediately
+        try:
+            if self.playing_path is not None:
+                self.capture_stream.start_file(self.playing_path,
+                                               seek_seconds=resume_seconds)
+            elif self.is_composing and self._compose_loop_points:
+                self._restart_compose_loop()
+            elif self.capture_stream.is_running:
+                target_id = self.target_combo.get_active_id()
+                if target_id in self.capture_targets:
+                    self.capture_stream.start(self.capture_targets[target_id])
+        except OSError as error:
+            self.status_label.set_text(f"rate change failed: {error}")
         self.settings.save()
 
     def _on_cpu_resolution_changed(self, combo):
@@ -1109,7 +1464,10 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             return False
         def worker():
             try:
-                path = phosphor_recorder.save_snapshot(audio, self.settings)
+                path = phosphor_recorder.save_snapshot(
+                    audio, self.settings,
+                    sample_rate=self.capture_stream.sample_rate,
+                    gain=self._effective_gain)
                 GLib.idle_add(worker_done, path)
             except (RuntimeError, OSError) as error:
                 GLib.idle_add(self._export_failed, str(error))
@@ -1128,7 +1486,9 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             on_progress=lambda fraction: GLib.idle_add(
                 self.status_label.set_text, f"rendering clip… {fraction * 100:.0f}%"),
             on_done=lambda path: GLib.idle_add(self._export_done, path),
-            on_error=lambda message: GLib.idle_add(self._export_failed, message))
+            on_error=lambda message: GLib.idle_add(self._export_failed, message),
+            sample_rate=self.capture_stream.sample_rate,
+            gain=self._effective_gain)
 
     def _export_done(self, path):
         self.exporting = False
@@ -1139,6 +1499,159 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self.exporting = False
         self.status_label.set_text(f"export failed: {message}")
         return False
+
+    # ---------------------------------------------------------- compose mode --
+    # Draw a shape on the scope; it becomes a constant-speed audio loop that
+    # plays out loud and therefore draws itself — the scope run in reverse.
+
+    def _on_compose_toggled(self, toggle):
+        if toggle.get_active():
+            self._enter_compose_mode()
+        else:
+            self._exit_compose_mode()
+
+    def _enter_compose_mode(self):
+        if self.is_composing:
+            return
+        self._cancel_reacquire()
+        if self.capture_toggle.get_active():
+            self.capture_toggle.set_active(False)   # stops capture/playback
+        if self.capture_stream.is_running:
+            self.capture_stream.stop()              # e.g. a paused track
+        self._set_file_loaded(False)
+        self.is_composing = True
+        self._compose_drawing = False
+        self._compose_points = []
+        self._compose_loop_points = None
+        self.mode_combo.set_active_id("xy")         # drawing only makes sense in XY
+        self._set_scope_cursor("crosshair")
+        self.status_label.set_text(
+            "✏ draw a shape on the scope — release to hear it")
+        self._start_render_loop()
+        self._wake_renderer()
+
+    def _exit_compose_mode(self, stop_loop=True):
+        if not self.is_composing:
+            return
+        self.is_composing = False
+        self._compose_drawing = False
+        self._compose_points = []
+        if self._compose_regenerate_source is not None:
+            GLib.source_remove(self._compose_regenerate_source)
+            self._compose_regenerate_source = None
+        if stop_loop and self.capture_toggle.get_active():
+            self.capture_toggle.set_active(False)
+        self._set_scope_cursor(None)
+        if self.compose_toggle.get_active():
+            self.compose_toggle.set_active(False)   # re-entry guarded above
+
+    def _set_scope_cursor(self, cursor_name):
+        gdk_window = self.scope_event_box.get_window()
+        if gdk_window is None:
+            return
+        cursor = (Gdk.Cursor.new_from_name(self.get_display(), cursor_name)
+                  if cursor_name else None)
+        gdk_window.set_cursor(cursor)
+
+    def _advance_compose_preview(self):
+        """Restamp the in-progress stroke every frame; with per-frame decay
+        this settles at a steady brightness, like a held trace."""
+        work_started = time.perf_counter()
+        points = self._compose_points
+        if len(points) < 2:
+            segments = []
+        elif numpy is not None:
+            coordinates = numpy.asarray(points, dtype=numpy.float32)
+            segments = numpy.empty((len(points) - 1, 5), dtype=numpy.float32)
+            segments[:, 0:2] = coordinates[:-1]
+            segments[:, 2:4] = coordinates[1:]
+            segments[:, 4] = COMPOSE_PREVIEW_INTENSITY
+        else:
+            segments = [(points[i][0], points[i][1],
+                         points[i + 1][0], points[i + 1][1],
+                         COMPOSE_PREVIEW_INTENSITY)
+                        for i in range(len(points) - 1)]
+        renderer = self.active_renderer()
+        if isinstance(renderer, LiveCairoRenderer):
+            renderer.advance_segments(segments)
+        else:
+            renderer.advance(segments)
+        self._frame_work_seconds += time.perf_counter() - work_started
+
+    def _scope_points_from_widget(self, widget_points):
+        """Invert the display transform: widget pixels -> signal space, using
+        the current gain so the loop plays back exactly where it was drawn."""
+        allocation = self.display_stack.get_allocation()
+        center_x, center_y = allocation.width / 2, allocation.height / 2
+        radius = (min(allocation.width, allocation.height) * 0.45
+                  * max(0.001, self._effective_gain))
+        return [(max(-1.0, min(1.0, (x - center_x) / radius)),
+                 max(-1.0, min(1.0, (center_y - y) / radius)))
+                for x, y in widget_points]
+
+    def _finish_compose_stroke(self):
+        self._compose_drawing = False
+        if len(self._compose_points) < COMPOSE_MINIMUM_POINTS:
+            self._compose_points = []
+            self.status_label.set_text("✏ shape too small — draw a bigger one")
+            return
+        self._compose_loop_points = self._scope_points_from_widget(
+            self._compose_points)
+        self._compose_points = []
+        self._restart_compose_loop()
+
+    def _restart_compose_loop(self):
+        frequency = phosphor_compose.clamp_frequency(
+            self.settings.compose_frequency_hz)
+        self.settings.compose_frequency_hz = frequency
+        try:
+            loop_path = phosphor_compose.write_loop_wav(
+                self._compose_loop_points, frequency,
+                self.capture_stream.sample_rate)
+            self.capture_stream.start_file(loop_path, loop=True)
+        except (ValueError, OSError) as error:
+            self.status_label.set_text(f"compose failed: {error}")
+            return
+        self.capture_toggle.handler_block_by_func(self._on_capture_toggled)
+        self.capture_toggle.set_active(True)
+        self.capture_toggle.handler_unblock_by_func(self._on_capture_toggled)
+        self.quiet_frame_count = 0
+        self.status_label.set_text(
+            f"✏ {frequency:.0f} Hz loop — scroll to retune, draw to replace")
+        self._start_render_loop()
+
+    def _queue_compose_retune(self):
+        """Pitch changes regenerate the loop, debounced so a scroll flick
+        only restarts the decoder once."""
+        if self._compose_regenerate_source is not None:
+            GLib.source_remove(self._compose_regenerate_source)
+        self._compose_regenerate_source = GLib.timeout_add(
+            300, self._compose_retune_now)
+
+    def _compose_retune_now(self):
+        self._compose_regenerate_source = None
+        if self.is_composing and self._compose_loop_points:
+            self._restart_compose_loop()
+        return GLib.SOURCE_REMOVE
+
+    def export_drawing(self):
+        if not self._compose_loop_points:
+            return
+        points = list(self._compose_loop_points)
+        frequency = self.settings.compose_frequency_hz
+        sample_rate = self.capture_stream.sample_rate
+
+        def worker():
+            try:
+                path = phosphor_compose.export_drawing_wav(points, frequency,
+                                                           sample_rate)
+                GLib.idle_add(self.status_label.set_text,
+                              f"drawing saved: {path}")
+            except OSError as error:
+                GLib.idle_add(self.status_label.set_text,
+                              f"export failed: {error}")
+        self.status_label.set_text("writing drawing WAV…")
+        threading.Thread(target=worker, daemon=True).start()
 
     # ------------------------------------------------------------ mini mode --
 
@@ -1212,6 +1725,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             x, y = self.settings.mini_x, self.settings.mini_y
         else:
             self.settings.mini_x, self.settings.mini_y = self.get_position()
+            self._mini_resize_start = None
+            self._set_scope_cursor(None)
             self.controls_container.show()
             self.header_bar.show()
             self.set_decorated(True)
@@ -1234,9 +1749,14 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._wake_renderer()
 
     def _resize_mini(self, size):
-        self.settings.mini_size = max(140, min(640, int(size)))
+        self.settings.mini_size = max(140, min(1000, int(size)))
         if self.is_mini_mode:
             self.resize(self.settings.mini_size, self.settings.mini_size)
+
+    def _in_mini_resize_corner(self, x, y):
+        allocation = self.display_stack.get_allocation()
+        return (allocation.width - x <= MINI_RESIZE_CORNER_PIXELS
+                and allocation.height - y <= MINI_RESIZE_CORNER_PIXELS)
 
     # ----------------------------------------------------------------- input --
 
@@ -1275,6 +1795,11 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                      sensitive=len(self.playlist) > 1)
             add_item("Previous track  ⏮", self.play_previous_track,
                      sensitive=len(self.playlist) > 1)
+        if not self.is_mini_mode:
+            add_check_item("Compose · draw a shape  (D)", self.is_composing,
+                           lambda active: self.compose_toggle.set_active(active))
+        if self.is_composing and self._compose_loop_points:
+            add_item("Export drawing as WAV  (10 s)", self.export_drawing)
         add_item("Snapshot  (S)", self.save_snapshot)
         add_item("Save last 10 s  (C)", self.save_clip)
         menu.append(Gtk.SeparatorMenuItem())
@@ -1295,6 +1820,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
 
         add_check_item("Grid  (G)", self.settings.grid_enabled,
                        lambda active: self.grid_switch.set_active(active))
+        add_check_item("Auto gain — fit to screen", self.settings.auto_gain,
+                       lambda active: self.auto_gain_switch.set_active(active))
         add_check_item("Pin above  (P)", self.settings.pinned,
                        lambda active: self.pin_toggle.set_active(active))
         menu.append(Gtk.SeparatorMenuItem())
@@ -1318,19 +1845,71 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             self._show_context_menu(event)
             return True
         if not self.is_mini_mode:
+            if (self.is_composing and event.button == 1
+                    and event.type == Gdk.EventType.BUTTON_PRESS):
+                self._compose_drawing = True
+                self._compose_points = [(event.x, event.y)]
+                self._start_render_loop()
+                return True
             return False
         if event.type == Gdk.EventType._2BUTTON_PRESS:
             self.set_mini_mode(False)
         elif event.type == Gdk.EventType.BUTTON_PRESS and event.button == 1:
-            self.begin_move_drag(event.button, int(event.x_root),
-                                 int(event.y_root), event.time)
+            if self._in_mini_resize_corner(event.x, event.y):
+                self._mini_resize_start = (self.settings.mini_size,
+                                           event.x_root, event.y_root)
+            else:
+                self.begin_move_drag(event.button, int(event.x_root),
+                                     int(event.y_root), event.time)
         return True
+
+    def _on_button_release(self, _widget, event):
+        if event.button != 1:
+            return False
+        if self._mini_resize_start is not None:
+            self._mini_resize_start = None
+            return True
+        if self.is_composing and self._compose_drawing:
+            self._finish_compose_stroke()
+            return True
+        return False
+
+    def _on_motion(self, _widget, event):
+        if self._mini_resize_start is not None:
+            start_size, start_x_root, start_y_root = self._mini_resize_start
+            # the window stays square, so the larger axis of the drag wins
+            growth = max(event.x_root - start_x_root,
+                         event.y_root - start_y_root)
+            self._resize_mini(start_size + growth)
+            return True
+        if self.is_mini_mode:
+            self._set_scope_cursor(
+                "se-resize" if self._in_mini_resize_corner(event.x, event.y)
+                else None)
+            return False
+        if self.is_composing and self._compose_drawing:
+            last_x, last_y = self._compose_points[-1]
+            if (event.x - last_x) ** 2 + (event.y - last_y) ** 2 >= 4.0:
+                self._compose_points.append((event.x, event.y))
+            return True
+        return False
 
     def _on_scroll(self, _widget, event):
         scroll_up = event.direction == Gdk.ScrollDirection.UP
         if self.is_mini_mode and event.state & Gdk.ModifierType.CONTROL_MASK:
             factor = 1.12 if scroll_up else 1 / 1.12
             self._resize_mini(self.settings.mini_size * factor)
+            return True
+        if self.is_composing and not self.is_mini_mode:
+            factor = 1.06 if scroll_up else 1 / 1.06
+            self.settings.compose_frequency_hz = phosphor_compose.clamp_frequency(
+                self.settings.compose_frequency_hz * factor)
+            frequency = self.settings.compose_frequency_hz
+            if self._compose_loop_points:
+                self.status_label.set_text(f"✏ retuning… {frequency:.0f} Hz")
+                self._queue_compose_retune()
+            else:
+                self.status_label.set_text(f"✏ loop pitch: {frequency:.0f} Hz")
             return True
         factor = 1.12 if scroll_up else 1 / 1.12
         self.gain_scale.set_value(min(6.0, max(0.1, self.settings.gain * factor)))
@@ -1344,6 +1923,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             self.capture_toggle.set_active(not self.capture_toggle.get_active())
         elif key in (Gdk.KEY_o, Gdk.KEY_O):
             self.open_audio_file()
+        elif key in (Gdk.KEY_d, Gdk.KEY_D):
+            self.compose_toggle.set_active(not self.compose_toggle.get_active())
         elif key in (Gdk.KEY_m, Gdk.KEY_M):
             self.set_mini_mode(not self.is_mini_mode)
         elif key in (Gdk.KEY_s, Gdk.KEY_S):
@@ -1359,7 +1940,9 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         elif key == Gdk.KEY_F11:
             self.toggle_fullscreen()
         elif key == Gdk.KEY_Escape:
-            if self._is_fullscreen:
+            if self.is_composing:
+                self.compose_toggle.set_active(False)
+            elif self._is_fullscreen:
                 self.unfullscreen()
             elif self.is_mini_mode:
                 self.set_mini_mode(False)

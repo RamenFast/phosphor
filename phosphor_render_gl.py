@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """GPU (OpenGL) renderer: a real CRT beam simulation in shaders.
 
 No PyOpenGL needed — GTK already links libepoxy, the GL dispatch library,
@@ -19,6 +20,7 @@ How it works, per frame:
 """
 
 import ctypes
+import time
 from array import array
 
 try:
@@ -176,10 +178,12 @@ void main() {
 
 BEAM_VERTEX_SHADER = b"""
 #version 330 core
-layout(location = 0) in vec4 segment;     // p0.xy, p1.xy in pixels (per instance)
+layout(location = 0) in vec4 segment;     // p0.xy, p1.xy in logical pixels
 layout(location = 1) in float intensity;  // per instance
 uniform vec2 viewport_size;
 uniform float beam_radius;
+uniform float pixel_scale;   // logical -> energy-buffer pixels (GPU-side, so
+                             // the CPU never copies/rescales the segment data)
 flat out vec2 segment_p0;
 flat out vec2 segment_p1;
 flat out float segment_intensity;
@@ -187,7 +191,7 @@ const vec2 corner_table[6] = vec2[6](
     vec2(0., -1.), vec2(1., -1.), vec2(1., 1.),
     vec2(0., -1.), vec2(1., 1.), vec2(0., 1.));
 void main() {
-    vec2 p0 = segment.xy, p1 = segment.zw;
+    vec2 p0 = segment.xy * pixel_scale, p1 = segment.zw * pixel_scale;
     vec2 direction = p1 - p0;
     float segment_length = length(direction);
     vec2 tangent = segment_length > 1e-4 ? direction / segment_length : vec2(1., 0.);
@@ -259,18 +263,39 @@ uniform vec3 grid_color;
 uniform vec3 background_color;
 uniform float grid_enabled;
 uniform float grid_spacing;   // device pixels per graticule division
+uniform int supersample;      // energy buffer scale relative to the screen
 
 float grid_line(float coordinate, float spacing) {
     float distance_to_line = abs(coordinate - spacing * floor(coordinate / spacing + 0.5));
     return 1.0 - smoothstep(0.4, 1.0, distance_to_line);
 }
 
-void main() {
-    vec2 energy = texture(energy_texture, uv).rg;
-    float flash = 1.0 - exp(-1.7 * energy.r);   // phosphor saturation curve
-    float glow  = 1.0 - exp(-1.7 * energy.g);
+// Theme colors arrive as sRGB-ish values; light adds linearly, monitors
+// don't. Decoding, blending in linear light, and re-encoding keeps faint
+// trails visible instead of crushing them into the background - the main
+// cause of fine scope-art detail washing out.
+vec3 srgb_to_linear(vec3 encoded) { return pow(max(encoded, 0.0), vec3(2.2)); }
 
-    vec3 color = background_color;
+void main() {
+    vec2 energy;
+    if (supersample <= 1) {
+        energy = texture(energy_texture, uv).rg;
+    } else {
+        // exact box average of the supersampled energy buffer; plain bilinear
+        // would only blend 2x2 of the 3x3 samples and shimmer on fine detail
+        ivec2 base = ivec2(gl_FragCoord.xy) * supersample;
+        vec2 sum = vec2(0.0);
+        for (int y = 0; y < supersample; ++y)
+            for (int x = 0; x < supersample; ++x)
+                sum += texelFetch(energy_texture, base + ivec2(x, y), 0).rg;
+        energy = sum / float(supersample * supersample);
+    }
+    // phosphor saturation curve; the constant is tuned so mid-level glow
+    // matches the pre-linear-light look while faint trails gain visibility
+    float flash = 1.0 - exp(-0.7 * energy.r);
+    float glow  = 1.0 - exp(-0.7 * energy.g);
+
+    vec3 color = srgb_to_linear(background_color);
     if (grid_enabled > 0.5) {
         // grid is centered so divisions track the beam's amplitude scale (zoom)
         vec2 from_center = uv * viewport_size - viewport_size * 0.5;
@@ -278,10 +303,16 @@ void main() {
                           grid_line(from_center.y, grid_spacing));
         float axis = max(1.0 - smoothstep(0.5, 1.2, abs(from_center.x)),
                          1.0 - smoothstep(0.5, 1.2, abs(from_center.y)));
-        color += grid_color * (minor * 0.07 + axis * 0.10);
+        // linear-light equivalents of the old 0.07 / 0.10 display levels
+        color += srgb_to_linear(grid_color) * (minor * 0.003 + axis * 0.0063);
     }
-    color += beam_color * glow + flash_color * flash * 0.8;
-    out_color = vec4(color, 1.0);
+    color += srgb_to_linear(beam_color) * glow
+           + srgb_to_linear(flash_color) * flash * 0.6;
+    color = pow(color, vec3(1.0 / 2.2));
+    // hash dither breaks up 8-bit banding rings in the dark glow falloff
+    float noise = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233)))
+                        * 43758.5453);
+    out_color = vec4(color + vec3((noise - 0.5) / 255.0), 1.0);
 }
 """
 
@@ -339,6 +370,8 @@ class GLBeamRenderer(Gtk.GLArea):
         self.pending_segments = None       # set by advance(), consumed in render
         self.ready = False
         self._failed = False
+        # CPU time spent submitting GL work, drained by the FPS overlay
+        self.cpu_seconds_accumulated = 0.0
 
         self.set_required_version(3, 3)
         self.set_has_depth_buffer(False)
@@ -371,12 +404,14 @@ class GLBeamRenderer(Gtk.GLArea):
                                                  BEAM_FRAGMENT_SHADER)
             self.beam_uniforms = _uniforms(self.beam_program,
                                            ["viewport_size", "beam_radius",
-                                            "beam_sigma", "beam_normalization"])
+                                            "beam_sigma", "beam_normalization",
+                                            "pixel_scale"])
             self.composite_program = _compile_program(FULLSCREEN_VERTEX_SHADER,
                                                       COMPOSITE_FRAGMENT_SHADER)
             self.composite_uniforms = _uniforms(self.composite_program, [
                 "energy_texture", "viewport_size", "beam_color", "flash_color",
-                "grid_color", "background_color", "grid_enabled", "grid_spacing"])
+                "grid_color", "background_color", "grid_enabled", "grid_spacing",
+                "supersample"])
 
             vertex_arrays = (ctypes.c_uint * 2)()
             gl.glGenVertexArrays(2, vertex_arrays)
@@ -438,6 +473,7 @@ class GLBeamRenderer(Gtk.GLArea):
     def _on_render(self, area, _gl_context):
         if not self.ready or self.theme is None:
             return True
+        render_started = time.perf_counter()
         scale = self.get_scale_factor()
         width = self.get_allocated_width() * scale
         height = self.get_allocated_height() * scale
@@ -457,7 +493,8 @@ class GLBeamRenderer(Gtk.GLArea):
                 self._beam_pass(segments, texture_width, texture_height,
                                 scale * supersample)
 
-        self._composite_pass(gtk_framebuffer.value, width, height)
+        self._composite_pass(gtk_framebuffer.value, width, height, supersample)
+        self.cpu_seconds_accumulated += time.perf_counter() - render_started
         return True
 
     def _decay_pass(self, width, height):
@@ -477,22 +514,20 @@ class GLBeamRenderer(Gtk.GLArea):
         self.current_texture_index = target
 
     def _beam_pass(self, segments, width, height, pixel_scale):
+        # the GPU applies pixel_scale in the vertex shader, so the segment
+        # data uploads exactly as the signal layer produced it — zero copies
         if numpy is not None and isinstance(segments, numpy.ndarray):
-            # segment coordinates are in logical pixels; scale to buffer pixels
-            if pixel_scale != 1:
-                segments = segments.copy()
-                segments[:, :4] *= pixel_scale
-            raw = numpy.ascontiguousarray(segments,
-                                          dtype=numpy.float32).tobytes()
+            segment_data = numpy.ascontiguousarray(segments,
+                                                   dtype=numpy.float32)
+            data_pointer = ctypes.c_void_p(segment_data.ctypes.data)
+            data_size = segment_data.nbytes
         else:
-            instance_data = array("f")
+            segment_data = array("f")
             for segment in segments:
-                instance_data.extend(segment)
-            if pixel_scale != 1:
-                for index in range(0, len(instance_data), 5):
-                    for offset in range(4):
-                        instance_data[index + offset] *= pixel_scale
-            raw = instance_data.tobytes()
+                segment_data.extend(segment)
+            address, float_count = segment_data.buffer_info()
+            data_pointer = ctypes.c_void_p(address)
+            data_size = float_count * 4
 
         beam_sigma = max(0.4, self.beam_focus) * pixel_scale
         gl.glBindFramebuffer(GL_FRAMEBUFFER,
@@ -502,19 +537,25 @@ class GLBeamRenderer(Gtk.GLArea):
         gl.glBlendFunc(GL_ONE, GL_ONE)
         gl.glUseProgram(self.beam_program)
         gl.glUniform2f(self.beam_uniforms["viewport_size"], width, height)
-        gl.glUniform1f(self.beam_uniforms["beam_radius"], beam_sigma * 4.0)
+        # 3.5 sigma covers the Gaussian down to 0.2% of peak — below one
+        # 8-bit step, and ~25% less fill than the previous 4 sigma quads
+        gl.glUniform1f(self.beam_uniforms["beam_radius"], beam_sigma * 3.5)
         gl.glUniform1f(self.beam_uniforms["beam_sigma"], beam_sigma)
+        gl.glUniform1f(self.beam_uniforms["pixel_scale"], pixel_scale)
         # normalized against the logical (not device) focus so changing focus
         # or supersampling redistributes energy instead of dimming the trace
         gl.glUniform1f(self.beam_uniforms["beam_normalization"],
                        1.6 / max(0.4, self.beam_focus))
         gl.glBindVertexArray(self.beam_vao)
         gl.glBindBuffer(GL_ARRAY_BUFFER, self.instance_buffer)
-        gl.glBufferData(GL_ARRAY_BUFFER, len(raw), raw, GL_STREAM_DRAW)
+        # allocate-and-fill in one call: the driver treats a fresh STREAM
+        # buffer as an orphan, so this never syncs on the previous frame
+        gl.glBufferData(GL_ARRAY_BUFFER, data_size, data_pointer,
+                        GL_STREAM_DRAW)
         gl.glDrawArraysInstanced(GL_TRIANGLES, 0, 6, len(segments))
         gl.glDisable(GL_BLEND)
 
-    def _composite_pass(self, gtk_framebuffer, width, height):
+    def _composite_pass(self, gtk_framebuffer, width, height, supersample):
         gl.glBindFramebuffer(GL_FRAMEBUFFER, gtk_framebuffer)
         gl.glViewport(0, 0, width, height)
         gl.glDisable(GL_BLEND)
@@ -531,6 +572,7 @@ class GLBeamRenderer(Gtk.GLArea):
         gl.glUniform1f(uniforms["grid_enabled"], 1.0 if self.grid_enabled else 0.0)
         gl.glUniform1f(uniforms["grid_spacing"],
                        self.grid_spacing_fraction * min(width, height))
+        gl.glUniform1i(uniforms["supersample"], supersample)
         gl.glBindVertexArray(self.fullscreen_vao)
         gl.glDrawArrays(GL_TRIANGLES, 0, 3)
         gl.glBindVertexArray(0)

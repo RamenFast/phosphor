@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """CPU (cairo) renderer with two-layer P7 phosphor simulation.
 
 Real P7 phosphor fluoresces blue-white where the electron beam lands, then

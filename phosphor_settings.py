@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Themes and persistent settings for Phosphor.
 
 Settings live in ~/.config/phosphor/settings.json so the scope remembers
@@ -104,10 +105,16 @@ class Settings:
         self.mini_y = None
         # scope controls
         self.gain = 1.0
+        self.auto_gain = False         # autosize: fit the trace to the screen
         self.persistence = 0.7
         self.beam_energy = 8.0
         self.beam_focus = 1.6          # beam sigma in pixels: lower = sharper
         self.display_mode = "xy"
+        # scope feed rate: higher rates trace the true inter-sample curves
+        # (sinc reconstruction via PulseAudio/ffmpeg) instead of straight
+        # lines between 48 kHz samples — finer detail on scope music
+        self.scope_sample_rate = 96000
+        self.compose_frequency_hz = 80.0   # loop pitch for drawn shapes
         self.pinned = False
         # appearance
         self.theme_name = "P7 Green"

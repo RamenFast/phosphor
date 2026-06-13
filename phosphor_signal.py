@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Turns raw stereo samples into beam segments for the renderers.
 
 A segment is (x0, y0, x1, y1, intensity 0..1). Both renderers consume the
@@ -28,14 +29,18 @@ try:
 except ImportError:        # pure-python fallback keeps the package light
     numpy = None
 
+# All rate-dependent sizes below are tuned at the base rate and scaled in
+# set_sample_rate(), so a higher-fidelity feed refines the trace without
+# changing brightness, the waveform's time span, or the spectrum's tuning.
+BASE_SAMPLE_RATE = 48000
 MAX_POINTS_PER_FRAME = 4000      # bound per-frame work if the UI hiccups
-WAVEFORM_WINDOW = 1600           # samples shown per trace
+WAVEFORM_WINDOW = 1600           # samples shown per trace (at the base rate)
 WAVEFORM_HISTORY = 8192
+WAVEFORM_TRIGGER_SEARCH = 2400
 FFT_SIZE = 1024
 SPECTRUM_BAR_COUNT = 56
 SPECTRUM_LOW_HZ = 35.0
 SPECTRUM_HIGH_HZ = 18000.0
-SAMPLE_RATE = 48000
 
 SQRT_HALF = math.sqrt(0.5)
 
@@ -99,11 +104,36 @@ class SegmentComputer:
         self.last_beam_x = None
         self.last_beam_y = None
         self.waveform_history = array("f")
-        self.fft = PurePythonFFT(FFT_SIZE)
-        self._numpy_fft_window = (numpy.hanning(FFT_SIZE)
-                                  if numpy is not None else None)
         self.spectrum_levels = [0.0] * SPECTRUM_BAR_COUNT
         self.frames_since_fft = 0
+        self.set_sample_rate(BASE_SAMPLE_RATE)
+
+    def set_sample_rate(self, sample_rate):
+        """Scale every rate-dependent size so a finer feed only adds detail.
+
+        Beam intensity, the waveform's visible time span, and the spectrum's
+        frequency resolution all stay exactly where they were tuned at 48 kHz.
+        """
+        self.sample_rate = sample_rate
+        rate_ratio = sample_rate / BASE_SAMPLE_RATE
+        # distances between consecutive samples shrink as the rate rises;
+        # normalizing them back keeps dwell-time brightness identical
+        self.sample_distance_scale = rate_ratio
+        self.max_points_per_frame = int(MAX_POINTS_PER_FRAME * rate_ratio)
+        self.waveform_window = int(WAVEFORM_WINDOW * rate_ratio)
+        self.waveform_history_limit = int(WAVEFORM_HISTORY * rate_ratio)
+        self.waveform_trigger_search = int(WAVEFORM_TRIGGER_SEARCH * rate_ratio)
+        # growing the FFT with the rate keeps the same analysis time window,
+        # so bass resolution doesn't degrade; the pure-python fallback stays
+        # at 1024 (still correct frequencies, just coarser bars)
+        if numpy is not None:
+            self.fft_size = FFT_SIZE * max(1, round(rate_ratio))
+            self._numpy_fft_window = numpy.hanning(self.fft_size)
+            self.fft = None
+        else:
+            self.fft_size = FFT_SIZE
+            self._numpy_fft_window = None
+            self.fft = PurePythonFFT(self.fft_size)
         self._bar_bin_ranges = self._compute_bar_bin_ranges()
 
     def reset(self):
@@ -118,7 +148,7 @@ class SegmentComputer:
         if self.mode == "xy_dots":
             return self._xy_dot_segments(samples, width, height)
         self.waveform_history.extend(samples)
-        excess = len(self.waveform_history) - 2 * WAVEFORM_HISTORY
+        excess = len(self.waveform_history) - 2 * self.waveform_history_limit
         if excess > 0:
             del self.waveform_history[:excess]
         if self.mode == "waveform":
@@ -157,8 +187,8 @@ class SegmentComputer:
         return x, y
 
     def _xy_segments(self, samples, width, height):
-        if len(samples) > 2 * MAX_POINTS_PER_FRAME:
-            samples = samples[-2 * MAX_POINTS_PER_FRAME:]
+        if len(samples) > 2 * self.max_points_per_frame:
+            samples = samples[-2 * self.max_points_per_frame:]
             self.last_beam_x = self.last_beam_y = None
         if len(samples) < 2:
             return []
@@ -181,7 +211,8 @@ class SegmentComputer:
             x = center_x + horizontal * self.gain * radius
             y = center_y - vertical * self.gain * radius
             if previous_x is not None:
-                distance = math.hypot(x - previous_x, y - previous_y)
+                distance = (math.hypot(x - previous_x, y - previous_y)
+                            * self.sample_distance_scale)
                 intensity = min(1.0, self.beam_energy / (distance + 0.7))
                 segments.append((previous_x, previous_y, x, y, intensity))
             previous_x, previous_y = x, y
@@ -204,7 +235,8 @@ class SegmentComputer:
         self.last_beam_y = float(y[-1])
         if len(x) < 2:
             return []
-        distance = numpy.hypot(numpy.diff(x), numpy.diff(y))
+        distance = (numpy.hypot(numpy.diff(x), numpy.diff(y))
+                    * self.sample_distance_scale)
         intensity = numpy.minimum(1.0, self.beam_energy / (distance + 0.7))
         weights = self._age_weights(len(intensity))
         if weights is not None:
@@ -219,10 +251,13 @@ class SegmentComputer:
 
     def _xy_dot_segments(self, samples, width, height):
         """Discrete-dot vectorscope display: one short stamp per sample."""
-        if len(samples) > 2 * MAX_POINTS_PER_FRAME:
-            samples = samples[-2 * MAX_POINTS_PER_FRAME:]
+        if len(samples) > 2 * self.max_points_per_frame:
+            samples = samples[-2 * self.max_points_per_frame:]
         if len(samples) < 2:
             return []
+        # a finer feed stamps proportionally more dots along the same path;
+        # scaling each stamp down keeps the overall brightness unchanged
+        dot_intensity = 1.0 / self.sample_distance_scale
         if numpy is not None:
             x, y = self._xy_points_numpy(samples, width, height, rotate=False)
             weights = self._age_weights(len(x))
@@ -231,7 +266,8 @@ class SegmentComputer:
             segments[:, 1] = y
             segments[:, 2] = x + 0.8
             segments[:, 3] = y
-            segments[:, 4] = 1.0 if weights is None else weights
+            segments[:, 4] = (dot_intensity if weights is None
+                              else weights * dot_intensity)
             return segments
         center_x, center_y = width / 2, height / 2
         radius = min(width, height) * 0.45
@@ -239,7 +275,7 @@ class SegmentComputer:
         for index in range(0, len(samples) - 1, 2):
             x = center_x + samples[index] * self.gain * radius
             y = center_y - samples[index + 1] * self.gain * radius
-            segments.append((x - 0.8, y, x + 0.8, y, 1.0))
+            segments.append((x - 0.8, y, x + 0.8, y, dot_intensity))
         return segments
 
     # -- waveform -------------------------------------------------------------
@@ -249,10 +285,12 @@ class SegmentComputer:
         that leaves a full window to display; None if no edge found."""
         history = self.waveform_history
         frame_count = len(history) // 2
-        search_start = frame_count - WAVEFORM_WINDOW
+        search_start = frame_count - self.waveform_window
         if search_start < 1:
             return None
-        for frame in range(search_start, max(0, search_start - 2400), -1):
+        for frame in range(search_start,
+                           max(0, search_start - self.waveform_trigger_search),
+                           -1):
             if history[2 * (frame - 1)] < 0.0 <= history[2 * frame]:
                 return frame
         return None
@@ -262,7 +300,7 @@ class SegmentComputer:
         frame_count = len(history) // 2
         if frame_count < 4:
             return []
-        window = min(WAVEFORM_WINDOW, frame_count)
+        window = min(self.waveform_window, frame_count)
         start_frame = self._trigger_offset() or (frame_count - window)
 
         segments = []
@@ -286,22 +324,22 @@ class SegmentComputer:
     def _compute_bar_bin_ranges(self):
         ranges = []
         ratio = SPECTRUM_HIGH_HZ / SPECTRUM_LOW_HZ
-        hz_per_bin = SAMPLE_RATE / FFT_SIZE
+        hz_per_bin = self.sample_rate / self.fft_size
         for bar in range(SPECTRUM_BAR_COUNT):
             low_hz = SPECTRUM_LOW_HZ * ratio ** (bar / SPECTRUM_BAR_COUNT)
             high_hz = SPECTRUM_LOW_HZ * ratio ** ((bar + 1) / SPECTRUM_BAR_COUNT)
             low_bin = max(1, int(low_hz / hz_per_bin))
             high_bin = max(low_bin + 1, int(math.ceil(high_hz / hz_per_bin)))
-            ranges.append((low_bin, min(high_bin, FFT_SIZE // 2)))
+            ranges.append((low_bin, min(high_bin, self.fft_size // 2)))
         return ranges
 
     def _update_spectrum_levels(self):
         """Run the FFT every other frame and smooth bar levels in place."""
         frame_count = len(self.waveform_history) // 2
         self.frames_since_fft += 1
-        if frame_count >= FFT_SIZE and self.frames_since_fft >= 2:
+        if frame_count >= self.fft_size and self.frames_since_fft >= 2:
             self.frames_since_fft = 0
-            tail_start = 2 * (frame_count - FFT_SIZE)
+            tail_start = 2 * (frame_count - self.fft_size)
             if numpy is not None:
                 tail = numpy.asarray(self.waveform_history[tail_start:],
                                      dtype=numpy.float32).reshape(-1, 2)
@@ -312,12 +350,12 @@ class SegmentComputer:
                 mono = [
                     (self.waveform_history[tail_start + 2 * i]
                      + self.waveform_history[tail_start + 2 * i + 1]) * 0.5
-                    for i in range(FFT_SIZE)
+                    for i in range(self.fft_size)
                 ]
                 magnitudes = self.fft.magnitudes(mono)
             for bar, (low_bin, high_bin) in enumerate(self._bar_bin_ranges):
                 peak = max(magnitudes[low_bin:high_bin], default=0.0)
-                level = min(1.0, (peak / (FFT_SIZE / 8)) ** 0.5 * self.gain)
+                level = min(1.0, (peak / (self.fft_size / 8)) ** 0.5 * self.gain)
                 if level > self.spectrum_levels[bar]:
                     self.spectrum_levels[bar] = level            # fast attack
                 else:
