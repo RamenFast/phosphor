@@ -1,0 +1,49 @@
+{
+    "colorMode": {
+        "type": "combobox",
+        "default": "theme",
+        "description": "Trace colour",
+        "options": {
+            "Follow panel theme": "theme",
+            "Phosphor colour": "phosphor"
+        }
+    },
+    "phosphorTheme": {
+        "type": "combobox",
+        "default": "P7 Green",
+        "description": "Phosphor colour (when not following the theme)",
+        "options": {
+            "P7 Green": "P7 Green",
+            "Amber": "Amber",
+            "Ice Blue": "Ice Blue",
+            "White": "White",
+            "Vaporwave": "Vaporwave",
+            "Red Phosphor": "Red Phosphor",
+            "Ultraviolet": "Ultraviolet",
+            "Solar Gold": "Solar Gold",
+            "Cyan Tube": "Cyan Tube"
+        }
+    },
+    "mode": {
+        "type": "combobox",
+        "default": "xy",
+        "description": "Scope mode",
+        "options": {
+            "XY · scope art": "xy",
+            "Goniometer": "xy45",
+            "XY · dots": "xy_dots",
+            "Waveform": "waveform",
+            "Spectrum": "spectrum",
+            "Spectrum · radial": "spectrum_radial"
+        }
+    },
+    "panelWidth": {
+        "type": "spinbutton",
+        "default": 48,
+        "min": 24,
+        "max": 200,
+        "step": 4,
+        "units": "px",
+        "description": "Width in the panel"
+    }
+}

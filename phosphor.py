@@ -22,6 +22,7 @@ resize, double-click to restore, right-click anywhere for the menu.
 """
 
 import os
+import sys
 import threading
 import time
 
@@ -1981,8 +1982,9 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
 
 
 class PhosphorApplication(Gtk.Application):
-    def __init__(self):
+    def __init__(self, start_in_mini=False):
         super().__init__(application_id=APPLICATION_ID)
+        self.start_in_mini = start_in_mini
 
     def do_activate(self):
         window = self.props.active_window
@@ -1990,13 +1992,15 @@ class PhosphorApplication(Gtk.Application):
             window = OscilloscopeWindow(application=self)
             window.show_all()
             window.apply_remembered_view()
+            if self.start_in_mini:        # launched as a floating preview (--mini)
+                window.set_mini_mode(True)
             window.capture_toggle.set_active(True)  # start live; off is free
         window.present()
 
 
 def main():
     GLib.set_prgname("phosphor")   # ties the window to phosphor.desktop's icon
-    PhosphorApplication().run(None)
+    PhosphorApplication(start_in_mini="--mini" in sys.argv[1:]).run(None)
 
 
 if __name__ == "__main__":
