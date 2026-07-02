@@ -1,0 +1,8 @@
+{
+  "scene": 1,
+  "name": "turtle",
+  "seconds": 8,
+  "loop_hz": 90,
+  "shape": {"kind": "turtle"},
+  "animate": {"scale": {"from": 0.8, "to": 0.8}, "rotate_hz": 0.05}
+}

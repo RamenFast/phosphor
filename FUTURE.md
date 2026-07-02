@@ -46,6 +46,16 @@ depth fog, numpy path (MODE_IDS gates native fallback per mode).
 Still open: porting 3D modes into the Rust core; a true 3D beam pass
 (per-segment sigma); persisting the camera.
 
+## AFTERGLOW studio toolchain — 🌱 seed shipped in 3.5
+phosphor-studio CLI: scene JSON → oscilloscope audio through the compose
+resampler (one engine rule holds). render/validate/inspect/preview,
+--output json + documented exit codes, golden-hash tests, manpage,
+breathing-dot + turtle starter scenes. Proven end-to-end: turtle.scene.json
+→ wav → `phosphor --render` → mp4 shows the turtle.
+Still open (the full spec lives in HANDOFF.md): timeline.json + `build`,
+morphs/wireframes/vector font, beat grids (aubio), GUI Studio panel with
+inotify hot-reload, `preview --watch`.
+
 ## Vacuum mode + headless render — ✅ shipped in 3.4
 Files play as light only (self-paced reader, no pacat, no -re bursts);
 apps route into a null sink with a sacred restore path + startup crash

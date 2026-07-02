@@ -57,7 +57,7 @@ from phosphor_signal import SegmentComputer, plan_feed
 from phosphor_ui_style import UI_STYLE_CHOICES
 
 APPLICATION_ID = "io.github.ben.Phosphor"
-APPLICATION_VERSION = "3.4.0"
+APPLICATION_VERSION = "3.5.0"
 PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 QUIET_PEAK_THRESHOLD = 1e-4
 QUIET_FRAMES_BEFORE_SLEEP = 120

@@ -1,0 +1,8 @@
+{
+  "scene": 1,
+  "name": "breathing dot",
+  "seconds": 6,
+  "loop_hz": 120,
+  "shape": {"kind": "polygon", "sides": 24},
+  "animate": {"scale": {"from": 0.02, "to": 0.08, "lfo_hz": 0.25}}
+}
