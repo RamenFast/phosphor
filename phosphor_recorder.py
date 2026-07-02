@@ -33,13 +33,14 @@ def _timestamped_path(directory, extension):
     return os.path.join(directory, time.strftime(f"phosphor-%Y%m%d-%H%M%S.{extension}"))
 
 
-def _build_offline_pipeline(settings, width, height, sample_rate, gain=None):
+def _build_offline_pipeline(settings, width, height, sample_rate, gain=None,
+                            oversample=1):
     gain = settings.gain if gain is None else gain   # auto-gain passes its own
     computer = SegmentComputer()
     computer.mode = settings.display_mode
     computer.gain = gain
     computer.beam_energy = settings.beam_energy
-    computer.set_sample_rate(sample_rate)
+    computer.set_sample_rate(sample_rate, oversample)
     renderer = OfflineFrameRenderer(width, height, settings.current_theme(),
                                     settings.persistence, settings.grid_enabled,
                                     beam_focus=settings.beam_focus,
@@ -49,10 +50,10 @@ def _build_offline_pipeline(settings, width, height, sample_rate, gain=None):
 
 
 def _frames_from_audio(audio_bytes, settings, width, height, sample_rate,
-                       gain=None):
+                       gain=None, oversample=1):
     """Yield composited frame surfaces, one per 1/EXPORT_FPS of audio."""
     computer, renderer = _build_offline_pipeline(settings, width, height,
-                                                 sample_rate, gain)
+                                                 sample_rate, gain, oversample)
     samples = array("f")
     samples.frombytes(audio_bytes[:len(audio_bytes) - len(audio_bytes) % 8])
     stereo_per_frame = 2 * (sample_rate // EXPORT_FPS)
@@ -69,14 +70,14 @@ def export_size(settings):
 
 
 def save_snapshot(audio_bytes, settings, sample_rate=DEFAULT_SAMPLE_RATE,
-                  gain=None):
+                  gain=None, oversample=1):
     """Re-render the last moment of audio and save the final frame as PNG."""
     width, height = export_size(settings)
     warmup_bytes = int(SNAPSHOT_WARMUP_SECONDS * sample_rate) * 8
     surface = None
     for surface, _renderer in _frames_from_audio(audio_bytes[-warmup_bytes:],
                                                  settings, width, height,
-                                                 sample_rate, gain):
+                                                 sample_rate, gain, oversample):
         pass
     if surface is None:
         raise RuntimeError("not enough captured audio yet")
@@ -99,7 +100,7 @@ def _write_wav(audio_bytes, wav_path, sample_rate):
 
 
 def save_clip(audio_bytes, settings, progress_callback=None,
-              sample_rate=DEFAULT_SAMPLE_RATE, gain=None):
+              sample_rate=DEFAULT_SAMPLE_RATE, gain=None, oversample=1):
     """Render audio to an mp4 (video + the audio itself). Blocking; run in a
     thread. progress_callback(fraction) is called from that thread."""
     width, height = export_size(settings)
@@ -126,7 +127,7 @@ def save_clip(audio_bytes, settings, progress_callback=None,
         frame_index = 0
         for surface, renderer in _frames_from_audio(audio_bytes, settings,
                                                     width, height, sample_rate,
-                                                    gain):
+                                                    gain, oversample):
             ffmpeg.stdin.write(renderer.frame_bytes())
             frame_index += 1
             if progress_callback and frame_index % 30 == 0:
@@ -141,13 +142,14 @@ def save_clip(audio_bytes, settings, progress_callback=None,
 
 
 def save_clip_async(audio_bytes, settings, on_progress, on_done, on_error,
-                    sample_rate=DEFAULT_SAMPLE_RATE, gain=None):
+                    sample_rate=DEFAULT_SAMPLE_RATE, gain=None, oversample=1):
     """Fire-and-forget thread wrapper; callbacks receive plain values and are
     the caller's job to marshal onto the UI thread."""
     def worker():
         try:
             path = save_clip(audio_bytes, settings, progress_callback=on_progress,
-                             sample_rate=sample_rate, gain=gain)
+                             sample_rate=sample_rate, gain=gain,
+                             oversample=oversample)
             on_done(path)
         except (RuntimeError, OSError) as error:
             on_error(str(error))

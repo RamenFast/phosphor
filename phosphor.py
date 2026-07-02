@@ -46,7 +46,7 @@ from phosphor_render_cairo import CairoBeamCore
 from phosphor_render_gl import GL_BINDINGS_AVAILABLE, GLBeamRenderer
 from phosphor_settings import (CUSTOM_THEME_NAME, THEME_PRESETS, Settings,
                                grid_spacing_fraction)
-from phosphor_signal import SegmentComputer
+from phosphor_signal import SegmentComputer, plan_feed
 from phosphor_ui_style import UI_STYLE_CHOICES
 
 APPLICATION_ID = "io.github.ben.Phosphor"
@@ -172,16 +172,19 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         if self.settings.scope_sample_rate not in VALID_SCOPE_RATES:
             self.settings.scope_sample_rate = 96000
 
+        # the native core reconstructs high detail rates in-process from a
+        # modest pipe rate; without it the pipe carries the full rate
+        pipe_rate, oversample = plan_feed(self.settings.scope_sample_rate)
         self.segment_computer = SegmentComputer()
         self.segment_computer.mode = self.settings.display_mode
         self.segment_computer.gain = self.settings.gain
         self.segment_computer.beam_energy = self.settings.beam_energy
-        self.segment_computer.set_sample_rate(self.settings.scope_sample_rate)
+        self.segment_computer.set_sample_rate(pipe_rate, oversample)
         self.compute_lock = threading.Lock()
 
         self.capture_stream = AudioCaptureStream(
             on_stream_ended=lambda: GLib.idle_add(self._handle_stream_died),
-            sample_rate=self.settings.scope_sample_rate)
+            sample_rate=pipe_rate)
         self.capture_targets = {}
         self.player = PhosphorPlayer(self)
         self.is_mini_mode = False
@@ -777,6 +780,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                 self.gl_renderer.cpu_seconds_accumulated = 0.0
             milliseconds = python_seconds / max(1, self._fps_counter) * 1000.0
             renderer_name = "GPU" if self.settings.renderer == "gl" else "CPU"
+            if self.segment_computer.engine == "rust":
+                renderer_name += "·rs"
             # "py" is python time per frame (not which renderer is active);
             # "max" is the worst gap between drawn frames — a big number
             # there during a hitch tells us the main loop stalled
@@ -938,9 +943,10 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         # capture the playback position before the stream's clock changes
         resume_seconds = self.capture_stream.playback_position_seconds
         self.settings.scope_sample_rate = rate
-        self.capture_stream.configure_sample_rate(rate)
+        pipe_rate, oversample = plan_feed(rate)
+        self.capture_stream.configure_sample_rate(pipe_rate)
         with self.compute_lock:
-            self.segment_computer.set_sample_rate(rate)
+            self.segment_computer.set_sample_rate(pipe_rate, oversample)
             self.segment_computer.reset()
         # restart whatever is flowing so the new rate applies immediately
         try:
@@ -1033,7 +1039,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                 path = phosphor_recorder.save_snapshot(
                     audio, self.settings,
                     sample_rate=self.capture_stream.sample_rate,
-                    gain=self._effective_gain)
+                    gain=self._effective_gain,
+                    oversample=self.segment_computer.oversample)
                 GLib.idle_add(worker_done, path)
             except (RuntimeError, OSError) as error:
                 GLib.idle_add(self._export_failed, str(error))
@@ -1054,7 +1061,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             on_done=lambda path: GLib.idle_add(self._export_done, path),
             on_error=lambda message: GLib.idle_add(self._export_failed, message),
             sample_rate=self.capture_stream.sample_rate,
-            gain=self._effective_gain)
+            gain=self._effective_gain,
+            oversample=self.segment_computer.oversample)
 
     def _export_done(self, path):
         self.exporting = False
