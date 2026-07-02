@@ -118,6 +118,12 @@ class Settings:
         self.precompute_enabled = False
         self.compose_frequency_hz = 80.0   # loop pitch for drawn shapes
         self.pinned = False
+        # player
+        self.show_now_playing = True   # fading artist/title overlay
+        self.playback_volume = 1.0     # file playback stream volume, 0..1
+        self.shuffle = False
+        self.repeat_mode = "off"       # "off" | "all" | "one"
+        self.playlist_panel_open = False
         # appearance
         self.theme_name = "P7 Green"
         self.custom_beam_color = [0.42, 1.0, 0.55]

@@ -16,7 +16,7 @@ from gi.repository import Gtk, Gdk  # noqa: E402
 UI_STYLE_CHOICES = (("system", "System"), ("dark", "Dark"),
                     ("light", "Light"), ("black", "AMOLED pink"))
 
-# Always loaded: just the FPS overlay chip.
+# Always loaded: the overlay chips that float on the scope.
 BASE_UI_CSS = b"""
 #fps-overlay {
     background-color: rgba(0, 0, 0, 0.55);
@@ -25,6 +25,13 @@ BASE_UI_CSS = b"""
     border-radius: 6px;
     font-family: monospace;
     font-size: 11px;
+}
+#now-playing {
+    background-color: rgba(0, 0, 0, 0.6);
+    color: #e8fff0;
+    padding: 7px 14px;
+    border-radius: 9px;
+    font-size: 13px;
 }
 """
 
@@ -116,6 +123,12 @@ treeview.view header button { background-color: #120510; color: #f2aed8; }
 actionbar { background-color: #000000; }
 *:selected { background-color: #97276b; color: #ffdf87; }
 #fps-overlay { color: #ffdf87; }
+#now-playing { color: #fbcfe8; border: 1px solid #57203f; }
+#playlist-panel { background-color: #0d040a; }
+#playlist-panel list, #playlist-panel row { background-color: transparent; }
+#playlist-panel row:selected { background-color: #2b2208; }
+#playlist-panel row:selected label { color: #ffdf87; }
+#playlist-panel row:hover { background-color: #2b0d20; }
 """
 
 # Light UI style: bright neutral chrome with a blue accent. Everything is
@@ -206,6 +219,16 @@ treeview.view header button { background-color: #f0f0f0; color: #303030; }
 actionbar { background-color: #f0f0f0; }
 *:selected { background-color: #5a8fd6; color: #ffffff; }
 #fps-overlay { background-color: rgba(255, 255, 255, 0.75); color: #1c4e9e; }
+#now-playing {
+    background-color: rgba(255, 255, 255, 0.85);
+    color: #1a1a1a;
+    border: 1px solid #d8d8d8;
+}
+#playlist-panel { background-color: #f0f0f0; }
+#playlist-panel list, #playlist-panel row { background-color: transparent; }
+#playlist-panel row:selected { background-color: #dceaff; }
+#playlist-panel row:selected label { color: #1c4e9e; }
+#playlist-panel row:hover { background-color: #e7e7e7; }
 """
 
 _STYLE_CSS = {"black": BLACK_UI_CSS, "light": LIGHT_UI_CSS}

@@ -37,6 +37,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gdk, GLib  # noqa: E402
 
 import phosphor_compose
+import phosphor_mpris
 import phosphor_precompute
 import phosphor_recorder
 import phosphor_ui_style
@@ -222,6 +223,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._compose_points = []          # widget pixels while drawing
         self._compose_loop_points = None   # finished shape in signal space
         self._compose_regenerate_source = None
+        # now-playing overlay fade animation
+        self._overlay_fade_source = None
         # precomputed scope streams (phosphor_precompute)
         self._precomputed = None
         self._precomputed_clock = 0.0      # seconds of the stream traced so far
@@ -236,6 +239,12 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._apply_render_quality()
         self._apply_grid_geometry()
         self._apply_ui_style()
+
+        try:
+            self._mpris_watcher = phosphor_mpris.MprisWatcher(
+                self._on_external_track)
+        except GLib.Error:
+            self._mpris_watcher = None   # no session bus; overlay still works
 
         self.connect("key-press-event", self._on_key_press)
         self.connect("configure-event", self._on_configure_event)
@@ -299,11 +308,31 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self.fps_label.set_no_show_all(True)
         self.fps_label.set_visible(self.settings.show_fps)
 
+        self.now_playing_label = Gtk.Label()
+        self.now_playing_label.set_name("now-playing")
+        self.now_playing_label.set_halign(Gtk.Align.START)
+        self.now_playing_label.set_valign(Gtk.Align.START)
+        for edge in ("top", "start"):
+            getattr(self.now_playing_label, f"set_margin_{edge}")(12)
+        self.now_playing_label.set_max_width_chars(46)
+        self.now_playing_label.set_ellipsize(3)  # Pango.EllipsizeMode.END
+        self.now_playing_label.set_no_show_all(True)
+
         display_overlay = Gtk.Overlay()
         display_overlay.add(event_box)
         display_overlay.add_overlay(self.fps_label)
-        layout.pack_start(display_overlay, True, True, 0)
+        display_overlay.add_overlay(self.now_playing_label)
+
+        scope_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        scope_row.pack_start(display_overlay, True, True, 0)
+        scope_row.pack_end(self.player.panel_revealer, False, False, 0)
+        layout.pack_start(scope_row, True, True, 0)
         self.add(layout)
+
+        # audio files dropped anywhere on the window play on the scope
+        self.drag_dest_set(Gtk.DestDefaults.ALL, [], Gdk.DragAction.COPY)
+        self.drag_dest_add_uri_targets()
+        self.connect("drag-data-received", self._on_drag_data_received)
 
     def _build_header_bar(self):
         self.header_bar = Gtk.HeaderBar()
@@ -350,6 +379,17 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             "to resize, double-click to restore.")
         mini_button.connect("clicked", lambda _b: self.set_mini_mode(True))
         self.header_bar.pack_end(mini_button)
+
+        self.playlist_toggle = Gtk.ToggleButton()
+        self.playlist_toggle.add(Gtk.Image.new_from_icon_name(
+            "view-list-symbolic", Gtk.IconSize.BUTTON))
+        self.playlist_toggle.set_tooltip_text(
+            "Playlist panel (L) — the opened file's folder;\n"
+            "drop audio files anywhere to queue them instead")
+        self.playlist_toggle.set_active(self.settings.playlist_panel_open)
+        self.playlist_toggle.connect(
+            "toggled", lambda t: self.player.set_panel_open(t.get_active()))
+        self.header_bar.pack_end(self.playlist_toggle)
 
     def _build_main_toolbar_row(self):
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -584,6 +624,11 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                                  self._on_ui_style_changed))
         attach("Pin button", switch(self.settings.show_pin_button,
                                     self._on_show_pin_switched))
+        now_playing_switch = attach("Track info", switch(
+            self.settings.show_now_playing, self._on_now_playing_switched))
+        now_playing_switch.set_tooltip_text(
+            "Fade the artist/title into the corner when the song changes —\n"
+            "for files Phosphor plays and for other players (MPRIS)")
         self.show_fps_switch = attach("Show FPS", switch(
             self.settings.show_fps, self._on_show_fps_switched))
         self.max_fps_combo = Gtk.ComboBoxText.new_with_entry()
@@ -961,6 +1006,76 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             renderer.queue_draw()
         else:
             renderer.queue_render()
+
+    # ---------------------------------------------------------- now playing --
+
+    def flash_now_playing(self, title, subtitle=None):
+        """Fade the track-info chip in over the scope, hold ~4 s, fade out."""
+        if not self.settings.show_now_playing:
+            return
+        markup = f"<b>{GLib.markup_escape_text(title)}</b>"
+        if subtitle:
+            markup += f"\n<small>{GLib.markup_escape_text(subtitle)}</small>"
+        label = self.now_playing_label
+        label.set_markup(markup)
+        if self._overlay_fade_source is not None:
+            GLib.source_remove(self._overlay_fade_source)
+        label.set_opacity(0.0)
+        label.set_visible(True)
+        state = {"phase": "in", "hold_until": time.monotonic() + 4.0}
+
+        def step():
+            opacity = label.get_opacity()
+            if state["phase"] == "in":
+                opacity = min(1.0, opacity + 0.09)
+                label.set_opacity(opacity)
+                if opacity >= 1.0:
+                    state["phase"] = "hold"
+            elif state["phase"] == "hold":
+                if time.monotonic() >= state["hold_until"]:
+                    state["phase"] = "out"
+            else:
+                opacity = max(0.0, opacity - 0.045)
+                label.set_opacity(opacity)
+                if opacity <= 0.0:
+                    label.set_visible(False)
+                    self._overlay_fade_source = None
+                    return GLib.SOURCE_REMOVE
+            return GLib.SOURCE_CONTINUE
+        self._overlay_fade_source = GLib.timeout_add(33, step)
+
+    def _on_external_track(self, title, artist, album, identity):
+        """A song changed in some other player (MPRIS): show it, but only
+        while the scope listens to the system, not its own file playback."""
+        if (self.player.playing_file is not None
+                or not self.capture_stream.is_running):
+            return
+        subtitle = " — ".join(part for part in (artist, album) if part)
+        if identity:
+            subtitle = f"{subtitle}  ·  {identity}" if subtitle else identity
+        self.flash_now_playing(title, subtitle or None)
+
+    def _on_now_playing_switched(self, _switch, state):
+        self.settings.show_now_playing = state
+        if not state:
+            if self._overlay_fade_source is not None:
+                GLib.source_remove(self._overlay_fade_source)
+                self._overlay_fade_source = None
+            self.now_playing_label.set_visible(False)
+        return False
+
+    def _on_drag_data_received(self, _widget, _context, _x, _y, data,
+                               _info, _time):
+        paths = []
+        for uri in data.get_uris():
+            try:
+                filename, _host = GLib.filename_from_uri(uri)
+            except GLib.Error:
+                continue
+            if filename:
+                paths.append(filename)
+        if paths:
+            self.player.play_dropped(paths)
 
     # ----------------------------------------------------- settings changes --
 
@@ -1437,9 +1552,11 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             if fullscreen:
                 self.controls_container.hide()
                 self.header_bar.hide()
+                self.player.panel_revealer.hide()
             else:
                 self.controls_container.show()
                 self.header_bar.show()
+                self.player.panel_revealer.show()
         return False
 
     def set_mini_mode(self, enabled):
@@ -1456,6 +1573,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             self.unmaximize()
             self.controls_container.hide()
             self.header_bar.hide()
+            self.player.panel_revealer.hide()
             self.set_decorated(False)
             self.set_keep_above(True)
             width = height = self.settings.mini_size
@@ -1466,6 +1584,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             self._set_scope_cursor(None)
             self.controls_container.show()
             self.header_bar.show()
+            self.player.panel_revealer.show()
             self.set_decorated(True)
             self.set_keep_above(self.settings.pinned)
             width, height = self.settings.window_width, self.settings.window_height
@@ -1535,6 +1654,9 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         if not self.is_mini_mode:
             add_check_item("Compose · draw a shape  (D)", self.is_composing,
                            lambda active: self.compose_toggle.set_active(active))
+            add_check_item("Playlist panel  (L)",
+                           self.settings.playlist_panel_open,
+                           lambda active: self.playlist_toggle.set_active(active))
         if self.is_composing and self._compose_loop_points:
             add_item("Export drawing as WAV  (10 s)", self.export_drawing)
         add_item("Snapshot  (S)", self.save_snapshot)
@@ -1687,6 +1809,9 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             self.pin_toggle.set_active(not self.pin_toggle.get_active())
         elif key in (Gdk.KEY_g, Gdk.KEY_G):
             self.grid_switch.set_active(not self.settings.grid_enabled)
+        elif key in (Gdk.KEY_l, Gdk.KEY_L):
+            self.playlist_toggle.set_active(
+                not self.playlist_toggle.get_active())
         elif key in (Gdk.KEY_f, Gdk.KEY_F):
             self.show_fps_switch.set_active(not self.settings.show_fps)
         elif key == Gdk.KEY_F11:
