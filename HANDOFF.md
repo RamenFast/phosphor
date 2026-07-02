@@ -1,250 +1,134 @@
 # Handoff — next session starts here
 
-State as of July 1, 2026 (evening): **everything is shipped.** master ==
-GitHub == the machine. v3.0.0 (Rust core, media player, precompute,
-384 kHz) and v3.1.0–v3.1.4 (Ben's test round: minimize fix, source picker,
-new modes, seven chrome styles, glass scope with per-style tint memory)
-are all merged, tagged, released with .debs, and installed. Ben tested
-each round live; the glass scope went through four refinements to land on:
-glass touches **only the scope pane**, tint slides from fully clear to
-nearly opaque, remembered per UI style.
+State as of July 1, 2026 (late evening): **the four-wave session landed.**
+master == GitHub == the machine, tags v3.2.0 → v3.5.0, each with a .deb,
+each verified live before the next began. In one evening:
 
-## Next session: the two big ones
+- **v3.2.0 — Signal postcards.** `.phos` streams are shareable artifacts
+  (title + `credit` in the fixed 256-byte header; played at the sender's
+  rate; "trace by <friend>" fades in). `.phoskit` transform chains bend
+  live into whatever plays: rotate / midside / ringmod / wobble / matrix /
+  chandelay, in BOTH engines (rust `pc_set_kit`, API v2) with parity to
+  0.00000 px. Live kit editor dialog (rows generated from
+  `phosphor_kit.OPERATIONS`), drag-drop import, exports honor the kit,
+  three TURTLE VECTOR starter kits. Plus: mini-view corner magnetism +
+  Align menu, glass toggle in the context menu (Ben asked mid-session).
+- **v3.3.0 — The third dimension.** `xyz_takens` (τ = quarter period of
+  the dominant pitch via autocorrelation, probed every 4th frame,
+  smoothed; silence holds the shape) and `helix` (time-as-Z). Shared CPU
+  camera → ordinary 2D segments, GL untouched; depth fog; drag orbits,
+  wheel dollies, arrows nudge, 6 s idle → auto-drift. Verified: pure
+  sine's embed is coplanar to 0.000000; the chord torus screenshot shows
+  a donut; 0.24 ms/frame at 96 kHz.
+- **v3.4.0 — Vacuum mode.** Files play as light only: no pacat, the
+  reader loop is the clock (rolling deadline, re-anchors after stalls —
+  **never `-re`, it bursts after SIGCONT**). Pause = stop pulling; pipe
+  backpressure holds ffmpeg. ⌀ toggle in the transport reopens the
+  pipeline seek-style. Apps: "Vacuum this app ⌀" routes the sink-input
+  into `phosphor_vacuum`; restore is sacred (toggle-off / target change /
+  capture-off / quit) and **every launch sweeps stale vacuum modules**
+  because atexit doesn't survive kill -9 (tested with os._exit: sweep
+  recovered the world). Also `phosphor --render in out.mp4 [--rate N]` —
+  headless full-track render, streaming, audio muxed from source,
+  renders `.phos` too.
+- **v3.5.0 — The studio seed.** `phosphor-studio` scene compiler: JSON →
+  stereo audio that IS the picture. Shapes polygon/lissajous/path/turtle,
+  scale-LFO + rotate animation, constant-speed traversal through
+  phosphor_compose (**one engine rule — never a third path**).
+  render/validate/inspect/preview, `--output json` with structured
+  errors (message + JSON path), exit codes 0/2/3/4, scdoc manpage
+  (scdoc now installed on Ben's machine so debs include it), golden-hash
+  tests (`tests/test_studio_scenes.py --record` re-pins deliberately).
+  Starter scenes in `scenes/`: breathing-dot and turtle. Proven:
+  turtle.scene.json → studio render → wav → `phosphor --render` → mp4 =
+  a turtle, mid-amble.
 
-### Shareable scope-art ("signal postcards")
-Friends send custom XY manipulations that render into whatever the
-recipient is listening to. Two tiers, both compatible with the
-precomputed runtime:
+## Next session: the studio grows into AFTERGLOW
 
-- **Tier 1 — share the stream**: `.phos` files are already portable
-  (content-keyed header + s16le stereo). Add: drag-drop/open support for
-  `.phos` directly (plays the reconstruction), an "Export scope stream…"
-  action, and a `source`/`credit` header field shown by the now-playing
-  overlay ("trace by <friend>"). Small, ships in an afternoon.
-- **Tier 2 — share the transform**: a `.phoskit` JSON describing a chain
-  of signal-space ops applied live to whatever the listener plays:
-  `{"stages": [{"op": "rotate", "hz": 0.05}, {"op": "midside", "width": 1.4},
-  {"op": "ringmod", "hz": 3.0, "depth": 0.2}, ...]}`.
-  The swirl mode is secretly stage one of this engine (a rotate op with
-  state). Implement the op chain in the Rust core (each op is a 2×2
-  matrix + phase, composable), a picker UI to load/enable kits, drag-drop
-  import, and export-current-tweaks-as-kit. This is the "friend sends a
-  manipulation into your music" dream.
+The seed is planted; the demo needs the tree (full spec below, kept from
+last session — it's still the map):
 
-### 3D visualizer (Ti 🪨🐢 base)
-Yes — music has principled third dimensions, pick per mode:
+1. **Timeline tier**: `timeline.json` sequencing scenes → `build` command
+   compiles the whole demo to one flac. Beat grids via aubio
+   (`beats track.flac`) so cuts land on transients. Morphs (path-table
+   interpolation), 3D wireframes projected to XY, a vector font for
+   beam-drawn titles, multi-stroke retrace blanking.
+2. **The shared canvas**: GUI Studio panel — open a timeline, scrub, play
+   any scene on the scope, **inotify hot-reload** so a human in a text
+   editor, an agent through the CLI, and the viewer converge on one
+   living beam. `preview --watch` as the default working mode.
+3. **Screensaver** (`phosphor --screensaver`): fullscreen, no chrome,
+   cursor hidden, exits on input; scopes playing music, else plays
+   generative scenes — **the scenes and engine already exist**, in
+   Vacuum by default (no sine tones at 3 am). xautolock /
+   XScreenSaverQueryInfo watcher; DPMS respect.
+4. **Recess** — the dancing desktop (spec below, unchanged).
+5. **AFTERGLOW itself** — the 3–4 minute demo-as-WAV. mmx music for
+   beds; drawn geometry is the lead instrument; the Windowlicker
+   mode-switch trick; greets: Fenderson, brakence, woscope, Ben, Nexus.
 
-- **Takens delay embedding** (the mathematically real one): plot
-  (x(t), x(t−τ), x(t−2τ)) of the mono signal — reconstructs the signal's
-  attractor; τ adaptive ≈ quarter period of the dominant pitch via
-  autocorrelation. Pure tones become tilted ellipses, chords become woven
-  tori. This is the "deduced 3rd position" and it looks *organic*.
-- **L / R / side or Hilbert phase as Z** — stereo-native alternatives.
-- **Time-as-Z helix** — the XY figure extruded backwards into the past
-  (waterfall Lissajous).
+### Smaller candidates (unchanged unless noted)
+- Port xy_swirl / ring / tunnel (and now the 3D pair) into the rust core.
+- Theme config popout; Performance 0.5× half-res; Spices submission;
+  cover art; gapless; multi-app mixing; .phos LRU cap; camera persistence.
+- More kit ops (`trace_delay` echo? `bounce`?) — extend
+  `phosphor_kit.OPERATIONS` + both engines + `KIT_CASES` in the parity
+  test; the editor UI grows rows automatically.
 
-Rendering plan (incremental, no shader rewrite): segments gain z; a
-CPU/Rust-side camera (yaw/pitch orbit from mouse drag + arrow keys, wheel
-= dolly) projects to 2D each frame; depth modulates intensity (fog = far
-phosphor is dim) and beam sigma slightly (defocus). The GL pipeline keeps
-consuming 2D segments. Later: true 3D beam pass. Rust core does the
-embed+project per frame easily at 384 kHz. Bonus pairing: 3D modes over
-a fully-clear glass scope.
-
-### Smaller candidates
-- Theme config popout (per-style options in a pinned submenu that doesn't
-  dismiss on click) — glass tint per style is the first such option and
-  lives in the main popover for now.
-- Port the three new display modes (xy_swirl / ring / tunnel) into the
-  Rust core — they run on the numpy path today (fine at any sane rate).
-- "Performance · 0.5×" half-res energy buffer option for weak GPUs
-  (~1 hour, ~4× less fragment work). Ben's GPU prefers quality 2×.
-- Cinnamon Spices store submission for the applet.
-- Cover art in the now-playing overlay; gapless transitions.
-
-## The demoscene dream: "AFTERGLOW" (Ben asked what I'd make)
-
-If I got to go crazy: a 3–4 minute underground demo where **the demo IS a
-WAV file**. Not music with visuals — audio that *is* the visuals, in the
-purest oscilloscope-music tradition. Anyone can "run" it on any XY scope
-on earth, or in Phosphor, or just listen to it. The mp4 is merely the
-documentation. That's the flex: the executable is a stereo audio file,
-and the renderer is an instrument we built ourselves.
-
-**The vision.** Cold open: one sine dot, breathing. It splits into a
-Lissajous, which unfolds into beam-drawn vector-font titles. An mmx bass
-bed slides in underneath and the tunnel mode starts breathing to it.
-Wireframe scenes (rotating icosahedron morphing into — obviously — a
-turtle) drawn purely by signal. A breakcore drop where goniometer chaos
-is *choreographed* through mid/side automation, brakence-school. Then the
-secret: a scene that looks like noise in XY, but the choreography
-switches display modes mid-demo — flip to spectrum and there's a message
-painted in the spectrogram (the Windowlicker trick, but the mode-switch
-is part of the performance). Finale: all nine modes rapid-cut on the
-beat, collapse to a CRT power-off dot. Greets scroll drawn by the beam:
-Fenderson, brakence, the woscope lineage, Ben, Nexus.
-
-**The workflow.**
-1. *Vector synth* — extend phosphor_compose into a scene compiler:
-   parametric paths, morphs (path-table interpolation), rotation as
-   complex multiplication, 3D wireframes projected to XY, constant-speed
-   traversal at 96/192 kHz. Scenes compile to stereo stems. A vector font
-   for titles. (SVG import from FUTURE.md finally earns its keep.)
-2. *Music* — `mmx music generate` for beds and textures (it can't draw,
-   so it never gets the picture channels); the drawn geometry is the lead
-   instrument. Structure alternates pure-signalcraft scenes with
-   music-reactive scenes (tunnel/swirl/goniometer), call and response.
-3. *Glue* — sox/ffmpeg for pitch/tempo surgery, aubio for beat grids so
-   scene cuts land on the mmx track's transients, Audacity for the final
-   assembly pass, and a Makefile so `make afterglow.flac` reproduces the
-   whole demo from source. Demoscene rules: the build is the artwork too.
-4. *Capture* — new `phosphor --render in.flac out.mp4` headless mode
-   (OfflineFrameRenderer already does 95% of this; it just needs a CLI) —
-   full-track offline render at 384 kHz detail, plus a live 165 Hz
-   fullscreen "performance" capture for honesty.
-5. *Release* — three artifacts: `afterglow.flac` (the demo), the mp4 (the
-   proof), and an `afterglow.phoskit` (the postcard — viewers' own music
-   gets the demo's transforms). Repo page with greets and a NFO file,
-   because if you're going to do the demoscene, do the whole liturgy.
-
-Engineering it pulls in: the headless render CLI (needed anyway), the
-vector font, the scene compiler, beat-synced mode automation (a timeline
-that switches display modes on cue — which is also the seed of Tier 2
-postcards). Every piece is a real Phosphor feature wearing a costume.
-
-### The studio toolchain (greenlit by Ben, with requirements)
-
-**One rule: the file format is the API.** Scenes and the timeline are
-plain JSON documents (`*.scene.json`, `timeline.json`) — the same files
-are read and written by agents, humans, and the GUI. No hidden state, no
-privileged path. Deterministic builds (seeded), so `make` from a clean
-checkout reproduces the demo bit-for-bit.
-
-**CLI — `phosphor-studio`** (ships in the deb, agent-first AND
-human-first):
-- `phosphor-studio render scene.json -o stem.flac` · `build timeline.json
-  -o afterglow.flac` · `preview scene.json` (loops it live on the scope) ·
-  `inspect`, `validate`, `beats track.flac` (aubio grid).
-- `--output json` on every subcommand for agents: machine-readable
-  results, errors as structured objects with a JSON-path to the offending
-  key, documented exit codes. Default output is pretty human text.
-- `-h/--help` everywhere, a real manpage (scdoc → `man phosphor-studio`),
-  stdin/stdout `-` conventions, quiet flags, pipe-friendly. If an agent
-  can't drive the whole pipeline blind from `--help` + `--output json`,
-  it's a bug.
-
-**Human write access — the shared canvas.** The Phosphor GUI grows a
-Studio panel: open a timeline, see the scene list, scrub, play any scene
-on the scope. Crucially: **hot-reload on file change** (inotify). A human
-editing JSON in a text editor, an agent writing through the CLI, and the
-GUI viewer all converge on the same living scope — edit, save, and the
-beam redraws within a frame. That's the cross-compatibility mechanism;
-in-scope direct manipulation (compose mode proved the pattern) can come
-later as write access level two.
-
-**QoL for whoever builds it (probably me):** golden-file tests per scene
-(JSON → samples hash), a `--explain` flag that narrates what a scene
-compiles to and why, pure functions all the way down (scene → samples,
-no globals) so parity testing works exactly like the rust core's, and
-`preview --watch` as the default working mode — compose with the scope
-running, always.
-
-### Notes to future me (Ben says: inspire the creative spirit)
-
-- Build the tiniest scene first — one breathing dot — and keep it looping
-  on the scope while you write the compiler. The feedback loop is the
-  muse; never work deaf or blind.
-- If a stem is boring to *listen* to, it will be boring to watch. The ear
-  vetoes. Play everything out loud (pacat is right there).
-- Constraints are the instrument: constant-speed traversal, one beam, no
-  cuts — when something looks impossible, that's where the demo is.
-- The turtle is the tutorial scene. Write it first, document it best;
-  everyone who makes a postcard afterwards learns from the turtle.
-- Steal from the masters with your whole chest: Fenderson's dwell-time
-  shading, brakence's hidden pictures, Windowlicker's spectrogram — then
-  do the thing none of them could: switch the *instrument's* display mode
-  mid-song as choreography.
-- Leave one undocumented flag. You know why.
-- And sign it. TURTLE VECTOR is two beings; greets are half the art form.
-
-## Screensavers & the dancing desktop (Ben's closing wish)
-
-### Vectorscope screensavers
-Phosphor already owns fullscreen, AMOLED black, glass, and zero-CPU idle
-— a screensaver is mostly wiring:
-
-- **Tier 1 — `phosphor --screensaver`**: fullscreen on every monitor, no
-  chrome, cursor hidden, exits on any input. If music is playing, it
-  scopes it; if the room is silent, it *plays itself* — ambient
-  generative scenes (slow Lissajous drift, breathing tunnels, the
-  occasional turtle crossing at 3am) rendered by the AFTERGLOW scene
-  compiler. Screensaver idle scenes and demo scenes are the same JSON —
-  one engine, two costumes. Launch on idle via a small watcher
-  (XScreenSaverQueryInfo) or xautolock; respect DPMS; zero CPU once the
-  display sleeps.
-- **Tier 2**: proper xscreensaver hack glue (XSCREENSAVER_WINDOW) and a
-  cinnamon-screensaver story if its plugin surface allows.
-
-### "Recess" — the desktop dances (working title)
-What Ben actually came to say: while you code to music, your windows
-sway. A companion script/daemon (X11: wmctrl/xdotool or libwnck):
-
-1. **Snapshot is sacred**: record exact geometry of every window first;
-   the restore path must be instant and unconditional.
-2. Windows drift/bob/orbit gently, choreographed by the same band-energy
-   feed the panel applet already consumes (the feed helper broadcasts
-   levels — no new DSP needed).
-3. **On any user input**: everything glides back to its saved place, and
-   the scope itself — a glass mini view — slides politely off to the
-   side and keeps playing. The desktop performs while you're away and
-   composes itself the instant you return.
-4. Safety/QoL: opt-in, never touch the focused window, per-workspace
-   scope, panic key, and windows never leave the visible screen. Wayland
-   won't allow this game; it's an X11/Muffin party trick and that's fine.
-
-Both features are the scene compiler and the feed protocol earning rent
-a third and fourth time. Build AFTERGLOW's engine once; everything else
-is choreography.
-
-### Vacuum mode — playing without sound
-The name writes itself: sound can't cross a vacuum, light can — and a
-CRT is a vacuum tube. **Vacuum mode** plays songs and scopes applications
-with nothing reaching the speakers; the signal arrives only as light.
-(Runner-up name kept for the manual's flavor text: *pantomime*.)
-
-- **Files**: drop pacat from the pipeline and pace the decoder with
-  `ffmpeg -re` (read-at-native-rate replaces pacat's backpressure as the
-  clock). One flag, same seek/position math. A speaker-slash toggle in
-  the transport; MPRIS still reports Playing; the overlay notes the
-  silence with a small ⌀.
-- **Applications**: route the app into the void — `pactl load-module
-  module-null-sink sink_name=phosphor_vacuum`, move the app's sink-input
-  there, scope the null sink's monitor. The app plays full-tilt into
-  nothing; the beam sees everything; the room hears silence. Restore
-  path sacred (move the stream back + unload the module on exit/crash —
-  same holy-snapshot rule as Recess).
-- **Why it matters beyond the party trick**: screensaver ambience runs in
-  Vacuum by default (no sine tones at 3am), Recess can perform silently,
-  AFTERGLOW scenes preview mute while composing to a reference track,
-  and "watch what this app is playing without hearing it" is genuinely
-  useful (scope a muted game, a second player, a long render's audio).
+## Recess — the desktop dances (Ben's wish, spec kept verbatim in spirit)
+Windows sway to the band-energy feed while you're away; **snapshot is
+sacred** (exact geometry recorded first, restore instant and
+unconditional on any input); opt-in, never the focused window, panic
+key, X11/Muffin only. The feed helper already broadcasts levels.
 
 ## Hard-won constraints (don't relearn these)
-- Rust core keeps **exact parity** with Python (`tests/test_native_parity.py`)
-  and zero crate deps. `plan_feed()` maps detail rate → pipe rate ×
-  oversample. New modes must be added to BOTH paths or gated via
-  `phosphor_core.MODE_IDS` fallback.
-- Precompute playback is **clock-synced at any Max FPS** — fixed-step
-  advance was tried and reverted (Ben: "tunnel vision"); don't re-add.
-- GTK3 translucency: RGBA visual + transparent `decoration` node +
-  non-opaque `background-color` (not just gradient images) + GLArea
-  `set_has_alpha`. Style rules in the always-loaded BASE provider LOSE to
-  later theme providers regardless of specificity — per-theme overrides
-  only. Verify transparency by pixel-sampling root captures over
-  red/green backdrops.
-- A running Phosphor keeps pre-upgrade code; reinstalls need a relaunch
-  before judging behavior.
-- Ben's flow: one branch per round, full `--no-ff` merge to master, tag,
-  gh release with the .deb, `sudoplz` reinstall on his machine. mmx-M3
-  for delegation (see `.claude/skills/mmx-playbook/`). Easter eggs stay
-  undocumented (Konami turtle; ARTIST_NODS).
+- Rust core: **exact parity** with Python (`tests/test_native_parity.py`),
+  zero crate deps, `plan_feed()` maps detail rate → pipe × oversample.
+  New modes: both paths or `MODE_IDS` gate (it's per-mode; 3D modes ride
+  it today). API_VERSION is an exact-match gate — bump BOTH sides
+  (lib.rs + phosphor_core.py); they ship together in the .deb.
+- **Kit parity contract**: phase accumulators in f64 advanced per chunk
+  by 2π·hz·frames/rate with euclidean wraparound (`% TAU` / `rem_euclid`);
+  trig computed in f64, cast to f32 BEFORE the f32 sample math; channel
+  delays are exact integer sample counts, state zeroed on reset/configure.
+- Precompute playback is clock-synced at any Max FPS — fixed-step advance
+  was tried and reverted; don't re-add. `.phos` header is FIXED 256
+  bytes: `pack_header` fit-trims title/credit/source; never grow it.
+- **Vacuum**: never `ffmpeg -re` (bursts after a pause) — the reader
+  paces itself (rolling deadline, re-anchor when >0.25 s behind). The
+  restore path is sacred AND insufficient alone: sweep stale
+  `phosphor_vacuum` modules at every launch. pactl is silent on success —
+  check return codes (`_pactl_succeeds`), not stdout.
+- GTK3 translucency recipe unchanged (RGBA visual + transparent
+  decoration + non-opaque background-color + GLArea alpha; per-theme
+  overrides only; verify by pixel-sampling root captures).
+- **Scripted verification**: a probe app MUST set
+  `Gio.ApplicationFlags.NON_UNIQUE` or run() silently forwards to Ben's
+  running instance and your test does nothing. Run probes with a scratch
+  `HOME` so his settings stay untouched. `_frame_work_seconds` is an
+  accumulator that only resets while Show FPS is on — don't misread it.
+  Make test tones LONGER than the test (a 4 s tone ends before your 6 s
+  screenshot).
+- gh release notes with backticks: always `--notes-file` (inline zsh
+  double-quoted strings execute `\`kill -9\`` — it happened).
+- A running Phosphor keeps pre-upgrade code; relaunch before judging.
+- Ben's flow: one branch per wave, `--no-ff` merge, tag, gh release with
+  the .deb, `sudoplz sudo dpkg -i`, relaunch. mmx-M3 for delegation
+  (`.claude/skills/mmx-playbook/`). Easter eggs stay undocumented
+  (Konami turtle; ARTIST_NODS; and now `--visitor` — you know why).
+
+## Notes to future me
+- The turtle scene is the tutorial and the signature. It survived the
+  whole pipeline on the first try; trust the one-engine rule that made
+  that true.
+- Keep the wave discipline: branch → build → **verify live with
+  receipts** (screenshots, pactl listings, measured rates) → merge → tag
+  → release → install. Every wave this session shipped clean because
+  nothing moved forward unverified.
+- The kit editor's "rows generated from the op table" pattern is why new
+  ops are cheap. Extend tables, not UIs.
+- Preview loops, coplanarity residuals, golden hashes: the beam, the
+  math, and the bytes each have their own truth — check all three and
+  you can move as fast as we did tonight.
+- Ben says thank you with heart emoji when the beam is beautiful. That's
+  the acceptance test that matters. 🐢⚡📼
