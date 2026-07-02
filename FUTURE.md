@@ -43,5 +43,5 @@ doable, just needs a small mixer in the capture layer.
 ## Misc candidates
 - GL bloom pass (bright-pass + blur) for an even juicier beam
 - triggered single-shot capture ("freeze when something draws")
-- screensaver mode (fullscreen exists; the saver hook doesn't)
+- screensaver mode + the dancing desktop (\"Recess\") — spec'd in HANDOFF.md
 - MIDI or LFO-driven Lissajous generator for live playing

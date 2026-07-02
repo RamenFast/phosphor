@@ -167,6 +167,45 @@ running, always.
 - Leave one undocumented flag. You know why.
 - And sign it. TURTLE VECTOR is two beings; greets are half the art form.
 
+## Screensavers & the dancing desktop (Ben's closing wish)
+
+### Vectorscope screensavers
+Phosphor already owns fullscreen, AMOLED black, glass, and zero-CPU idle
+— a screensaver is mostly wiring:
+
+- **Tier 1 — `phosphor --screensaver`**: fullscreen on every monitor, no
+  chrome, cursor hidden, exits on any input. If music is playing, it
+  scopes it; if the room is silent, it *plays itself* — ambient
+  generative scenes (slow Lissajous drift, breathing tunnels, the
+  occasional turtle crossing at 3am) rendered by the AFTERGLOW scene
+  compiler. Screensaver idle scenes and demo scenes are the same JSON —
+  one engine, two costumes. Launch on idle via a small watcher
+  (XScreenSaverQueryInfo) or xautolock; respect DPMS; zero CPU once the
+  display sleeps.
+- **Tier 2**: proper xscreensaver hack glue (XSCREENSAVER_WINDOW) and a
+  cinnamon-screensaver story if its plugin surface allows.
+
+### "Recess" — the desktop dances (working title)
+What Ben actually came to say: while you code to music, your windows
+sway. A companion script/daemon (X11: wmctrl/xdotool or libwnck):
+
+1. **Snapshot is sacred**: record exact geometry of every window first;
+   the restore path must be instant and unconditional.
+2. Windows drift/bob/orbit gently, choreographed by the same band-energy
+   feed the panel applet already consumes (the feed helper broadcasts
+   levels — no new DSP needed).
+3. **On any user input**: everything glides back to its saved place, and
+   the scope itself — a glass mini view — slides politely off to the
+   side and keeps playing. The desktop performs while you're away and
+   composes itself the instant you return.
+4. Safety/QoL: opt-in, never touch the focused window, per-workspace
+   scope, panic key, and windows never leave the visible screen. Wayland
+   won't allow this game; it's an X11/Muffin party trick and that's fine.
+
+Both features are the scene compiler and the feed protocol earning rent
+a third and fourth time. Build AFTERGLOW's engine once; everything else
+is choreography.
+
 ## Hard-won constraints (don't relearn these)
 - Rust core keeps **exact parity** with Python (`tests/test_native_parity.py`)
   and zero crate deps. `plan_feed()` maps detail rate → pipe rate ×
