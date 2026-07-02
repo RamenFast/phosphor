@@ -39,8 +39,12 @@ by drag-drop, three starter kits bundled.
 Still open: more ops (the beat-synced mode-automation timeline is the
 AFTERGLOW seed), kit browsing/sharing beyond files.
 
-## 3D visualizer — spec in HANDOFF.md
-Takens-embedding 3D view with orbit controls; time-as-Z helix. Next.
+## 3D visualizer — ✅ shipped in 3.3
+xyz_takens (delay embedding, autocorrelation-adaptive τ) and helix
+(time-as-Z) with a shared orbit camera: drag/scroll/arrows + idle drift,
+depth fog, numpy path (MODE_IDS gates native fallback per mode).
+Still open: porting 3D modes into the Rust core; a true 3D beam pass
+(per-segment sigma); persisting the camera.
 
 ## Multi-app mixing
 Per-app capture currently scopes one app at a time (one parec per

@@ -25,6 +25,17 @@ Modes:
                     channel, triggered so pitched sounds hold still.
   tunnel          — spectrum bands as concentric rings pulsing outward,
                     bass innermost — the tunnel breathes with the music.
+  xyz_takens      — the signal's attractor, reconstructed: the mono signal
+                    plotted against itself at two delays, (x(t), x(t−τ),
+                    x(t−2τ)), τ adapting to a quarter period of the
+                    dominant pitch. Pure tones become tilted ellipses,
+                    chords weave tori. Orbit it with the mouse.
+  helix           — the XY figure extruded backwards into the past: newest
+                    audio near the eye, older coils receding into fog.
+
+The 3D modes project through a shared camera (yaw/pitch orbit + dolly,
+see set_camera); depth dims intensity like far phosphor. They run on the
+numpy path — phosphor_core.MODE_IDS gates the native fallback per mode.
 """
 
 import math
@@ -74,6 +85,15 @@ SWIRL_RADIANS_PER_SECOND = 0.35    # one full revolution every ~18 s
 TUNNEL_RINGS = 8
 TUNNEL_RING_POINTS = 60
 RING_TRACE_POINTS = 720
+# 3D modes
+TAKENS_AUTOCORR_WINDOW = 4096      # samples (at the base rate) per tau probe
+TAKENS_LOW_HZ = 50.0               # slowest pitch tau will chase
+TAKENS_HIGH_HZ = 900.0             # fastest
+TAKENS_TAU_SMOOTHING = 0.8         # old/new blend per probe: no pops
+HELIX_SECONDS = 0.35               # how much past the helix extrudes
+HELIX_MAX_POINTS = 1800            # decimation budget per frame
+CAMERA_MIN_DOLLY = 1.6
+CAMERA_MAX_DOLLY = 8.0
 
 SQRT_HALF = math.sqrt(0.5)
 TAU = 2 * math.pi
@@ -304,6 +324,15 @@ class SegmentComputer:
         self.frames_since_fft = 0
         self._swirl_phase = 0.0
         self._kit = None                # active KitChain, or None
+        # 3D camera: a pleasing three-quarter view until the mouse says
+        # otherwise; dolly is the eye's distance from the attractor
+        self.camera_yaw = 0.55
+        self.camera_pitch = 0.35
+        self.camera_dolly = 3.0
+        self._mono_history = array("f")
+        self._takens_tau = None         # samples; follows the dominant pitch
+        self._takens_last = None        # last embedded point, for continuity
+        self._probes_since_tau = 99
         self._native = (phosphor_core.NativeComputer()
                         if native_available() else None)
         self.set_sample_rate(BASE_SAMPLE_RATE)
@@ -336,6 +365,8 @@ class SegmentComputer:
         self.waveform_window = int(WAVEFORM_WINDOW * rate_ratio)
         self.waveform_history_limit = int(WAVEFORM_HISTORY * rate_ratio)
         self.waveform_trigger_search = int(WAVEFORM_TRIGGER_SEARCH * rate_ratio)
+        self.mono_history_limit = int(WAVEFORM_HISTORY * rate_ratio)
+        self.autocorr_window = int(TAKENS_AUTOCORR_WINDOW * rate_ratio)
         # growing the FFT with the rate keeps the same analysis time window,
         # so bass resolution doesn't degrade; the pure-python fallback stays
         # at 1024 (still correct frequencies, just coarser bars)
@@ -354,10 +385,24 @@ class SegmentComputer:
         self.waveform_history = array("f")
         self.spectrum_levels = [0.0] * SPECTRUM_BAR_COUNT
         self._swirl_phase = 0.0
+        self._mono_history = array("f")
+        self._takens_tau = None
+        self._takens_last = None
+        self._probes_since_tau = 99
         if self._kit is not None:
             self._kit.reset()
         if self._native is not None:
             self._native.reset()
+
+    def set_camera(self, yaw=None, pitch=None, dolly=None):
+        """Aim the 3D modes' shared camera; None leaves an axis alone."""
+        if yaw is not None:
+            self.camera_yaw = yaw % (2 * math.pi)
+        if pitch is not None:
+            self.camera_pitch = max(-1.45, min(1.45, pitch))
+        if dolly is not None:
+            self.camera_dolly = max(CAMERA_MIN_DOLLY,
+                                    min(CAMERA_MAX_DOLLY, dolly))
 
     def set_kit(self, stages):
         """Install a signal kit chain (canonical [(op, params)] stages from
@@ -389,12 +434,16 @@ class SegmentComputer:
                                      width, height)
         if self.mode == "xy_dots":
             return self._xy_dot_segments(samples, width, height)
+        if self.mode == "xyz_takens":
+            return self._takens_segments(samples, width, height)
         self.waveform_history.extend(samples)
         excess = len(self.waveform_history) - 2 * self.waveform_history_limit
         if excess > 0:
             del self.waveform_history[:excess]
         if self.mode == "waveform":
             return self._waveform_segments(width, height)
+        if self.mode == "helix":
+            return self._helix_segments(width, height)
         if self.mode == "ring":
             return self._ring_segments(width, height)
         if self.mode == "tunnel":
@@ -544,6 +593,204 @@ class SegmentComputer:
             x = center_x + samples[index] * self.gain * radius
             y = center_y - samples[index + 1] * self.gain * radius
             segments.append((x - 0.8, y, x + 0.8, y, dot_intensity))
+        return segments
+
+    # -- 3D (Takens attractor + time helix) -----------------------------------
+
+    def _project_3d(self, a, b, c, width, height):
+        """Signal-space points (each axis ~[-1, 1]) through the camera to
+        (screen x, screen y, fog 0..1). Fog dims what sits behind the
+        figure — far phosphor is dim phosphor. Vectorized when numpy is
+        here; the same math runs per point without it."""
+        if numpy is not None:
+            cos_yaw, sin_yaw = math.cos(self.camera_yaw), math.sin(self.camera_yaw)
+            cos_pitch, sin_pitch = (math.cos(self.camera_pitch),
+                                    math.sin(self.camera_pitch))
+            x1 = a * cos_yaw + c * sin_yaw
+            z1 = c * cos_yaw - a * sin_yaw
+            y1 = b * cos_pitch - z1 * sin_pitch
+            z2 = b * sin_pitch + z1 * cos_pitch
+            focal = self.camera_dolly
+            scale = focal / (focal + z2)
+            radius = min(width, height) * 0.45 * self.gain
+            screen_x = width / 2 + x1 * scale * radius
+            screen_y = height / 2 - y1 * scale * radius
+            fog = numpy.clip(0.9 - 0.3 * z2, 0.15, 1.0)
+            return screen_x, screen_y, fog
+        cos_yaw, sin_yaw = math.cos(self.camera_yaw), math.sin(self.camera_yaw)
+        cos_pitch, sin_pitch = (math.cos(self.camera_pitch),
+                                math.sin(self.camera_pitch))
+        x1 = a * cos_yaw + c * sin_yaw
+        z1 = c * cos_yaw - a * sin_yaw
+        y1 = b * cos_pitch - z1 * sin_pitch
+        z2 = b * sin_pitch + z1 * cos_pitch
+        focal = self.camera_dolly
+        scale = focal / (focal + z2)
+        radius = min(width, height) * 0.45 * self.gain
+        return (width / 2 + x1 * scale * radius,
+                height / 2 - y1 * scale * radius,
+                max(0.15, min(1.0, 0.9 - 0.3 * z2)))
+
+    def _update_takens_tau(self):
+        """Follow the dominant pitch: tau = a quarter of its period, found
+        by autocorrelation over the recent window every few frames (never
+        per frame — the probe is the expensive part) and smoothed so the
+        attractor morphs instead of popping. Silence keeps the last tau."""
+        self._probes_since_tau += 1
+        if numpy is None or self._probes_since_tau < 4:
+            return
+        window = min(len(self._mono_history), self.autocorr_window)
+        if window < 1024:
+            return
+        self._probes_since_tau = 0
+        recent = numpy.asarray(self._mono_history[-window:],
+                               dtype=numpy.float32)
+        recent = recent - recent.mean()
+        if float(numpy.max(numpy.abs(recent))) < 1e-3:
+            return                          # silence: hold the shape
+        spectrum = numpy.fft.rfft(recent)
+        autocorr = numpy.fft.irfft(spectrum * numpy.conj(spectrum))
+        low_lag = max(2, int(self.sample_rate / TAKENS_HIGH_HZ))
+        high_lag = min(window // 2, int(self.sample_rate / TAKENS_LOW_HZ))
+        if high_lag <= low_lag:
+            return
+        lag = int(numpy.argmax(autocorr[low_lag:high_lag])) + low_lag
+        if autocorr[lag] < 0.15 * autocorr[0]:
+            return                          # aperiodic: hold the shape
+        probed = max(2, lag // 4)
+        if self._takens_tau is None:
+            self._takens_tau = probed
+        else:
+            self._takens_tau = max(2, int(round(
+                TAKENS_TAU_SMOOTHING * self._takens_tau
+                + (1.0 - TAKENS_TAU_SMOOTHING) * probed)))
+
+    def _takens_segments(self, samples, width, height):
+        """Delay-embed the mono signal: each new sample becomes the point
+        (x(t), x(t−τ), x(t−2τ)) — the signal plotted against its own past
+        reconstructs the attractor (Takens' theorem, on a scope). Traced
+        continuously like XY, so dwell time still shades the beam."""
+        count = len(samples) // 2
+        if count == 0:
+            return []
+        if numpy is not None:
+            frames = numpy.asarray(samples,
+                                   dtype=numpy.float32).reshape(-1, 2)
+            self._mono_history.extend(array("f", frames.mean(axis=1)))
+        else:
+            self._mono_history.extend(array("f", (
+                (samples[2 * i] + samples[2 * i + 1]) * 0.5
+                for i in range(count))))
+        excess = len(self._mono_history) - self.mono_history_limit
+        if excess > 0:
+            del self._mono_history[:excess]
+            # trimming shifts indexes; the embed below only looks back
+            # 2*tau from the tail, which the limit always preserves
+        self._update_takens_tau()
+        tau = self._takens_tau or max(2, int(0.004 * self.sample_rate))
+        history_length = len(self._mono_history)
+        emit = min(count, self.max_points_per_frame,
+                   max(0, history_length - 2 * tau))
+        if emit < 1:
+            return []
+        if numpy is not None:
+            history = numpy.frombuffer(self._mono_history,
+                                       dtype=numpy.float32)
+            a = history[history_length - emit:]
+            b = history[history_length - emit - tau:history_length - tau]
+            c = history[history_length - emit - 2 * tau:
+                        history_length - 2 * tau]
+            if self._takens_last is not None:
+                a = numpy.concatenate(([self._takens_last[0]], a))
+                b = numpy.concatenate(([self._takens_last[1]], b))
+                c = numpy.concatenate(([self._takens_last[2]], c))
+            self._takens_last = (float(a[-1]), float(b[-1]), float(c[-1]))
+            x, y, fog = self._project_3d(a, b, c, width, height)
+            if len(x) < 2:
+                return []
+            distance = (numpy.hypot(numpy.diff(x), numpy.diff(y))
+                        * self.sample_distance_scale)
+            intensity = (numpy.minimum(1.0, self.beam_energy
+                                       / (distance + 0.7)) * fog[1:])
+            weights = self._age_weights(len(intensity))
+            if weights is not None:
+                intensity = intensity * weights
+            segments = numpy.empty((len(intensity), 5), dtype=numpy.float32)
+            segments[:, 0] = x[:-1]
+            segments[:, 1] = y[:-1]
+            segments[:, 2] = x[1:]
+            segments[:, 3] = y[1:]
+            segments[:, 4] = intensity
+            return segments
+        history = self._mono_history
+        segments = []
+        previous = None
+        if self._takens_last is not None:
+            previous = self._project_3d(*self._takens_last, width, height)
+        for offset in range(emit):
+            index = history_length - emit + offset
+            point = (history[index], history[index - tau],
+                     history[index - 2 * tau])
+            x, y, fog = self._project_3d(*point, width, height)
+            if previous is not None:
+                distance = (math.hypot(x - previous[0], y - previous[1])
+                            * self.sample_distance_scale)
+                intensity = min(1.0, self.beam_energy / (distance + 0.7)) * fog
+                segments.append((previous[0], previous[1], x, y, intensity))
+            previous = (x, y, fog)
+            self._takens_last = point
+        weights = self._age_weights(len(segments))
+        if weights is not None:
+            segments = [(x0, y0, x1, y1, intensity * weight)
+                        for (x0, y0, x1, y1, intensity), weight
+                        in zip(segments, weights)]
+        return segments
+
+    def _helix_segments(self, width, height):
+        """The XY figure extruded backwards in time: left/right stay the
+        screen plane, age recedes into the fog. Redrawn whole every frame,
+        so orbiting the camera swings the entire coil."""
+        history = self.waveform_history
+        frame_count = len(history) // 2
+        span = min(frame_count, int(HELIX_SECONDS * self.sample_rate))
+        if span < 8:
+            return []
+        step = max(1, span // HELIX_MAX_POINTS)
+        if numpy is not None:
+            frames = numpy.frombuffer(history,
+                                      dtype=numpy.float32).reshape(-1, 2)
+            window = frames[frame_count - span:]
+            window = window[::step]
+            age = numpy.linspace(1.0, 0.0, len(window),
+                                 dtype=numpy.float32)   # 1 = oldest
+            a = window[:, 0]
+            b = window[:, 1]
+            c = age * 1.8 - 0.6           # newest floats near the eye
+            x, y, fog = self._project_3d(a, b, c, width, height)
+            if len(x) < 2:
+                return []
+            # the head burns brighter, the tail remembers
+            brightness = (0.25 + 0.75 * (1.0 - age)) * fog
+            segments = numpy.empty((len(x) - 1, 5), dtype=numpy.float32)
+            segments[:, 0] = x[:-1]
+            segments[:, 1] = y[:-1]
+            segments[:, 2] = x[1:]
+            segments[:, 3] = y[1:]
+            segments[:, 4] = brightness[1:]
+            return segments
+        segments = []
+        previous = None
+        points = list(range(frame_count - span, frame_count, step))
+        total = len(points)
+        for order, frame in enumerate(points):
+            age = 1.0 - order / max(1, total - 1)
+            point = (history[2 * frame], history[2 * frame + 1],
+                     age * 1.8 - 0.6)
+            x, y, fog = self._project_3d(*point, width, height)
+            if previous is not None:
+                brightness = (0.25 + 0.75 * (1.0 - age)) * fog
+                segments.append((previous[0], previous[1], x, y, brightness))
+            previous = (x, y)
         return segments
 
     # -- waveform -------------------------------------------------------------
