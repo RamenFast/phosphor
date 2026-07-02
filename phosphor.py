@@ -322,13 +322,13 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self.now_playing_label.set_ellipsize(3)  # Pango.EllipsizeMode.END
         self.now_playing_label.set_no_show_all(True)
 
-        display_overlay = Gtk.Overlay()
-        display_overlay.add(event_box)
-        display_overlay.add_overlay(self.fps_label)
-        display_overlay.add_overlay(self.now_playing_label)
+        self.display_overlay = Gtk.Overlay()
+        self.display_overlay.add(event_box)
+        self.display_overlay.add_overlay(self.fps_label)
+        self.display_overlay.add_overlay(self.now_playing_label)
 
         scope_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        scope_row.pack_start(display_overlay, True, True, 0)
+        scope_row.pack_start(self.display_overlay, True, True, 0)
         scope_row.pack_end(self.player.panel_revealer, False, False, 0)
         layout.pack_start(scope_row, True, True, 0)
         self.add(layout)
@@ -523,6 +523,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
     def _build_settings_button(self):
         """The gear popover: two columns of labeled sections."""
         popover = Gtk.Popover()
+        popover.connect("show", self._on_settings_popover_toggled, True)
+        popover.connect("closed", self._on_settings_popover_toggled, False)
         columns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=18)
         for edge in ("start", "end", "top", "bottom"):
             getattr(columns, f"set_margin_{edge}")(14)
@@ -689,6 +691,17 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         settings_button.set_tooltip_text("Renderer, quality, theme, UI style")
         settings_button.set_popover(popover)
         return settings_button
+
+    def _on_settings_popover_toggled(self, popover, opening):
+        """Scoot the scope out from under the settings popover so the
+        trace stays visible while you tweak it; snaps back on close. Skipped
+        when the window is too narrow to leave a useful scope."""
+        margin = 0
+        if opening:
+            _minimum, popover_width = popover.get_preferred_width()
+            if self.get_allocated_width() - popover_width >= 420:
+                margin = popover_width
+        self.display_overlay.set_margin_end(margin)
 
     def _update_custom_color_sensitivity(self):
         is_custom = self.settings.theme_name == CUSTOM_THEME_NAME
