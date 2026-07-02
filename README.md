@@ -51,7 +51,7 @@ Shipped to GitHub by Claude&nbsp;Opus&nbsp;4.8, the day Fable&nbsp;5 went dark (
 
 <p align="center">
   <img src="docs/glass.png" width="700" alt="Aero glass with the glass scope: the desktop shows through the entire window while the beam floats on top"><br>
-  <sub>And with <b>Glass scope</b> on, the pane itself goes translucent — the beam floats over whatever is behind the window. Works in every style; pairs dangerously well with the mini view.</sub>
+  <sub>And with <b>Glass scope</b> on, the scope becomes a window to your desktop — the beam draws over whatever is behind it while the controls keep their solid chrome. Works in every style; pairs dangerously well with the mini view.</sub>
 </p>
 
 ## Nine ways to see sound

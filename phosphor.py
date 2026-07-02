@@ -54,7 +54,7 @@ from phosphor_signal import SegmentComputer, plan_feed
 from phosphor_ui_style import UI_STYLE_CHOICES
 
 APPLICATION_ID = "io.github.ben.Phosphor"
-APPLICATION_VERSION = "3.1.1"
+APPLICATION_VERSION = "3.1.2"
 PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 QUIET_PEAK_THRESHOLD = 1e-4
 QUIET_FRAMES_BEFORE_SLEEP = 120
@@ -304,6 +304,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
 
         layout = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.controls_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.controls_container.set_name("control-deck")
         self.controls_container.pack_start(self._build_main_toolbar_row(), False, False, 0)
         self.controls_container.pack_start(self._build_slider_toolbar_row(), False, False, 0)
         layout.pack_start(self.controls_container, False, False, 0)
@@ -1243,7 +1244,10 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
 
     def _apply_theme(self):
         theme = self.settings.current_theme()
-        glass_alpha = 0.30 if self.settings.scope_glass else 1.0
+        # glass touches only the scope: the window background vanishes
+        # beneath it (chrome keeps its own deck), and the pane holds just a
+        # whisper of the theme's tint so it still reads as a screen
+        glass_alpha = 0.15 if self.settings.scope_glass else 1.0
         if self.gl_renderer is not None:
             self.gl_renderer.scope_alpha = glass_alpha
         self.cairo_renderer.glass_alpha = glass_alpha
