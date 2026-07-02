@@ -119,6 +119,12 @@ phosphor. Try one over a fully-clear **Glass scope**.
   of any audio file or `.phos` postcard through the same pipeline.
 - **Cinnamon panel applet** — a tiny live vectorscope in your panel, with
   its own themes, refresh rate, and CRT power switch.
+- **phosphor-studio** — a scene compiler: plain-JSON documents
+  (`{"shape": {"kind": "turtle"}, "animate": …}`) compile to stereo audio
+  whose waveform *is* the picture, playable on any XY scope on earth.
+  `render` / `validate` / `inspect` / `preview`, `--output json` for
+  agents, deterministic builds pinned by golden tests, a manpage, and
+  two starter scenes — the breathing dot, and the turtle.
 
 The [manual](docs/MANUAL.md) covers all of it in detail.
 
