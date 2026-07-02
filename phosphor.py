@@ -849,7 +849,18 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         """Scope side of playing `path`: attach a matching precomputed
         stream (audible pipe drops to 48 kHz, the scope reads the stream by
         the playback clock) or fall back to the live pipe; queue generation
-        when the setting asks for it."""
+        when the setting asks for it.
+
+        A .phos signal postcard IS the stream — it attaches directly at the
+        rate its sender chose, whatever this machine's settings say."""
+        if path.lower().endswith(".phos"):
+            try:
+                self.attach_precomputed(
+                    phosphor_precompute.PrecomputedTrack(path))
+            except (OSError, ValueError):
+                self.attach_precomputed(None)
+                self.status_label.set_text("not a valid .phos stream")
+            return
         track = (phosphor_precompute.find(path, self.settings.scope_sample_rate)
                  if self.settings.precompute_enabled else None)
         self.attach_precomputed(track)
@@ -952,6 +963,75 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         freed = phosphor_precompute.clear_cache()
         self.status_label.set_text(
             f"precomputed streams cleared ({freed / 1e6:.0f} MB)")
+
+    # ------------------------------------------------- signal postcards --
+
+    def _export_postcard(self):
+        """Share the current track's scope stream: make sure it exists at
+        the current detail rate, stamp a title and credit into its header,
+        and save the .phos beside the other exports."""
+        path = self.player.playing_path
+        if path is None or path.lower().endswith(".phos"):
+            return
+        metadata = self.player.current_metadata or {}
+        dialog = Gtk.Dialog(title="Export signal postcard",
+                            transient_for=self, modal=True)
+        dialog.add_button("_Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("_Export", Gtk.ResponseType.OK)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+        grid = Gtk.Grid(row_spacing=6, column_spacing=8)
+        for edge in ("start", "end", "top", "bottom"):
+            getattr(grid, f"set_margin_{edge}")(12)
+        title_entry = Gtk.Entry()
+        title_entry.set_text(metadata.get("title")
+                             or os.path.splitext(self.player.playing_file)[0])
+        title_entry.set_width_chars(34)
+        title_entry.set_activates_default(True)
+        credit_entry = Gtk.Entry()
+        credit_entry.set_text(self.settings.postcard_credit)
+        credit_entry.set_placeholder_text("who made this trace?")
+        credit_entry.set_activates_default(True)
+        for row, (label_text, entry) in enumerate((("Title", title_entry),
+                                                   ("Trace by", credit_entry))):
+            label = Gtk.Label(label=label_text)
+            label.set_xalign(1.0)
+            grid.attach(label, 0, row, 1, 1)
+            grid.attach(entry, 1, row, 1, 1)
+        dialog.get_content_area().add(grid)
+        dialog.show_all()
+        response = dialog.run()
+        title = title_entry.get_text().strip()
+        credit = credit_entry.get_text().strip()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+        self.settings.postcard_credit = credit
+        self.settings.save()
+        rate = self.settings.scope_sample_rate
+        last_percent = [-1]
+
+        def report(fraction):
+            percent = int(fraction * 100)
+            if percent != last_percent[0]:
+                last_percent[0] = percent
+                GLib.idle_add(self.status_label.set_text,
+                              f"rendering postcard stream… {percent}%")
+
+        def worker():
+            try:
+                cache = phosphor_precompute.cache_path_for(path, rate)
+                if not os.path.exists(cache):
+                    phosphor_precompute.generate(path, rate, report)
+                destination = phosphor_precompute.postcard_path_for(
+                    path, rate, title=title)
+                phosphor_precompute.export_postcard(cache, destination,
+                                                    title, credit)
+                GLib.idle_add(self.status_label.set_text,
+                              f"postcard saved: {destination}")
+            except (RuntimeError, OSError, ValueError) as error:
+                GLib.idle_add(self.status_label.set_text,
+                              f"postcard export failed: {error}")
+        threading.Thread(target=worker, daemon=True).start()
 
     def _handle_stream_died(self):
         if not self.capture_toggle.get_active():
@@ -1905,6 +1985,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                 add_item("Precompute scope stream",
                          lambda: self._queue_precompute(
                              self.player.playing_path))
+            if not self.player.playing_path.lower().endswith(".phos"):
+                add_item("Export signal postcard…", self._export_postcard)
         cache_bytes = phosphor_precompute.cache_size_bytes()
         if cache_bytes:
             add_item(f"Clear precomputed streams ({cache_bytes / 1e6:.0f} MB)",

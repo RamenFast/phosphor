@@ -124,6 +124,7 @@ class Settings:
         self.shuffle = False
         self.repeat_mode = "off"       # "off" | "all" | "one"
         self.playlist_panel_open = False
+        self.postcard_credit = ""      # remembered "trace by" signature
         # appearance
         self.theme_name = "P7 Green"
         self.custom_beam_color = [0.42, 1.0, 0.55]

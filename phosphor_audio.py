@@ -104,8 +104,23 @@ def default_monitor_target_id():
     return f"device:{sink}.monitor" if sink else None
 
 
+def phos_header(path):
+    """Header fields of a .phos signal postcard, or None. (Lazy import:
+    phosphor_precompute imports this module for ffprobe helpers.)"""
+    if not path.lower().endswith(".phos"):
+        return None
+    import phosphor_precompute
+    return phosphor_precompute.read_header(path)
+
+
 def probe_duration_seconds(path):
     """Length of an audio file via ffprobe; None if it can't be determined."""
+    phos = phos_header(path)
+    if phos is not None:
+        try:
+            return int(phos["frames"]) / int(phos["rate"])
+        except (KeyError, ValueError, ZeroDivisionError):
+            return None
     try:
         output = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
@@ -121,6 +136,14 @@ def probe_metadata(path):
     """Tags + duration via ffprobe: {'title', 'artist', 'album', 'duration'}.
     Missing tags come back as None; one call serves the seek slider and the
     now-playing overlay."""
+    phos = phos_header(path)
+    if phos is not None:
+        credit = phos.get("credit")
+        return {"title": phos.get("title") or phos.get("source")
+                or os.path.basename(path),
+                "artist": f"trace by {credit}" if credit else None,
+                "album": None,
+                "duration": probe_duration_seconds(path)}
     try:
         output = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries",
@@ -204,6 +227,10 @@ class AudioCaptureStream:
         pacat's pipe backpressure paces the reader loop, keeping the picture
         in sync with the sound. `seek_seconds` starts mid-file; `loop`
         repeats the file forever (used by compose mode's drawn loops).
+
+        A .phos signal postcard plays too: its body is raw s16le at the rate
+        its header declares, so ffmpeg reads it with the header skipped and
+        the sound is the trace itself.
         """
         self.stop()
         decoder_command = ["ffmpeg", "-v", "quiet"]
@@ -211,6 +238,12 @@ class AudioCaptureStream:
             decoder_command += ["-ss", f"{seek_seconds:.3f}"]
         if loop:
             decoder_command += ["-stream_loop", "-1"]
+        phos = phos_header(path)
+        if phos is not None:
+            import phosphor_precompute
+            decoder_command += [
+                "-skip_initial_bytes", str(phosphor_precompute.HEADER_BYTES),
+                "-f", "s16le", "-ar", str(int(phos["rate"])), "-ac", "2"]
         decoder_command += ["-i", path, "-f", "f32le", "-ac", "2",
                             "-ar", str(self.sample_rate), "-"]
         decoder = subprocess.Popen(
