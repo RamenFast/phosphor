@@ -60,10 +60,13 @@
         "options": {
             "XY · scope art": "xy",
             "Goniometer": "xy45",
+            "XY · swirl": "xy_swirl",
             "XY · dots": "xy_dots",
             "Waveform": "waveform",
+            "Ring · oscillogram": "ring",
             "Spectrum": "spectrum",
-            "Spectrum · radial": "spectrum_radial"
+            "Spectrum · radial": "spectrum_radial",
+            "Spectrum · tunnel": "tunnel"
         }
     },
     "panelWidth": {

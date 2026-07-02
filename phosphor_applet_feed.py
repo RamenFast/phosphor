@@ -65,7 +65,8 @@ AGC_NOISE_FLOOR = 0.005      # below this, treat as silence and ease back to 1x
 AGC_MAX_GAIN = 40.0          # generous, so a low system volume still fills the panel
 AGC_RELEASE = 0.92           # how slowly the tracked peak falls back each frame
 
-VALID_MODES = {"xy", "xy45", "xy_dots", "waveform", "spectrum", "spectrum_radial"}
+VALID_MODES = {"xy", "xy45", "xy_swirl", "xy_dots", "waveform", "ring",
+               "spectrum", "spectrum_radial", "tunnel"}
 
 
 def find_default_monitor():

@@ -25,6 +25,10 @@ from phosphor_audio import probe_metadata
 AUDIO_FILE_EXTENSIONS = (".mp3", ".flac", ".ogg", ".oga", ".opus", ".wav",
                          ".m4a", ".aac", ".wma", ".aif", ".aiff", ".mka")
 
+# quiet nods to the artists this scope was built around
+ARTIST_NODS = {"jerobeam fenderson": "🍄 the real deal",
+               "brakence": "🫧 there are hidden pictures in here"}
+
 
 def format_time(seconds):
     return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
@@ -399,6 +403,9 @@ class PhosphorPlayer:
         title = metadata.get("title") or self.playing_file
         subtitle = " — ".join(part for part in (metadata.get("artist"),
                                                 metadata.get("album")) if part)
+        nod = ARTIST_NODS.get((metadata.get("artist") or "").strip().lower())
+        if nod:
+            subtitle = f"{subtitle}  ·  {nod}" if subtitle else nod
         self.window.flash_now_playing(title, subtitle or None)
         self.mpris.notify_track_changed()
         self._show_position_slider(path, metadata.get("duration"))
