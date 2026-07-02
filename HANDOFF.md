@@ -62,6 +62,56 @@ a fully-clear glass scope.
 - Cinnamon Spices store submission for the applet.
 - Cover art in the now-playing overlay; gapless transitions.
 
+## The demoscene dream: "AFTERGLOW" (Ben asked what I'd make)
+
+If I got to go crazy: a 3–4 minute underground demo where **the demo IS a
+WAV file**. Not music with visuals — audio that *is* the visuals, in the
+purest oscilloscope-music tradition. Anyone can "run" it on any XY scope
+on earth, or in Phosphor, or just listen to it. The mp4 is merely the
+documentation. That's the flex: the executable is a stereo audio file,
+and the renderer is an instrument we built ourselves.
+
+**The vision.** Cold open: one sine dot, breathing. It splits into a
+Lissajous, which unfolds into beam-drawn vector-font titles. An mmx bass
+bed slides in underneath and the tunnel mode starts breathing to it.
+Wireframe scenes (rotating icosahedron morphing into — obviously — a
+turtle) drawn purely by signal. A breakcore drop where goniometer chaos
+is *choreographed* through mid/side automation, brakence-school. Then the
+secret: a scene that looks like noise in XY, but the choreography
+switches display modes mid-demo — flip to spectrum and there's a message
+painted in the spectrogram (the Windowlicker trick, but the mode-switch
+is part of the performance). Finale: all nine modes rapid-cut on the
+beat, collapse to a CRT power-off dot. Greets scroll drawn by the beam:
+Fenderson, brakence, the woscope lineage, Ben, Nexus.
+
+**The workflow.**
+1. *Vector synth* — extend phosphor_compose into a scene compiler:
+   parametric paths, morphs (path-table interpolation), rotation as
+   complex multiplication, 3D wireframes projected to XY, constant-speed
+   traversal at 96/192 kHz. Scenes compile to stereo stems. A vector font
+   for titles. (SVG import from FUTURE.md finally earns its keep.)
+2. *Music* — `mmx music generate` for beds and textures (it can't draw,
+   so it never gets the picture channels); the drawn geometry is the lead
+   instrument. Structure alternates pure-signalcraft scenes with
+   music-reactive scenes (tunnel/swirl/goniometer), call and response.
+3. *Glue* — sox/ffmpeg for pitch/tempo surgery, aubio for beat grids so
+   scene cuts land on the mmx track's transients, Audacity for the final
+   assembly pass, and a Makefile so `make afterglow.flac` reproduces the
+   whole demo from source. Demoscene rules: the build is the artwork too.
+4. *Capture* — new `phosphor --render in.flac out.mp4` headless mode
+   (OfflineFrameRenderer already does 95% of this; it just needs a CLI) —
+   full-track offline render at 384 kHz detail, plus a live 165 Hz
+   fullscreen "performance" capture for honesty.
+5. *Release* — three artifacts: `afterglow.flac` (the demo), the mp4 (the
+   proof), and an `afterglow.phoskit` (the postcard — viewers' own music
+   gets the demo's transforms). Repo page with greets and a NFO file,
+   because if you're going to do the demoscene, do the whole liturgy.
+
+Engineering it pulls in: the headless render CLI (needed anyway), the
+vector font, the scene compiler, beat-synced mode automation (a timeline
+that switches display modes on cue — which is also the seed of Tier 2
+postcards). Every piece is a real Phosphor feature wearing a costume.
+
 ## Hard-won constraints (don't relearn these)
 - Rust core keeps **exact parity** with Python (`tests/test_native_parity.py`)
   and zero crate deps. `plan_feed()` maps detail rate → pipe rate ×
