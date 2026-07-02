@@ -517,16 +517,36 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         return row
 
     def _build_settings_button(self):
+        """The gear popover: two columns of labeled sections."""
         popover = Gtk.Popover()
-        grid = Gtk.Grid(row_spacing=8, column_spacing=10)
+        columns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=18)
         for edge in ("start", "end", "top", "bottom"):
-            getattr(grid, f"set_margin_{edge}")(12)
-        next_row = [0]
+            getattr(columns, f"set_margin_{edge}")(14)
+        state = {"grid": None, "row": 0}
 
-        def attach(label, widget):
-            grid.attach(Gtk.Label(label=label, xalign=0), 0, next_row[0], 1, 1)
-            grid.attach(widget, 1, next_row[0], 1, 1)
-            next_row[0] += 1
+        def column():
+            if state["grid"] is not None:
+                columns.pack_start(Gtk.Separator(
+                    orientation=Gtk.Orientation.VERTICAL), False, False, 0)
+            grid = Gtk.Grid(row_spacing=8, column_spacing=10)
+            grid.set_valign(Gtk.Align.START)
+            columns.pack_start(grid, False, False, 0)
+            state["grid"] = grid
+            state["row"] = 0
+
+        def section(title):
+            header = Gtk.Label(label=title.upper(), xalign=0)
+            header.get_style_context().add_class("settings-section")
+            if state["row"] > 0:
+                header.set_margin_top(12)
+            state["grid"].attach(header, 0, state["row"], 2, 1)
+            state["row"] += 1
+
+        def attach(label_text, widget):
+            state["grid"].attach(Gtk.Label(label=label_text, xalign=0),
+                                 0, state["row"], 1, 1)
+            state["grid"].attach(widget, 1, state["row"], 1, 1)
+            state["row"] += 1
             return widget
 
         def combo(choices, active_id, on_changed):
@@ -543,6 +563,20 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             widget.connect("state-set", on_state)
             return widget
 
+        def color_button(initial_rgb, on_set):
+            rgba = Gdk.RGBA()
+            rgba.red, rgba.green, rgba.blue, rgba.alpha = (*initial_rgb, 1.0)
+            button = Gtk.ColorButton.new_with_rgba(rgba)
+
+            def changed(widget):
+                color = widget.get_rgba()
+                on_set([color.red, color.green, color.blue])
+                self._apply_theme()
+            button.connect("color-set", changed)
+            return button
+
+        column()
+        section("Renderer")
         self.renderer_combo = Gtk.ComboBoxText()
         if self.gl_available:
             self.renderer_combo.append("gl", "GPU · CRT beam (recommended)")
@@ -550,10 +584,17 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self.renderer_combo.set_active_id(self.settings.renderer)
         self.renderer_combo.connect("changed", self._on_renderer_changed)
         attach("Renderer", self.renderer_combo)
-
         attach("GPU quality", combo(GPU_QUALITY_CHOICES,
                                     str(self.settings.gl_supersample),
                                     self._on_gpu_quality_changed))
+        resolution_id = min(
+            (choice_id for choice_id, _ in CPU_RESOLUTION_CHOICES),
+            key=lambda choice_id:
+                abs(float(choice_id) - self.settings.cairo_resolution))
+        attach("CPU resolution", combo(CPU_RESOLUTION_CHOICES, resolution_id,
+                                       self._on_cpu_resolution_changed))
+
+        section("Scope")
         scope_rate_combo = combo(SCOPE_RATE_CHOICES,
                                  str(self.settings.scope_sample_rate),
                                  self._on_scope_rate_changed)
@@ -569,13 +610,6 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             "no realtime reconstruction, nothing dropped on slow machines.\n"
             "Costs disk — ~92 MB per track-minute at 384 kHz, less at\n"
             "lower rates. Right-click the scope to clear the cache.")
-        resolution_id = min(
-            (choice_id for choice_id, _ in CPU_RESOLUTION_CHOICES),
-            key=lambda choice_id:
-                abs(float(choice_id) - self.settings.cairo_resolution))
-        attach("CPU resolution", combo(CPU_RESOLUTION_CHOICES, resolution_id,
-                                       self._on_cpu_resolution_changed))
-
         focus_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL,
                                                0.6, 3.0, 0.1)
         focus_scale.set_value(self.settings.beam_focus)
@@ -585,32 +619,6 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             "Beam focus — narrower keeps dense scenes from washing out")
         focus_scale.connect("value-changed", self._on_focus_changed)
         attach("Focus", focus_scale)
-
-        self.theme_combo = Gtk.ComboBoxText()
-        for theme_name in list(THEME_PRESETS) + [CUSTOM_THEME_NAME]:
-            self.theme_combo.append(theme_name, theme_name)
-        self.theme_combo.set_active_id(self.settings.theme_name)
-        self.theme_combo.connect("changed", self._on_theme_changed)
-        attach("Theme", self.theme_combo)
-
-        def color_button(initial_rgb, on_set):
-            rgba = Gdk.RGBA()
-            rgba.red, rgba.green, rgba.blue, rgba.alpha = (*initial_rgb, 1.0)
-            button = Gtk.ColorButton.new_with_rgba(rgba)
-            def changed(widget):
-                color = widget.get_rgba()
-                on_set([color.red, color.green, color.blue])
-                self._apply_theme()
-            button.connect("color-set", changed)
-            return button
-
-        self.custom_beam_button = attach("Custom beam", color_button(
-            self.settings.custom_beam_color,
-            lambda rgb: setattr(self.settings, "custom_beam_color", rgb)))
-        self.custom_grid_button = attach("Custom grid", color_button(
-            self.settings.custom_grid_color,
-            lambda rgb: setattr(self.settings, "custom_grid_color", rgb)))
-
         self.auto_gain_switch = attach("Auto gain", switch(
             self.settings.auto_gain, self._on_auto_gain_switched))
         self.auto_gain_switch.set_tooltip_text(
@@ -620,22 +628,39 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                                                  self._on_grid_switched))
         attach("AMOLED scope", switch(self.settings.amoled_background,
                                       self._on_amoled_switched))
+
+        column()
+        section("Appearance")
+        self.theme_combo = Gtk.ComboBoxText()
+        for theme_name in list(THEME_PRESETS) + [CUSTOM_THEME_NAME]:
+            self.theme_combo.append(theme_name, theme_name)
+        self.theme_combo.set_active_id(self.settings.theme_name)
+        self.theme_combo.connect("changed", self._on_theme_changed)
+        attach("Theme", self.theme_combo)
+        self.custom_beam_button = attach("Custom beam", color_button(
+            self.settings.custom_beam_color,
+            lambda rgb: setattr(self.settings, "custom_beam_color", rgb)))
+        self.custom_grid_button = attach("Custom grid", color_button(
+            self.settings.custom_grid_color,
+            lambda rgb: setattr(self.settings, "custom_grid_color", rgb)))
         attach("UI style", combo(UI_STYLE_CHOICES, self.settings.ui_style,
                                  self._on_ui_style_changed))
         attach("Pin button", switch(self.settings.show_pin_button,
                                     self._on_show_pin_switched))
+
+        section("Player")
         now_playing_switch = attach("Track info", switch(
             self.settings.show_now_playing, self._on_now_playing_switched))
         now_playing_switch.set_tooltip_text(
             "Fade the artist/title into the corner when the song changes —\n"
             "for files Phosphor plays and for other players (MPRIS)")
-        self.show_fps_switch = attach("Show FPS", switch(
-            self.settings.show_fps, self._on_show_fps_switched))
+
+        section("Performance")
         self.max_fps_combo = Gtk.ComboBoxText.new_with_entry()
         for fps_value in MAX_FPS_PRESETS:
             self.max_fps_combo.append(
                 str(fps_value),
-                "Monitor (uncapped)" if fps_value == 0 else str(fps_value))
+                "Monitor" if fps_value == 0 else str(fps_value))
         fps_entry = self.max_fps_combo.get_child()
         fps_entry.set_width_chars(8)
         self.max_fps_combo.set_tooltip_text(
@@ -647,9 +672,11 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             fps_entry.set_text(str(self.settings.max_fps))
         self.max_fps_combo.connect("changed", self._on_max_fps_changed)
         attach("Max FPS", self.max_fps_combo)
+        self.show_fps_switch = attach("Show FPS", switch(
+            self.settings.show_fps, self._on_show_fps_switched))
 
-        grid.show_all()
-        popover.add(grid)
+        columns.show_all()
+        popover.add(columns)
         self._update_custom_color_sensitivity()
 
         settings_button = Gtk.MenuButton()

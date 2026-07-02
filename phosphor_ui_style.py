@@ -35,9 +35,10 @@ BASE_UI_CSS = b"""
 }
 """
 
-# AMOLED UI style: pure-black window, soft multi-shade pinks, warm yellow
-# for anything selected/active. Controls are flat — they sit flush with
-# the black and only fill on hover/press/toggle, no outline boxes.
+# AMOLED UI style: pure-black window, soft multi-shade pinks, warm gold
+# reserved for anything selected/active/value-like. One control language:
+# flat controls flush with the black, 6px radius everywhere, chrome only on
+# hover/press/toggle — the scope stays the brightest thing in the window.
 BLACK_UI_CSS = b"""
 window, headerbar, dialog, popover, popover.background, menu, .background {
     background-color: #000000;
@@ -46,7 +47,6 @@ window, headerbar, dialog, popover, popover.background, menu, .background {
 /* explicit label/cell colors win over the system theme, so popover and
    dropdown text stays readable no matter which GTK theme is underneath */
 label, popover label, menu label, cellview { color: #f2aed8; }
-menu check, menu radio { color: #e078b8; }
 headerbar {
     min-height: 32px;
     padding: 0 4px;
@@ -54,38 +54,53 @@ headerbar {
     border-bottom: 1px solid #1d0916;
 }
 headerbar .title, headerbar label { color: #fbcfe8; }
-button, combobox button.combo, spinbutton button, button.color {
+button, combobox button.combo, spinbutton button, button.color,
+button.scale {
     background-image: none;
     background-color: transparent;
     color: #f2aed8;
     border: 1px solid transparent;
-    border-radius: 5px;
-    padding: 1px 8px;
-    min-height: 22px;
+    border-radius: 6px;
+    padding: 2px 9px;
+    min-height: 24px;
     box-shadow: none;
+    transition: background-color 120ms ease;
 }
 spinbutton button { padding: 1px 5px; }
 button:hover { background-color: #2b0d20; }
 button:active { background-color: #3c142d; }
 button:checked { background-color: #2b2208; color: #ffdf87; }
 button:checked label, button:checked image { color: #ffdf87; }
-/* entries are flat too; a box appears only while editing */
+combobox arrow { color: #e078b8; }
+/* values read gold; a box appears only while editing */
 entry, spinbutton, spinbutton entry {
     background-image: none;
     background-color: transparent;
     color: #ffdf87;
     border: 1px solid transparent;
-    border-radius: 5px;
-    min-height: 20px;
+    border-radius: 6px;
+    min-height: 22px;
     box-shadow: none;
 }
 entry:focus, spinbutton entry:focus {
     background-color: #120510;
     border-color: #57203f;
 }
-scale trough { background-color: #2b0d20; border: none; }
-scale highlight { background-color: #e078b8; }
-scale slider { background-color: #fbcfe8; border: 1px solid #b65c92; }
+scale trough {
+    background-color: #2b0d20;
+    border: none;
+    border-radius: 999px;
+    min-height: 4px;
+}
+scale highlight { background-color: #e078b8; border-radius: 999px; }
+scale slider {
+    background-color: #fbcfe8;
+    border: 1px solid #b65c92;
+    border-radius: 999px;
+    min-width: 14px;
+    min-height: 14px;
+}
+scale slider:hover { background-color: #ffffff; }
 switch {
     background-image: none;
     background-color: #2b0d20;
@@ -104,7 +119,24 @@ switch slider {
 }
 menu menuitem:hover, popover modelbutton:hover { background-color: #2b0d20; }
 menu menuitem:hover label { color: #fbcfe8; }
-menu, popover { border: 1px solid #2b0d20; }
+menu, popover { border: 1px solid #2b0d20; border-radius: 8px; }
+menu check, menu radio { color: #e078b8; }
+menu check:checked, menu radio:checked { color: #ffdf87; }
+separator { background-color: #1d0916; min-width: 1px; min-height: 1px; }
+scrollbar, scrollbar trough { background-color: transparent; }
+scrollbar slider {
+    background-color: #57203f;
+    border-radius: 999px;
+    min-width: 6px;
+    min-height: 24px;
+}
+scrollbar slider:hover { background-color: #97276b; }
+.settings-section {
+    color: #b65c92;
+    font-size: 10px;
+    font-weight: bold;
+    letter-spacing: 2px;
+}
 tooltip, tooltip.background {
     background-color: #120510;
     color: #fbcfe8;
@@ -124,8 +156,9 @@ actionbar { background-color: #000000; }
 *:selected { background-color: #97276b; color: #ffdf87; }
 #fps-overlay { color: #ffdf87; }
 #now-playing { color: #fbcfe8; border: 1px solid #57203f; }
-#playlist-panel { background-color: #0d040a; }
+#playlist-panel { background-color: #0d040a; border-left: 1px solid #1d0916; }
 #playlist-panel list, #playlist-panel row { background-color: transparent; }
+#playlist-panel row { border-radius: 6px; }
 #playlist-panel row:selected { background-color: #2b2208; }
 #playlist-panel row:selected label { color: #ffdf87; }
 #playlist-panel row:hover { background-color: #2b0d20; }
@@ -157,10 +190,11 @@ button, combobox button.combo, spinbutton button, button.color {
     background-color: transparent;
     color: #303030;
     border: 1px solid transparent;
-    border-radius: 5px;
-    padding: 1px 8px;
-    min-height: 22px;
+    border-radius: 6px;
+    padding: 2px 9px;
+    min-height: 24px;
     box-shadow: none;
+    transition: background-color 120ms ease;
 }
 spinbutton button { padding: 1px 5px; }
 button:hover { background-color: #e7e7e7; }
@@ -173,8 +207,8 @@ entry, spinbutton, spinbutton entry {
     background-color: transparent;
     color: #222222;
     border: 1px solid transparent;
-    border-radius: 5px;
-    min-height: 20px;
+    border-radius: 6px;
+    min-height: 22px;
     box-shadow: none;
 }
 entry:focus, spinbutton entry:focus {
@@ -201,6 +235,21 @@ switch slider {
     margin: 2px;
 }
 menu menuitem:hover, popover modelbutton:hover { background-color: #e8eef8; }
+separator { background-color: #d8d8d8; min-width: 1px; min-height: 1px; }
+scrollbar, scrollbar trough { background-color: transparent; }
+scrollbar slider {
+    background-color: #c9c9c9;
+    border-radius: 999px;
+    min-width: 6px;
+    min-height: 24px;
+}
+scrollbar slider:hover { background-color: #9a9a9a; }
+.settings-section {
+    color: #8a8a8a;
+    font-size: 10px;
+    font-weight: bold;
+    letter-spacing: 2px;
+}
 tooltip, tooltip.background {
     background-color: #303030;
     color: #fafafa;
