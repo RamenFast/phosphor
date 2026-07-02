@@ -142,10 +142,14 @@ class Settings:
 
     def current_theme(self):
         if self.theme_name == CUSTOM_THEME_NAME:
-            return build_custom_theme(self.custom_beam_color, self.custom_grid_color)
-        theme = THEME_PRESETS.get(self.theme_name, THEME_PRESETS["P7 Green"])
+            theme = build_custom_theme(self.custom_beam_color,
+                                       self.custom_grid_color)
+        else:
+            theme = THEME_PRESETS.get(self.theme_name, THEME_PRESETS["P7 Green"])
+        # AMOLED applies to every theme, custom included
         if self.amoled_background:
-            return Theme(theme.beam_color, theme.flash_color, theme.grid_color, (0.0, 0.0, 0.0))
+            return Theme(theme.beam_color, theme.flash_color,
+                         theme.grid_color, (0.0, 0.0, 0.0))
         return theme
 
     @classmethod

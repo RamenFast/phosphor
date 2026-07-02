@@ -248,6 +248,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             self._mpris_watcher = None   # no session bus; overlay still works
 
         self.connect("key-press-event", self._on_key_press)
+        self.connect("map-event", lambda *_args: (self._wake_renderer(),
+                                                  False)[1])
         self.connect("configure-event", self._on_configure_event)
         self.connect("window-state-event", self._on_window_state_event)
         self.connect("delete-event", self._on_delete)
@@ -1572,6 +1574,10 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             self.fullscreen()
 
     def _on_window_state_event(self, _widget, event):
+        if (event.changed_mask & Gdk.WindowState.ICONIFIED
+                and not (event.new_window_state & Gdk.WindowState.ICONIFIED)):
+            # back from the taskbar: repaint even if the scope was asleep
+            self._wake_renderer()
         fullscreen = bool(event.new_window_state & Gdk.WindowState.FULLSCREEN)
         if fullscreen == self._is_fullscreen:
             return False

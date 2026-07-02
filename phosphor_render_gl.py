@@ -60,6 +60,7 @@ GL_COLOR_ATTACHMENT0 = 0x8CE0
 GL_FRAMEBUFFER_COMPLETE = 0x8CD5
 GL_FRAMEBUFFER_BINDING = 0x8CA6
 GL_BLEND = 0x0BE2
+GL_NO_ERROR = 0
 GL_ONE = 1
 GL_RG = 0x8227
 GL_RG16F = 0x822F
@@ -309,10 +310,14 @@ void main() {
     color += srgb_to_linear(beam_color) * glow
            + srgb_to_linear(flash_color) * flash * 0.6;
     color = pow(color, vec3(1.0 / 2.2));
-    // hash dither breaks up 8-bit banding rings in the dark glow falloff
+    // hash dither breaks up 8-bit banding rings in the dark glow falloff.
+    // Gated below ~1 LSB so true black stays exactly black: an AMOLED
+    // scope must not sparkle against the pure-black window chrome.
     float noise = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233)))
                         * 43758.5453);
-    out_color = vec4(color + vec3((noise - 0.5) / 255.0), 1.0);
+    float dither_gate = smoothstep(0.0, 0.004,
+                                   max(color.r, max(color.g, color.b)));
+    out_color = vec4(color + vec3((noise - 0.5) / 255.0) * dither_gate, 1.0);
 }
 """
 
@@ -436,22 +441,42 @@ class GLBeamRenderer(Gtk.GLArea):
             self.texture_width = 0
             self.texture_height = 0
             self.current_texture_index = 0
+            self._allocation_failures = 0
             self.ready = True
         except RuntimeError as error:
             self._fail(str(error))
 
-    def _ensure_energy_textures(self, width, height):
-        if (self.energy_textures is not None
-                and width == self.texture_width and height == self.texture_height):
-            return
+    def _release_energy_textures(self):
         if self.energy_textures is not None:
             gl.glDeleteFramebuffers(2, self.energy_framebuffers)
             gl.glDeleteTextures(2, self.energy_textures)
+        self.energy_textures = None
+        self.energy_framebuffers = None
+        self.texture_width = 0
+        self.texture_height = 0
+
+    def _ensure_energy_textures(self, width, height):
+        """(Re)allocate the ping-pong energy buffers; returns False if the
+        GPU refused the allocation.
+
+        The failure path matters: at 2-3x supersampling these are huge FP16
+        textures, and window-manager minimize/restore churn reallocates them
+        under transient VRAM pressure. Rendering into an incomplete
+        framebuffer 'works' silently and composites black forever — the
+        blank-scope-until-restart bug. So verify, retry next frame, shed
+        supersampling if it keeps failing, and fall back to CPU as a last
+        resort."""
+        if (self.energy_textures is not None
+                and width == self.texture_width and height == self.texture_height):
+            return True
+        self._release_energy_textures()
         self.texture_width, self.texture_height = width, height
         self.energy_textures = (ctypes.c_uint * 2)()
         self.energy_framebuffers = (ctypes.c_uint * 2)()
+        gl.glGetError()                      # clear any stale error first
         gl.glGenTextures(2, self.energy_textures)
         gl.glGenFramebuffers(2, self.energy_framebuffers)
+        healthy = True
         for index in range(2):
             gl.glBindTexture(GL_TEXTURE_2D, self.energy_textures[index])
             gl.glTexImage2D(GL_TEXTURE_2D, 0, GL_RG16F, width, height, 0,
@@ -465,8 +490,23 @@ class GLBeamRenderer(Gtk.GLArea):
             gl.glBindFramebuffer(GL_FRAMEBUFFER, self.energy_framebuffers[index])
             gl.glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                                       GL_TEXTURE_2D, self.energy_textures[index], 0)
+            status = gl.glCheckFramebufferStatus(GL_FRAMEBUFFER)
+            if (status != GL_FRAMEBUFFER_COMPLETE
+                    or gl.glGetError() != GL_NO_ERROR):
+                healthy = False
+                break
             gl.glClearColor(0, 0, 0, 0)
             gl.glClear(GL_COLOR_BUFFER_BIT)
+        if healthy:
+            self._allocation_failures = 0
+            return True
+        self._release_energy_textures()
+        self._allocation_failures += 1
+        if self._allocation_failures == 3 and self.supersample > 1:
+            self.supersample = 1             # shed VRAM, keep the beam alive
+        elif self._allocation_failures >= 6:
+            self._fail("energy buffer allocation kept failing")
+        return False
 
     # -- per-frame pipeline ----------------------------------------------------
 
@@ -485,7 +525,8 @@ class GLBeamRenderer(Gtk.GLArea):
 
         supersample = max(1, int(self.supersample))
         texture_width, texture_height = width * supersample, height * supersample
-        self._ensure_energy_textures(texture_width, texture_height)
+        if not self._ensure_energy_textures(texture_width, texture_height):
+            return True      # retry next frame; never draw into a broken FBO
         if self.pending_segments is not None:
             segments, self.pending_segments = self.pending_segments, None
             self._decay_pass(texture_width, texture_height)
