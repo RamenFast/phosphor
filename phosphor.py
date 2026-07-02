@@ -858,16 +858,26 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             self.segment_computer.reset()
 
     def _pull_precomputed_samples(self):
-        """The stream slice the playback clock crossed since the last frame.
-        A stalled frame reads a longer slice — detail is never dropped, just
-        traced late (capped so a long stall doesn\'t burst)."""
-        position = min(self.capture_stream.playback_position_seconds,
-                       self._precomputed.duration_seconds)
-        start = self._precomputed_clock
-        if position - start > 0.25:
-            start = position - 0.25
-        chunk = self._precomputed.samples_between(start, position)
-        self._precomputed_clock = position
+        """The next slice of the precomputed stream.
+
+        With an explicit Max FPS, playback advances in fixed steps of
+        exactly one frame\'s audio at that rate: if the machine can\'t draw
+        that fast, the trace falls behind rather than skipping ahead — every
+        frame of the selected rate gets shown. With Max FPS on Monitor, the
+        stream follows the playback clock as before (a stalled frame reads
+        a longer slice, capped so a long stall doesn\'t burst)."""
+        duration = self._precomputed.duration_seconds
+        start = min(self._precomputed_clock, duration)
+        if self.capture_stream.playback_paused:
+            end = start                        # frozen with the audio
+        elif self.settings.max_fps > 0:
+            end = min(start + 1.0 / self.settings.max_fps, duration)
+        else:
+            end = min(self.capture_stream.playback_position_seconds, duration)
+            if end - start > 0.25:
+                start = end - 0.25
+        chunk = self._precomputed.samples_between(start, end)
+        self._precomputed_clock = end
         return chunk
 
     def _export_detail_oversample(self):

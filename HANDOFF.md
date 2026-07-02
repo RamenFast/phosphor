@@ -78,10 +78,13 @@ embed+project per frame easily at 384 kHz.
   1 hour, ~4× less fragment work; ROCm/compute ≈ days, for ~nothing.
 
 ## Answers logged elsewhere
-- Precompute is **frame-rate-free**: the cache stores the reconstructed
-  sample stream, not frames — display frames are cut at draw time by the
-  playback clock, so one cache serves any fps/gain/window/mode. "Done"
-  means the whole track's stream is on disk (progress % is decode
-  progress), never "done up to some framerate".
+- Precompute stores the reconstructed sample stream, not frames — one
+  cache serves any fps/gain/window/mode; "done" = the whole track is on
+  disk. Playback advance rule (Ben's spec): with an explicit **Max FPS**,
+  each drawn frame steps the stream by exactly 1/fps of audio and *never
+  continues ahead* when the machine can't reach that rate (visuals fall
+  behind the sound instead of skipping); on Monitor it follows the
+  playback clock in sync. Verified: 352 drawn frames advanced the stream
+  exactly 352/480 s at a 480 cap on the 165 Hz monitor.
 - mmx/M3 field notes → `.claude/skills/mmx-playbook/` (+ copy for Nexus
   in `~/.hermes/skills/claude-fable-mmx-playbook/`).
