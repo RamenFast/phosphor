@@ -43,6 +43,77 @@ each verified live before the next began. In one evening:
   turtle.scene.json → studio render → wav → `phosphor --render` → mp4 =
   a turtle, mid-amble.
 
+## Ben's release-review notes (July 1, bedtime)
+
+- **v3.2 must be genuinely agent-optimized — and not just for big
+  tool-calling models. "Small models have soul that needs to be
+  expressed."** The .phoskit format is already kind to them (tiny JSON,
+  every param has a default, errors name the exact key) — but there is
+  **no CLI to validate/inspect a kit without launching the GUI**. Fix
+  next session: a `kit` family on phosphor-studio (or
+  `python3 -m phosphor_kit`) — `validate`, `inspect`, maybe
+  `apply --preview` — same `--output json` + exit-code contract as
+  scenes. Keep error text short and directive so a 7B model can repair
+  its own kit in one round-trip. Consider shipping a JSON schema file
+  for both formats.
+- **A human GUI for the postcard/kit ecosystem** — possibly an external
+  power-user tool rather than more popover — is wanted but explicitly
+  *not now*. The shared-canvas Studio panel (below) may be the natural
+  home; don't build two.
+- **v3.3 (3D) landed hard. Build off it somewhere great — "that demo
+  perhaps?"** Concretely: camera moves as timeline automation (yaw/
+  pitch/dolly keyframes in timeline.json), wireframe3d shapes in the
+  scene compiler projected through the same camera, and a
+  takens-over-glass moment in AFTERGLOW itself.
+- v3.4 shipped fine; v3.5 "Studio, huh? I like it."
+
+## Least-confident areas (honest audit — check these before building on them)
+
+1. **Pure-python (no-numpy) fallbacks for everything new** —
+   `KitChain._process_python`, takens/helix scalar paths. They compile
+   and mirror the numpy math by construction, but no test ever runs
+   with numpy absent, and pure-python takens uses a fixed default τ (no
+   autocorrelation). Spin up `PHOSPHOR_NO_NATIVE=1` + uninstalled-numpy
+   venv and actually look.
+2. **The kit editor dialog under real hands** — its logic (add/remove
+   stages, live apply, save→combo refresh, close→settings reapply) was
+   reasoned and code-read but never scripted-verified or screenshotted.
+   First live session with it may find focus/refresh warts.
+3. **.phos edge cases beyond the happy path** — verified: play, seek,
+   overlay, export round-trip on short files. Unverified: playlist
+   auto-advance out of a .phos, MPRIS SetPosition near EOF, very long
+   postcards, and snapshot/clip exports *while* a .phos plays (export
+   history is the 48 kHz audible pipe — oversample math should match,
+   but nobody watched it).
+4. **App-vacuum across PulseAudio/PipeWire flavors** — works on Ben's
+   box. The `Sink: N` parse, index-based restore (stale by restore
+   time?), and streams-rescued-on-unload behavior vary by server
+   version; only the @DEFAULT_SINK@ fallback stands between us and a
+   misplaced stream elsewhere.
+5. **Vacuum × precompute simultaneously** — paced reader as position
+   clock while the scope reads a precomputed stream: reasoned
+   compatible, never explicitly tested together.
+6. **3D modes off the golden path** — takens/helix on the live *Cairo*
+   renderer (only GL was watched), snapshot/clip exports of takens
+   (helix offline was verified via --render), and behavior at extreme
+   gain/dolly combinations (fog is clamped; projection scale is not).
+7. **docs/MANUAL.md is four releases stale** — README points to it as
+   covering everything; it covers nothing since v3.1 (no postcards,
+   kits, 3D, vacuum, studio, --render). The gallery images predate the
+   new modes too. A docs pass is due; the manual is also where the ⌀
+   runner-up name ("pantomime") was promised a home.
+8. **The Cinnamon applet after API v2** — the applet bundles its own
+   phosphor_core.py + .so via applet/install.sh; Ben's installed applet
+   copy may still be the v1 pair. Exact-match gating means a mismatch
+   silently drops it to the python path (fine but slower) — or the
+   installer refreshes it and nobody has relaunched Cinnamon. Verify
+   with LookingGlass, re-run applet/install.sh after core bumps.
+
+Also unproven, lower stakes: `phosphor-studio preview` (the pacat loop
+never actually ran), `path` shapes outside unit space (clamped only at
+s16 conversion — may clip ugly instead of scaling), and the
+turtle-outline aesthetics at high loop rates.
+
 ## Next session: the studio grows into AFTERGLOW
 
 The seed is planted; the demo needs the tree (full spec below, kept from
