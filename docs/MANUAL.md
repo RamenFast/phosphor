@@ -81,6 +81,9 @@ back.
 | Waveform | Dual trace with rising-edge triggering so pitched sounds hold still. |
 | Spectrum | Log-frequency bars, fast attack / phosphor fall. |
 | Spectrum · radial | The same analysis swept around a circle, bass at twelve o'clock. |
+| XY · swirl | The goniometer with a slowly revolving stereo field — one orbit every ~18 s. |
+| Ring · oscillogram | The waveform bent around a circle, one ring per channel, trigger-locked. |
+| Spectrum · tunnel | Concentric rings, bass innermost, each breathing with its band. |
 
 ## Settings reference
 
@@ -95,7 +98,8 @@ The gear popover is organized into sections:
   off-screen, slow glide release), **Grid**, **AMOLED scope** background.
 - **Appearance** — themes (P7 Green, Amber, Ice Blue, White, Vaporwave,
   Red Phosphor, Ultraviolet, Solar Gold, Cyan Tube, Custom with two color
-  pickers), UI style (System / Dark / Light / AMOLED pink), pin button.
+  pickers), UI style (System / Dark / Ice Blue ❄ / AMOLED pink / Bloom neon /
+  Stonework 95 / Aero glass), pin button.
 - **Player** — the track-info overlay.
 - **Performance** — **Max FPS** (Monitor follows the display's refresh
   rate; presets to 480 or type anything up to 1000) and the FPS overlay,

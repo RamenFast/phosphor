@@ -56,8 +56,11 @@ Shipped to GitHub by Claude&nbsp;Opus&nbsp;4.8, the day Fable&nbsp;5 went dark (
   volume, artist/title fading in on track change, and full **MPRIS** both
   ways: media keys drive Phosphor, and songs changing in your browser or
   Spotify still show on the scope.
-- **Six displays** — XY scope art, goniometer, XY dots, triggered
-  waveform, spectrum, radial spectrum.
+- **Nine displays** — XY scope art, goniometer, a slowly revolving
+  swirl, XY dots, triggered waveform, ring oscillogram, spectrum, radial
+  spectrum, and a breathing spectrum tunnel.
+- **Six chrome styles** — AMOLED pink, Bloom neon, Stonework 95, Aero
+  glass, Ice Blue ❄, or your system theme.
 - **A real beam** — analytic Gaussian beam integral on the GPU, linear-light
   compositing, two-layer phosphor decay, octave-stepped graticule.
 - **A Rust core** — the samples→segments math runs native, and in-process

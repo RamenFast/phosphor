@@ -22,6 +22,7 @@ Mini mode: drag with the left button, drag the bottom-right corner to
 resize, double-click to restore, right-click anywhere for the menu.
 """
 
+import math
 import os
 import sys
 import threading
@@ -53,7 +54,7 @@ from phosphor_signal import SegmentComputer, plan_feed
 from phosphor_ui_style import UI_STYLE_CHOICES
 
 APPLICATION_ID = "io.github.ben.Phosphor"
-APPLICATION_VERSION = "3.0.0"
+APPLICATION_VERSION = "3.1.0"
 PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 QUIET_PEAK_THRESHOLD = 1e-4
 QUIET_FRAMES_BEFORE_SLEEP = 120
@@ -63,6 +64,7 @@ MINI_RESIZE_CORNER_PIXELS = 26       # bottom-right drag-to-resize hot zone
 COMPOSE_PREVIEW_INTENSITY = 0.25     # restamped every frame while drawing
 COMPOSE_MINIMUM_POINTS = 8
 REACQUIRE_POLL_LIMIT = 180   # seconds to wait for a dead app stream to return
+VISITOR_SWIM_SECONDS = 7.0   # you know the code
 
 DISPLAY_MODES = (
     ("xy", "XY (scope art)"),
@@ -230,6 +232,9 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._compose_regenerate_source = None
         # now-playing overlay fade animation
         self._overlay_fade_source = None
+        # a certain ten-key sequence invites a visitor onto the scope
+        self._konami_progress = 0
+        self._visitor_started = None
         # precomputed scope streams (phosphor_precompute)
         self._precomputed = None
         self._precomputed_clock = 0.0      # seconds of the stream traced so far
@@ -971,6 +976,52 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             return GLib.SOURCE_REMOVE
         return GLib.SOURCE_CONTINUE
 
+    # ------------------------------------------------------------- visitor --
+
+    def _begin_visitor(self):
+        self._visitor_started = time.monotonic()
+        self.fade_out_frames_remaining = max(self.fade_out_frames_remaining,
+                                             int(VISITOR_SWIM_SECONDS * 240))
+        self._start_render_loop()
+
+    def _visitor_segments(self, width, height):
+        """A turtle, drawn by the beam, swimming once across the scope."""
+        elapsed = time.monotonic() - self._visitor_started
+        if elapsed > VISITOR_SWIM_SECONDS:
+            self._visitor_started = None
+            return []
+        progress = elapsed / VISITOR_SWIM_SECONDS
+        center_x = width * (-0.18 + 1.36 * progress)
+        center_y = height * (0.5 + 0.055 * math.sin(elapsed * 2.1))
+        scale = min(width, height) * 0.105
+        paddle = math.sin(elapsed * 5.0) * 0.12
+
+        def ellipse(ex, ey, rx, ry, points=22):
+            return [(center_x + (ex + rx * math.cos(2 * math.pi * i / points))
+                     * scale,
+                     center_y + (ey + ry * math.sin(2 * math.pi * i / points))
+                     * scale)
+                    for i in range(points + 1)]
+
+        paths = (
+            ellipse(0.0, 0.0, 1.0, 0.72),                    # shell
+            ellipse(0.0, 0.0, 0.62, 0.45),                   # shell pattern
+            ellipse(1.28, 0.0, 0.30, 0.24),                  # head
+            ellipse(1.36, -0.08, 0.05, 0.05, points=8),      # eye
+            ellipse(0.70, -0.64 - paddle, 0.34, 0.15),       # flippers
+            ellipse(0.70, 0.64 + paddle, 0.34, 0.15),
+            ellipse(-0.72, -0.66 + paddle, 0.28, 0.13),
+            ellipse(-0.72, 0.66 - paddle, 0.28, 0.13),
+            ellipse(-1.16, 0.0, 0.13, 0.09, points=10),      # tail
+        )
+        segments = []
+        for path in paths:
+            for index in range(len(path) - 1):
+                x0, y0 = path[index]
+                x1, y1 = path[index + 1]
+                segments.append((x0, y0, x1, y1, 0.85))
+        return segments
+
     # --------------------------------------------------------- render loop --
 
     def _start_render_loop(self):
@@ -994,6 +1045,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._last_frame_time = now
         self._count_fps_frame(now)
 
+        if self._visitor_started is not None:
+            self.quiet_frame_count = 0     # the visitor swims through silence
         if self._compose_drawing:
             # the stroke in progress previews directly as segments; any
             # still-playing loop audio is drained so it can't burst in later
@@ -1063,7 +1116,23 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
     def _advance_active_renderer(self, samples, allocation):
         work_started = time.perf_counter()
         renderer = self.active_renderer()
-        if isinstance(renderer, LiveCairoRenderer):
+        visitor = (self._visitor_segments(allocation.width, allocation.height)
+                   if self._visitor_started is not None else None)
+        if visitor:
+            with self.compute_lock:
+                segments = self.segment_computer.compute(
+                    samples, allocation.width, allocation.height)
+            if numpy is not None and isinstance(segments, numpy.ndarray):
+                extra = numpy.asarray(visitor, dtype=numpy.float32)
+                segments = (numpy.concatenate((segments, extra))
+                            if len(segments) else extra)
+            else:
+                segments = list(segments) + visitor
+            if isinstance(renderer, LiveCairoRenderer):
+                renderer.advance_segments(segments)
+            else:
+                renderer.advance(segments)
+        elif isinstance(renderer, LiveCairoRenderer):
             renderer.advance(samples)      # worker thread computes + decays
         else:
             with self.compute_lock:
@@ -1127,6 +1196,10 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         subtitle = " — ".join(part for part in (artist, album) if part)
         if identity:
             subtitle = f"{subtitle}  ·  {identity}" if subtitle else identity
+        from phosphor_player import ARTIST_NODS
+        nod = ARTIST_NODS.get((artist or "").strip().lower())
+        if nod:
+            subtitle = f"{subtitle}  ·  {nod}" if subtitle else nod
         self.flash_now_playing(title, subtitle or None)
 
     def _on_now_playing_switched(self, _switch, state):
@@ -1873,6 +1946,17 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         if isinstance(self.get_focus(), Gtk.Entry):
             return False    # typing in a percent box must not fire shortcuts
         key = event.keyval
+        sequence = (Gdk.KEY_Up, Gdk.KEY_Up, Gdk.KEY_Down, Gdk.KEY_Down,
+                    Gdk.KEY_Left, Gdk.KEY_Right, Gdk.KEY_Left, Gdk.KEY_Right,
+                    Gdk.KEY_b, Gdk.KEY_a)
+        if key == sequence[self._konami_progress]:
+            self._konami_progress += 1
+            if self._konami_progress == len(sequence):
+                self._konami_progress = 0
+                self._begin_visitor()
+                return True
+        else:
+            self._konami_progress = 1 if key == sequence[0] else 0
         if key == Gdk.KEY_space:
             self.capture_toggle.set_active(not self.capture_toggle.get_active())
         elif key in (Gdk.KEY_o, Gdk.KEY_O):

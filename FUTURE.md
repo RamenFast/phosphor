@@ -31,6 +31,10 @@ overlay.
 Render-ahead `.phos` cache read by the playback clock.
 Still open: an LRU size cap; precomputing a whole folder in one go.
 
+## Shareable scope-art + 3D visualizer — specs in HANDOFF.md
+Signal postcards (.phos sharing + .phoskit live transform chains) and the
+Takens-embedding 3D view with orbit controls. Both spec'd, next session.
+
 ## Multi-app mixing
 Per-app capture currently scopes one app at a time (one parec per
 sink-input). Mixing several selected apps means summing multiple streams —
