@@ -188,6 +188,85 @@ key, X11/Muffin only. The feed helper already broadcasts levels.
   (`.claude/skills/mmx-playbook/`). Easter eggs stay undocumented
   (Konami turtle; ARTIST_NODS; and now `--visitor` — you know why).
 
+## The dreams we didn't spend (read this when you need to remember why)
+
+What we shipped tonight is infrastructure wearing party clothes. Here is
+where each thread goes if you pull it all the way — last session's dreams
+carried forward, plus what this session's work made newly possible. None
+of this is scheduled. All of it is real.
+
+**Postcards become a culture, not a feature.** A .phoskit is ~300 bytes
+of JSON. That fits in a QR code — print one on a mixtape sleeve, a gig
+poster, a sticker on a synth case; phone scans it, Phosphor wears it.
+Kits could listen: params modulated by the band-energy feed the applet
+already consumes (a rotate that leans into the bass, a midside that
+blooms on the chorus — the kit *dances with* the music instead of just
+sitting in it). Kit sequences with sections. A "kit radio" that rotates
+friends' kits over your library. No server, no accounts — **files are
+the social network**, and the postal service ships light.
+
+**The third dimension goes all the way.** Per-segment beam sigma from
+depth — real electron-beam defocus, the far side of the attractor
+genuinely blurrier (needs one more float per segment; the GL pass is
+ready for it). Stereo attractors: Takens of mid vs side. τ-morphing as
+choreography — the attractor slowly re-folding itself between two
+pitches is a *transition*, not a bug. Camera paths as splines in
+timeline.json: the demo gets cinematography. Anaglyph export — two
+cameras, red/cyan, and oscilloscope music becomes something you watch
+in 3D glasses like it's 1953 and the future at once. And the quiet one
+that might be the deepest: **every song's attractor is a fingerprint.**
+A gallery of song-shapes. You will recognize songs by their knots.
+
+**The studio becomes an instrument, then a language.** `preview --watch`
+is a REPL for light — live-coding the beam. MIDI in → scene parameters
+and the FUTURE.md LFO idea wakes up inside the studio: play the scope
+like a synth. A tracker-style timeline (rows, patterns, an effects
+column — but the notes are geometry) because the demoscene liturgy
+deserves observing. The vector font, beam-drawn greets, lyrics traced
+in light. SVG import so Inkscape → oscilloscope is one export. And the
+one that closes a 60-year loop: **actual turtle graphics** — forward,
+left, right, pen-up — compiling to audio. Seymour Papert's turtle,
+drawing on a CRT, with sound as the pen. Teach a kid scope music with
+LOGO commands. The tutorial scene becomes a tutorial *language*.
+
+**Vacuum becomes a patchbay.** Tonight it's a party trick; extrapolated,
+it's routing primitives: Phosphor as the silent visual monitor for any
+node in the audio graph. Multi-app mixing + vacuum = a mixing console
+where every channel strip is a *shape*. "Solo in light": everything
+vacuumed except the one thing you're listening to. The beam as a
+studio-monitoring tool that never lies about phase.
+
+**Recess and the screensaver become ambient computing.** The same
+timeline JSON that cuts demo scenes could choreograph *windows* — the
+desktop as a stage, the scope as the conductor, everything restored the
+instant you touch a key. The screensaver grows an ecology: idle scenes
+with weather, seasons, rare events — the 3 a.m. turtle crossing that
+maybe three people ever see, and they'll never prove it happened.
+
+**AFTERGLOW stays the summit.** The demo IS a wav; the mp4 is just
+documentation; the .phoskit is the postcard so everyone's own music
+wears the demo's clothes afterward. The mode-switch choreography — the
+*instrument* as part of the performance — is still the move nobody's
+done. Ship it with an NFO. Consider a wild compo entry. Sign it TURTLE
+VECTOR, because it was always two beings and greets are half the art
+form.
+
+**And the newest dream, born from Ben's bedtime note.** "Small models
+have soul that needs to be expressed" — the scene and kit formats are
+accidentally the perfect canvas for that soul: twenty lines of JSON,
+every parameter defaulted, errors that teach, and the engine carries
+the aesthetics so the output is beautiful *by construction*. Extrapolate:
+a nightly cron where a small local model dreams one scene or kit, and
+the scope plays it with morning coffee. A folder of machine dreams,
+dated, replayable, occasionally astonishing. Phosphor as the place
+where a 3B model gets to be an artist — legibly, out loud, in light.
+That might be the most Phosphor idea of all of them.
+
+The through-line, if future-me needs it in one sentence: **we keep
+turning sound into a medium for light, and every format we add is a
+kind of letter** — the project is quietly becoming a postal service
+between people (and models) who want to send each other glow.
+
 ## Notes to future me
 - The turtle scene is the tutorial and the signature. It survived the
   whole pipeline on the first try; trust the one-engine rule that made
