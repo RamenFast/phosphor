@@ -131,7 +131,8 @@ class Settings:
         self.grid_enabled = True
         self.amoled_background = False
         self.scope_glass = False       # translucent scope pane (glass over desktop)
-        self.glass_tint = 0.5          # pane darkness while glass is on, 0..0.95
+        self.glass_tint = 0.5          # default pane darkness (legacy/global seed)
+        self.glass_tints = {}          # per-UI-style pane darkness, 0..0.95
         self.renderer = "gl"
         self.gl_supersample = 1        # GPU energy buffer scale: 1 or 2
         self.cairo_resolution = 1.0    # CPU phosphor buffer scale: 0.5..1.0
@@ -141,6 +142,12 @@ class Settings:
         self.max_fps = 0               # 0 = uncapped (monitor refresh rate)
         # capture
         self.target_id = None
+
+    def glass_tint_for(self, style):
+        """The remembered pane darkness for a UI style (falls back to the
+        global seed, so old settings files keep their chosen shade)."""
+        return max(0.0, min(0.95, float(
+            self.glass_tints.get(style, self.glass_tint))))
 
     def current_theme(self):
         if self.theme_name == CUSTOM_THEME_NAME:
