@@ -14,9 +14,10 @@ through pacat) so you can scope a track without a separate player.
 Compose mode runs the whole machine in reverse: draw a shape on the
 scope and it becomes a constant-speed audio loop that draws itself.
 
-Keys:  Space capture · O open file · D draw (compose) · M mini
-       S snapshot · C save clip · P pin · G grid · F fps · F11 fullscreen
-       scroll = gain (compose: pitch · Ctrl+scroll in mini: resize) · Q quit
+Keys:  Space capture · O open file · L playlist · D draw (compose)
+       M mini · S snapshot · C save clip · P pin · G grid · F fps
+       F11 fullscreen · scroll = gain (compose: pitch · Ctrl+scroll in
+       mini: resize) · Q quit
 Mini mode: drag with the left button, drag the bottom-right corner to
 resize, double-click to restore, right-click anywhere for the menu.
 """
@@ -52,7 +53,7 @@ from phosphor_signal import SegmentComputer, plan_feed
 from phosphor_ui_style import UI_STYLE_CHOICES
 
 APPLICATION_ID = "io.github.ben.Phosphor"
-APPLICATION_VERSION = "2.6.0"
+APPLICATION_VERSION = "3.0.0"
 PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 QUIET_PEAK_THRESHOLD = 1e-4
 QUIET_FRAMES_BEFORE_SLEEP = 120

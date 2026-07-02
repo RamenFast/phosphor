@@ -31,13 +31,18 @@ Right-click the applet → *Configure*:
 - **Trace colour** — *Follow panel theme* (blends in like a system monitor) or
   a fixed *Phosphor colour*.
 - **Phosphor colour** — which preset to use when not following the theme.
+- **Scope background** — transparent, AMOLED black, or a tint of the trace.
+- **At login, the display starts** — always on, always off, or remembering
+  its last state (the ⏻ CRT toggle in the right-click menu).
 - **Scope mode** — XY, goniometer, XY dots, waveform, spectrum, or radial
   spectrum (also switchable from the hover popup).
-- **Width in the panel** — how many pixels wide the scope is.
+- **Width in the panel** / **Refresh rate** — size and fps (up to 480;
+  match your monitor).
 
 ## How it finds the helper
 
 The installer bundles `phosphor_applet_feed.py` (and the `phosphor_audio` /
-`phosphor_signal` modules it imports) into the applet directory, so it is
+`phosphor_signal` / `phosphor_core` modules it imports, plus the native
+`libphosphor_core.so` when built) into the applet directory, so it is
 self-contained. If those aren't present it falls back to a `.deb` install at
 `/usr/lib/phosphor/`.
