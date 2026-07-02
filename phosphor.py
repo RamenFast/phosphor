@@ -54,7 +54,7 @@ from phosphor_signal import SegmentComputer, plan_feed
 from phosphor_ui_style import UI_STYLE_CHOICES
 
 APPLICATION_ID = "io.github.ben.Phosphor"
-APPLICATION_VERSION = "3.1.3"
+APPLICATION_VERSION = "3.1.4"
 PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 QUIET_PEAK_THRESHOLD = 1e-4
 QUIET_FRAMES_BEFORE_SLEEP = 120
@@ -659,13 +659,15 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             "behind the window (needs a compositing desktop; pairs\n"
             "beautifully with the mini view and Aero glass)")
         self.glass_tint_scale = Gtk.Scale.new_with_range(
-            Gtk.Orientation.HORIZONTAL, 0.05, 0.95, 0.05)
-        self.glass_tint_scale.set_value(self.settings.glass_tint)
+            Gtk.Orientation.HORIZONTAL, 0.0, 0.95, 0.05)
+        self.glass_tint_scale.set_value(
+            self.settings.glass_tint_for(self.settings.ui_style))
         self.glass_tint_scale.set_draw_value(False)
         self.glass_tint_scale.set_size_request(140, -1)
         self.glass_tint_scale.set_tooltip_text(
             "How dark the glass smokes the desktop behind the scope —\n"
-            "left is nearly clear, right is nearly opaque")
+            "fully clear on the left, nearly opaque on the right.\n"
+            "Remembered separately for each UI style.")
         self.glass_tint_scale.connect("value-changed",
                                       self._on_glass_tint_changed)
         self.glass_tint_scale.set_sensitive(self.settings.scope_glass)
@@ -1258,8 +1260,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         theme = self.settings.current_theme()
         # glass touches only the scope: the window background vanishes
         # beneath it (chrome keeps its own deck), and the pane smokes the
-        # desktop by exactly as much as the Glass tint slider asks
-        glass_alpha = (max(0.05, min(0.95, self.settings.glass_tint))
+        # desktop by exactly as much as this style's Glass tint asks
+        glass_alpha = (self.settings.glass_tint_for(self.settings.ui_style)
                        if self.settings.scope_glass else 1.0)
         if self.gl_renderer is not None:
             self.gl_renderer.scope_alpha = glass_alpha
@@ -1428,6 +1430,10 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         # aero implies a glass scope; the switch stays free to override
         if self.settings.scope_glass != (style == "aero"):
             self.glass_switch.set_active(style == "aero")
+        # each style remembers its own pane darkness
+        self.glass_tint_scale.set_value(
+            self.settings.glass_tint_for(style))
+        self._apply_theme()
         self.settings.save()
 
     def _on_precompute_switched(self, _switch, state):
@@ -1478,7 +1484,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         return False
 
     def _on_glass_tint_changed(self, scale):
-        self.settings.glass_tint = scale.get_value()
+        self.settings.glass_tints[self.settings.ui_style] = scale.get_value()
         self._apply_theme()
 
     def _sync_glass_class(self):

@@ -99,7 +99,7 @@ The gear popover is organized into sections:
   pane becomes a window to your desktop (a whisper of theme tint, the
   beam's own light fully opaque) while the toolbars keep their solid
   chrome. **Glass tint** sets how dark the pane smokes the desktop
-  (nearly clear to nearly opaque). Needs a compositing WM, auto-enabled
+  (fully clear to nearly opaque) — remembered separately per UI style. Needs a compositing WM, auto-enabled
   with the Aero glass style, wonderful in the mini view. Note: like any
   code update, a running Phosphor keeps its old behavior until
   relaunched.
