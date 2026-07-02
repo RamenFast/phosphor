@@ -23,8 +23,9 @@ from gi.repository import Gtk, Gdk  # noqa: E402
 UI_STYLE_CHOICES = (("system", "System"), ("dark", "Dark"),
                     ("light", "Ice Blue ❄"), ("black", "AMOLED pink"),
                     ("bloom", "Bloom · neon"), ("stone", "Stonework 95"),
+                    ("stonebloom", "Stonework · bloom"),
                     ("aero", "Aero glass"))
-DARK_STYLES = ("dark", "black", "bloom", "stone")
+DARK_STYLES = ("dark", "black", "bloom", "stone", "stonebloom")
 
 # Always loaded: the overlay chips that float on the scope.
 BASE_UI_CSS = b"""
@@ -152,6 +153,7 @@ tooltip, tooltip.background {
     color: #fbcfe8;
     border: 1px solid #57203f;
 }
+tooltip label { color: #fbcfe8; }
 /* file chooser, kept on-theme: pink on black */
 dialog headerbar { background-color: #000000; }
 filechooser, filechooser box, filechooser paned { background-color: #000000; }
@@ -295,6 +297,7 @@ tooltip, tooltip.background {
     color: #fbcfe8;
     border: 1px solid #b65c92;
 }
+tooltip label { color: #fbcfe8; }
 dialog headerbar { background-color: #000000; }
 filechooser, filechooser box, filechooser paned { background-color: #000000; }
 placessidebar, placessidebar list { background-color: #0d040a; }
@@ -343,12 +346,12 @@ button, combobox button.combo, spinbutton button, button.color {
     border: 2px solid;
     border-color: #8a8375 #2e2a25 #2e2a25 #8a8375;
     border-radius: 0;
-    padding: 1px 9px;
-    min-height: 24px;
+    padding: 0 6px;
+    min-height: 20px;
     box-shadow: none;
     transition: none;
 }
-spinbutton button { padding: 1px 6px; }
+spinbutton button { padding: 0 4px; }
 button:hover { background-image: linear-gradient(#756e63, #605a51); }
 button:active, button:checked {
     background-image: linear-gradient(#3e3a34, #4a453e);
@@ -431,6 +434,7 @@ tooltip, tooltip.background {
     color: #f4ead0;
     border: 1px solid #8a8375;
 }
+tooltip label { color: #f4ead0; }
 dialog headerbar { background-image: linear-gradient(#5a544b, #4a453e); }
 filechooser, filechooser box, filechooser paned { background-color: #4a453e; }
 placessidebar, placessidebar list { background-color: #3e3a34; }
@@ -458,25 +462,192 @@ actionbar { background-color: #4a453e; }
 #playlist-panel row:hover { background-color: #57524a; }
 """
 
+
+# Stonework · bloom: the same chiseled masonry, but the runes are lit —
+# ember light seeps out of whatever you touch, gold means molten.
+STONEBLOOM_UI_CSS = b"""
+window, headerbar, dialog, popover, popover.background, menu, .background {
+    background-color: #38342e;
+    color: #ecdfc2;
+}
+label, popover label, menu label, cellview { color: #ecdfc2; }
+headerbar {
+    background-image: linear-gradient(#4a453e, #38342e);
+    min-height: 34px;
+    padding: 0 4px;
+    border-bottom: 2px solid #211d18;
+    box-shadow: 0 1px 10px rgba(255, 190, 80, 0.14);
+}
+headerbar .title, headerbar label { color: #f4ead0; font-weight: bold; }
+button, combobox button.combo, spinbutton button, button.color {
+    background-image: linear-gradient(#57524a, #45403a);
+    color: #ecdfc2;
+    border: 2px solid;
+    border-color: #7d766a #211d18 #211d18 #7d766a;
+    border-radius: 0;
+    padding: 0 6px;
+    min-height: 20px;
+    box-shadow: 0 0 5px rgba(255, 190, 80, 0.10);
+    transition: box-shadow 140ms ease;
+}
+spinbutton button { padding: 0 4px; }
+button:hover {
+    background-image: linear-gradient(#615a50, #4e4841);
+    color: #ffd76e;
+    box-shadow: 0 0 11px rgba(255, 190, 80, 0.5);
+}
+button:active, button:checked {
+    background-image: linear-gradient(#3a2d10, #4a3a14);
+    border-color: #211d18 #7d766a #7d766a #211d18;
+}
+button:checked {
+    color: #ffcf5e;
+    box-shadow: 0 0 12px rgba(255, 200, 90, 0.55);
+}
+button:checked label, button:checked image { color: #ffcf5e; }
+combobox arrow { color: #d8b96a; }
+entry, spinbutton, spinbutton entry {
+    background-image: none;
+    background-color: #262218;
+    color: #ffcf5e;
+    border: 2px solid;
+    border-color: #211d18 #7d766a #7d766a #211d18;
+    border-radius: 0;
+    min-height: 22px;
+    box-shadow: none;
+}
+entry:focus, spinbutton entry:focus {
+    background-color: #2e2a24;
+    box-shadow: 0 0 9px rgba(255, 190, 80, 0.4);
+}
+scale trough {
+    background-color: #262218;
+    border: 2px solid;
+    border-color: #211d18 #7d766a #7d766a #211d18;
+    border-radius: 0;
+    min-height: 8px;
+}
+scale highlight {
+    background-image: linear-gradient(#ffcf5e, #c98f2e);
+    border-radius: 0;
+    box-shadow: 0 0 7px rgba(255, 200, 90, 0.6);
+}
+scale slider {
+    background-image: linear-gradient(#615a50, #4e4841);
+    border: 2px solid;
+    border-color: #7d766a #211d18 #211d18 #7d766a;
+    border-radius: 0;
+    min-width: 12px;
+    min-height: 20px;
+}
+scale slider:hover { box-shadow: 0 0 9px rgba(255, 190, 80, 0.55); }
+switch {
+    background-image: none;
+    background-color: #262218;
+    border: 2px solid;
+    border-color: #211d18 #7d766a #7d766a #211d18;
+    border-radius: 0;
+}
+switch:checked {
+    background-color: #6e5312;
+    box-shadow: 0 0 9px rgba(255, 200, 90, 0.5);
+}
+switch slider {
+    background-image: linear-gradient(#615a50, #4e4841);
+    border: 2px solid;
+    border-color: #7d766a #211d18 #211d18 #7d766a;
+    border-radius: 0;
+    min-width: 16px;
+    min-height: 16px;
+    margin: 1px;
+}
+menu menuitem:hover, popover modelbutton:hover { background-color: #6e5312; }
+menu menuitem:hover label { color: #ffe9b0; }
+menu, popover {
+    border: 2px solid;
+    border-color: #7d766a #211d18 #211d18 #7d766a;
+    border-radius: 0;
+    box-shadow: 0 0 16px rgba(255, 190, 80, 0.22);
+}
+menu check, menu radio { color: #d8b96a; }
+menu check:checked, menu radio:checked { color: #ffcf5e; }
+separator { background-color: #211d18; min-width: 2px; min-height: 2px; }
+scrollbar, scrollbar trough { background-color: #2e2a24; }
+scrollbar slider {
+    background-image: linear-gradient(#615a50, #4e4841);
+    border: 2px solid;
+    border-color: #7d766a #211d18 #211d18 #7d766a;
+    border-radius: 0;
+    min-width: 12px;
+    min-height: 24px;
+}
+scrollbar slider:hover { box-shadow: 0 0 8px rgba(255, 190, 80, 0.5); }
+.settings-section {
+    color: #d8b96a;
+    font-size: 10px;
+    font-weight: bold;
+    letter-spacing: 3px;
+}
+tooltip, tooltip.background {
+    background-color: #262218;
+    color: #ffe9b0;
+    border: 1px solid #c98f2e;
+}
+tooltip label { color: #ffe9b0; }
+dialog headerbar { background-image: linear-gradient(#4a453e, #38342e); }
+filechooser, filechooser box, filechooser paned { background-color: #38342e; }
+placessidebar, placessidebar list { background-color: #2e2a24; }
+placessidebar row label { color: #ecdfc2; }
+placessidebar row:selected { background-color: #6e5312; }
+placessidebar row:selected label { color: #ffcf5e; }
+treeview.view { background-color: #262218; color: #ecdfc2; }
+treeview.view:selected { background-color: #6e5312; color: #ffcf5e; }
+treeview.view header button { background-color: #45403a; color: #ecdfc2; }
+actionbar { background-color: #38342e; }
+*:selected { background-color: #6e5312; color: #ffcf5e; }
+#fps-overlay { color: #ffcf5e; }
+#now-playing {
+    background-color: rgba(38, 34, 29, 0.88);
+    color: #f4ead0;
+    border: 2px solid;
+    border-color: #7d766a #211d18 #211d18 #7d766a;
+    border-radius: 0;
+    box-shadow: 0 0 12px rgba(255, 190, 80, 0.3);
+}
+#playlist-panel { background-color: #2e2a24; border-left: 2px solid #211d18; }
+#playlist-panel list, #playlist-panel row { background-color: transparent; }
+#playlist-panel row { border-radius: 0; }
+#playlist-panel row:selected { background-color: #6e5312; }
+#playlist-panel row:selected label { color: #ffcf5e; }
+#playlist-panel row:hover { background-color: #4e4841; }
+"""
+
 # Aero glass: translucent Frutiger-era gradients, white sheen on every
 # control, deep-sky selection — the 2000s visualizer energy, in chrome.
 AERO_UI_CSS = b"""
+/* a transparent decoration node + non-opaque background-color are what
+   let GTK3 hand the compositor real alpha - without them the frame
+   flattens everything against an opaque base */
+decoration { background-color: transparent; background-image: none; }
 window, dialog, .background {
-    background-image: linear-gradient(#dff2fb, #b8dff0 40%, #a5d4ea);
+    background-color: rgba(196, 228, 243, 0.60);
+    background-image: linear-gradient(rgba(223, 242, 251, 0.72),
+                                      rgba(184, 223, 240, 0.62) 40%,
+                                      rgba(165, 212, 234, 0.58));
     color: #123a52;
 }
 popover, popover.background, menu {
-    background-color: rgba(235, 248, 253, 0.97);
+    background-color: rgba(235, 248, 253, 0.94);
     color: #123a52;
 }
 label, popover label, menu label, cellview { color: #123a52; }
 headerbar {
-    background-image: linear-gradient(rgba(255,255,255,0.9),
-                                      rgba(190, 226, 243, 0.9));
+    background-image: linear-gradient(rgba(255,255,255,0.72),
+                                      rgba(190, 226, 243, 0.66));
     min-height: 34px;
     padding: 0 4px;
-    border-bottom: 1px solid #7db8d6;
-    box-shadow: inset 0 1px 0 rgba(255,255,255,0.9);
+    border-bottom: 1px solid rgba(125, 184, 214, 0.8);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.85);
 }
 headerbar .title, headerbar label { color: #0d3752; }
 button, combobox button.combo, spinbutton button, button.color {
@@ -579,6 +750,7 @@ tooltip, tooltip.background {
     color: #e8f6fd;
     border: 1px solid #5aa5cc;
 }
+tooltip label { color: #e8f6fd; }
 dialog headerbar {
     background-image: linear-gradient(rgba(255,255,255,0.9),
                                       rgba(190, 226, 243, 0.9));
@@ -608,7 +780,10 @@ actionbar { background-color: #cfe9f5; }
     color: #0d3752;
     border: 1px solid #7db8d6;
 }
-#playlist-panel { background-color: #cfe9f5; border-left: 1px solid #9fcde2; }
+#playlist-panel {
+    background-color: rgba(207, 233, 245, 0.72);
+    border-left: 1px solid rgba(159, 205, 226, 0.8);
+}
 #playlist-panel list, #playlist-panel row { background-color: transparent; }
 #playlist-panel row { border-radius: 7px; }
 #playlist-panel row:selected {
@@ -719,6 +894,7 @@ tooltip, tooltip.background {
     background-color: #1c3a50;
     color: #eaf6fd;
 }
+tooltip label { color: #eaf6fd; }
 /* file chooser: force everything frost-light AND force symbolic icons;
    full-color icon themes made for dark desktops used to vanish here */
 dialog headerbar { background-color: #e1eef6; }
@@ -752,8 +928,8 @@ actionbar { background-color: #e1eef6; }
 """
 
 _STYLE_CSS = {"black": BLACK_UI_CSS, "bloom": BLOOM_UI_CSS,
-              "stone": STONE_UI_CSS, "aero": AERO_UI_CSS,
-              "light": ICE_UI_CSS}
+              "stone": STONE_UI_CSS, "stonebloom": STONEBLOOM_UI_CSS,
+              "aero": AERO_UI_CSS, "light": ICE_UI_CSS}
 
 
 def install_base_style():

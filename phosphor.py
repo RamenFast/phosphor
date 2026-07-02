@@ -174,6 +174,12 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self.settings = Settings.load()
         self.set_default_size(self.settings.window_width, self.settings.window_height)
 
+        # an alpha channel when the compositor offers one: opaque themes
+        # look identical, and Aero glass gets genuinely see-through chrome
+        rgba_visual = self.get_screen().get_rgba_visual()
+        if rgba_visual is not None:
+            self.set_visual(rgba_visual)
+
         icon_path = os.path.join(PROJECT_DIRECTORY, "phosphor-scope.svg")
         if os.path.exists(icon_path):
             try:
@@ -1802,6 +1808,23 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                      sensitive=len(self.player.playlist) > 1)
             add_item("Previous track  ⏮", self.player.play_previous_track,
                      sensitive=len(self.player.playlist) > 1)
+            if len(self.player.playlist) > 1:
+                # track picker in the menu, so the mini view can change
+                # songs by mouse alone
+                tracks_menu = add_submenu("Tracks")
+                playlist = self.player.playlist
+                current = self.player.playlist_index
+                start = 0
+                if len(playlist) > 30:      # window big folders around now
+                    start = max(0, min(current - 12, len(playlist) - 25))
+                    playlist = playlist[start:start + 25]
+                for offset, path in enumerate(playlist):
+                    add_check_item(
+                        os.path.basename(path),
+                        start + offset == current,
+                        lambda active, p=path: active and self.player
+                            .play_file(p, rebuild_playlist=False),
+                        radio=True, target_menu=tracks_menu)
         if not self.is_mini_mode:
             add_check_item("Compose · draw a shape  (D)", self.is_composing,
                            lambda active: self.compose_toggle.set_active(active))

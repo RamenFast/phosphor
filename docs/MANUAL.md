@@ -99,7 +99,8 @@ The gear popover is organized into sections:
 - **Appearance** — themes (P7 Green, Amber, Ice Blue, White, Vaporwave,
   Red Phosphor, Ultraviolet, Solar Gold, Cyan Tube, Custom with two color
   pickers), UI style (System / Dark / Ice Blue ❄ / AMOLED pink / Bloom neon /
-  Stonework 95 / Aero glass), pin button.
+  Stonework 95 / Stonework · bloom / Aero glass — Aero is genuinely
+  translucent when a compositor is running), pin button.
 - **Player** — the track-info overlay.
 - **Performance** — **Max FPS** (Monitor follows the display's refresh
   rate; presets to 480 or type anything up to 1000) and the FPS overlay,

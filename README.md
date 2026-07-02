@@ -35,17 +35,26 @@ saved with the snapshot button:
 ## In use
 
 <p align="center">
-  <img src="docs/inuse-full.png" width="820" alt="Phosphor's full window running on a Linux Mint desktop"><br>
-  <sub>The full window: headerbar transport, source picker, slider rail.</sub>
-</p>
-
-<p align="center">
-  <img src="docs/inuse-mini.png" width="820" alt="Phosphor mini player on the desktop, with saved snapshots open in the file manager"><br>
-  <sub>The mini player — a borderless always-on-top square you tuck into a corner — beside saved snapshots.</sub>
+  <img src="docs/inuse-full.png" width="860" alt="Phosphor 3.1 playing a track: AMOLED pink chrome, Vaporwave beam, headerbar transport and seek"><br>
+  <sub>v3.1 on a Cinnamon desktop — AMOLED pink chrome, the built-in player mid-track, track info fading in.</sub>
 </p>
 
 <p align="center"><sub><em>“Made with Claude Fable 5 — finished the last prompt before the feds took it down. Amazing model…”</em> — Ben<br>
 Shipped to GitHub by Claude&nbsp;Opus&nbsp;4.8, the day Fable&nbsp;5 went dark (12 June 2026).</sub></p>
+
+## Seven looks
+
+<p align="center">
+  <img src="docs/styles.png" width="860" alt="Six of Phosphor's chrome styles: AMOLED pink, Bloom neon, Stonework 95, Stonework bloom, Aero glass, Ice Blue"><br>
+  <sub>Same scope, different metal: AMOLED pink · Bloom neon · Stonework 95 · Stonework bloom · Aero glass (genuinely translucent under a compositor) · Ice Blue ❄ — plus your system theme.</sub>
+</p>
+
+## Nine ways to see sound
+
+<p align="center">
+  <img src="docs/modes.png" width="860" alt="Three of the nine display modes: XY swirl, ring oscillogram, spectrum tunnel"><br>
+  <sub>Three of the nine: XY · swirl, Ring · oscillogram, Spectrum · tunnel. The others: XY scope art, goniometer, XY dots, waveform, spectrum, radial.</sub>
+</p>
 
 ## What it does
 
@@ -59,8 +68,9 @@ Shipped to GitHub by Claude&nbsp;Opus&nbsp;4.8, the day Fable&nbsp;5 went dark (
 - **Nine displays** — XY scope art, goniometer, a slowly revolving
   swirl, XY dots, triggered waveform, ring oscillogram, spectrum, radial
   spectrum, and a breathing spectrum tunnel.
-- **Six chrome styles** — AMOLED pink, Bloom neon, Stonework 95, Aero
-  glass, Ice Blue ❄, or your system theme.
+- **Seven chrome styles** — AMOLED pink, Bloom neon, Stonework 95,
+  Stonework · bloom, truly-translucent Aero glass, Ice Blue ❄, or your
+  system theme.
 - **A real beam** — analytic Gaussian beam integral on the GPU, linear-light
   compositing, two-layer phosphor decay, octave-stepped graticule.
 - **A Rust core** — the samples→segments math runs native, and in-process
