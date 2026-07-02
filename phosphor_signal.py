@@ -76,6 +76,169 @@ TUNNEL_RING_POINTS = 60
 RING_TRACE_POINTS = 720
 
 SQRT_HALF = math.sqrt(0.5)
+TAU = 2 * math.pi
+
+
+class KitChain:
+    """Stateful executor for a signal kit's op chain (see phosphor_kit).
+
+    Runs upstream of every display mode, transforming interleaved stereo
+    in signal space. Parity contract with the Rust core: phase accumulators
+    live in f64 and advance per chunk by 2π·hz·frames/rate with euclidean
+    wraparound; trig is computed in f64 and cast to f32 before the f32
+    sample math; channel delays are exact integer sample counts. Both
+    engines must keep these rules or tests/test_native_parity.py fails.
+    """
+
+    def __init__(self, stages):
+        self.stages = stages            # canonical [(op, [p0..p3])]
+        self.sample_rate = BASE_SAMPLE_RATE
+        self.reset()
+
+    def configure(self, sample_rate):
+        self.sample_rate = sample_rate
+        self.reset()
+
+    def reset(self):
+        self.phases = [0.0] * len(self.stages)
+        self._delays = [None] * len(self.stages)
+
+    def _delay_line(self, index, milliseconds):
+        if self._delays[index] is None:
+            count = int(round(milliseconds / 1000.0 * self.sample_rate))
+            self._delays[index] = array("f", bytes(4 * count))
+        return self._delays[index]
+
+    def process(self, samples):
+        """Transformed interleaved stereo, same layout as the input."""
+        count = len(samples) // 2
+        if count == 0:
+            return samples
+        if numpy is not None:
+            return self._process_numpy(samples, count)
+        return self._process_python(samples, count)
+
+    def _process_numpy(self, samples, count):
+        frames = numpy.array(samples, dtype=numpy.float32,
+                             copy=True).reshape(-1, 2)
+        left, right = frames[:, 0], frames[:, 1]
+        for index, (op, params) in enumerate(self.stages):
+            if op == "rotate":
+                hz, angle = params[0], params[1]
+                delta = TAU * hz / self.sample_rate
+                phases = (self.phases[index] + angle
+                          + delta * numpy.arange(count, dtype=numpy.float64))
+                cosine = numpy.cos(phases).astype(numpy.float32)
+                sine = numpy.sin(phases).astype(numpy.float32)
+                left, right = (left * cosine - right * sine,
+                               left * sine + right * cosine)
+                self.phases[index] = (self.phases[index]
+                                      + delta * count) % TAU
+            elif op == "midside":
+                width = numpy.float32(params[0])
+                half_plus = numpy.float32(0.5) * (numpy.float32(1.0) + width)
+                half_minus = numpy.float32(0.5) * (numpy.float32(1.0) - width)
+                left, right = (half_plus * left + half_minus * right,
+                               half_minus * left + half_plus * right)
+            elif op == "ringmod":
+                hz, depth = params[0], params[1]
+                delta = TAU * hz / self.sample_rate
+                phases = (self.phases[index]
+                          + delta * numpy.arange(count, dtype=numpy.float64))
+                gain = (1.0 - depth * (0.5 + 0.5 * numpy.sin(phases))) \
+                    .astype(numpy.float32)
+                left = left * gain
+                right = right * gain
+                self.phases[index] = (self.phases[index]
+                                      + delta * count) % TAU
+            elif op == "wobble":
+                hz, depth = params[0], params[1]
+                delta = TAU * hz / self.sample_rate
+                phases = (self.phases[index]
+                          + delta * numpy.arange(count, dtype=numpy.float64))
+                angles = depth * numpy.sin(phases)
+                cosine = numpy.cos(angles).astype(numpy.float32)
+                sine = numpy.sin(angles).astype(numpy.float32)
+                left, right = (left * cosine - right * sine,
+                               left * sine + right * cosine)
+                self.phases[index] = (self.phases[index]
+                                      + delta * count) % TAU
+            elif op == "matrix":
+                a, b, c, d = (numpy.float32(value) for value in params[:4])
+                left, right = a * left + b * right, c * left + d * right
+            elif op == "chandelay":
+                line = self._delay_line(index, params[0])
+                if len(line):
+                    channel = right if params[1] >= 0.5 else left
+                    joined = numpy.concatenate(
+                        (numpy.frombuffer(line, dtype=numpy.float32),
+                         channel))
+                    delayed, keep = joined[:count], joined[count:]
+                    self._delays[index] = array("f", keep.tobytes())
+                    if params[1] >= 0.5:
+                        right = delayed
+                    else:
+                        left = delayed
+        out = numpy.empty((count, 2), dtype=numpy.float32)
+        out[:, 0] = left
+        out[:, 1] = right
+        return out.reshape(-1)
+
+    def _process_python(self, samples, count):
+        left = [samples[2 * i] for i in range(count)]
+        right = [samples[2 * i + 1] for i in range(count)]
+        for index, (op, params) in enumerate(self.stages):
+            if op in ("rotate", "wobble"):
+                hz = params[0]
+                delta = TAU * hz / self.sample_rate
+                base = self.phases[index]
+                for i in range(count):
+                    phase = base + delta * i
+                    if op == "rotate":
+                        angle = phase + params[1]
+                    else:
+                        angle = params[1] * math.sin(phase)
+                    cosine, sine = math.cos(angle), math.sin(angle)
+                    left[i], right[i] = (left[i] * cosine - right[i] * sine,
+                                         left[i] * sine + right[i] * cosine)
+                self.phases[index] = (base + delta * count) % TAU
+            elif op == "midside":
+                width = params[0]
+                half_plus, half_minus = 0.5 * (1 + width), 0.5 * (1 - width)
+                for i in range(count):
+                    left[i], right[i] = (
+                        half_plus * left[i] + half_minus * right[i],
+                        half_minus * left[i] + half_plus * right[i])
+            elif op == "ringmod":
+                hz, depth = params[0], params[1]
+                delta = TAU * hz / self.sample_rate
+                base = self.phases[index]
+                for i in range(count):
+                    gain = 1.0 - depth * (0.5 + 0.5 * math.sin(base + delta * i))
+                    left[i] *= gain
+                    right[i] *= gain
+                self.phases[index] = (base + delta * count) % TAU
+            elif op == "matrix":
+                a, b, c, d = params[:4]
+                for i in range(count):
+                    left[i], right[i] = (a * left[i] + b * right[i],
+                                         c * left[i] + d * right[i])
+            elif op == "chandelay":
+                line = self._delay_line(index, params[0])
+                if len(line):
+                    channel = right if params[1] >= 0.5 else left
+                    joined = list(line) + channel
+                    delayed, keep = joined[:count], joined[count:]
+                    self._delays[index] = array("f", keep)
+                    if params[1] >= 0.5:
+                        right = delayed
+                    else:
+                        left = delayed
+        out = array("f", bytes(8 * count))
+        for i in range(count):
+            out[2 * i] = left[i]
+            out[2 * i + 1] = right[i]
+        return out
 
 
 class PurePythonFFT:
@@ -140,6 +303,7 @@ class SegmentComputer:
         self.spectrum_levels = [0.0] * SPECTRUM_BAR_COUNT
         self.frames_since_fft = 0
         self._swirl_phase = 0.0
+        self._kit = None                # active KitChain, or None
         self._native = (phosphor_core.NativeComputer()
                         if native_available() else None)
         self.set_sample_rate(BASE_SAMPLE_RATE)
@@ -160,6 +324,8 @@ class SegmentComputer:
         """
         self.sample_rate = sample_rate
         self.oversample = max(1, int(oversample))
+        if self._kit is not None:
+            self._kit.configure(sample_rate)
         if self._native is not None:
             self._native.configure(sample_rate, self.oversample)
         rate_ratio = sample_rate / BASE_SAMPLE_RATE
@@ -188,8 +354,23 @@ class SegmentComputer:
         self.waveform_history = array("f")
         self.spectrum_levels = [0.0] * SPECTRUM_BAR_COUNT
         self._swirl_phase = 0.0
+        if self._kit is not None:
+            self._kit.reset()
         if self._native is not None:
             self._native.reset()
+
+    def set_kit(self, stages):
+        """Install a signal kit chain (canonical [(op, params)] stages from
+        phosphor_kit, or None to clear). Applies to every mode, upstream of
+        everything; the native core runs its own copy so states start in
+        step (they advance independently per engine — cosmetic only)."""
+        if stages:
+            self._kit = KitChain(stages)
+            self._kit.configure(self.sample_rate)
+        else:
+            self._kit = None
+        if self._native is not None:
+            self._native.set_kit(stages)
 
     def compute(self, samples, width, height):
         """New beam segments for this frame from this frame's new samples."""
@@ -199,6 +380,8 @@ class SegmentComputer:
                                         self.beam_energy,
                                         self.frame_glow_keep, samples,
                                         width, height)
+        if self._kit is not None and len(samples) >= 2:
+            samples = self._kit.process(samples)
         if self.mode in ("xy", "xy45"):
             return self._xy_segments(samples, width, height)
         if self.mode == "xy_swirl":

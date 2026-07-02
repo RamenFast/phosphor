@@ -39,6 +39,8 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gdk, GLib  # noqa: E402
 
 import phosphor_compose
+import phosphor_kit
+import phosphor_kit_editor
 import phosphor_mpris
 import phosphor_precompute
 import phosphor_recorder
@@ -258,6 +260,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._apply_render_quality()
         self._apply_grid_geometry()
         self._apply_ui_style()
+        self._apply_kit_to_computer(quiet=True)
 
         try:
             self._mpris_watcher = phosphor_mpris.MprisWatcher(
@@ -699,6 +702,27 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             "Fade the artist/title into the corner when the song changes —\n"
             "for files Phosphor plays and for other players (MPRIS)")
 
+        section("Signal kit")
+        self.kit_combo = Gtk.ComboBoxText()
+        self.kit_combo.set_tooltip_text(
+            "A .phoskit transform chain bent into whatever plays — rotate,\n"
+            "widen, ring-mod, delay… Friends send these; drop one on the\n"
+            "window to import it.")
+        self._refresh_kit_combo()
+        self.kit_combo.connect("changed", self._on_kit_combo_changed)
+        self._kit_combo_connected = True
+        attach("Kit", self.kit_combo)
+        self.kit_switch = attach("Apply kit", switch(
+            self.settings.kit_enabled, self._on_kit_enabled_switched))
+        self.kit_switch.set_tooltip_text(
+            "Run the chosen kit's ops on the signal before every display\n"
+            "mode — the figure, the goniometer, the tunnel, all of it")
+        kit_editor_button = Gtk.Button(label="Kit editor…")
+        kit_editor_button.set_tooltip_text(
+            "Build or tweak a chain live and save it as a .phoskit postcard")
+        kit_editor_button.connect("clicked", self._on_kit_editor_clicked)
+        attach("Compose one", kit_editor_button)
+
         section("Performance")
         self.max_fps_combo = Gtk.ComboBoxText.new_with_entry()
         for fps_value in MAX_FPS_PRESETS:
@@ -963,6 +987,90 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         freed = phosphor_precompute.clear_cache()
         self.status_label.set_text(
             f"precomputed streams cleared ({freed / 1e6:.0f} MB)")
+
+    # ------------------------------------------------------ signal kits --
+
+    def _refresh_kit_combo(self):
+        """Repopulate the kit picker from the kit directories, keeping the
+        active choice when it still exists."""
+        connected = getattr(self, "_kit_combo_connected", False)
+        if connected:
+            self.kit_combo.handler_block_by_func(self._on_kit_combo_changed)
+        self.kit_combo.remove_all()
+        for label, path in phosphor_kit.available_kits():
+            self.kit_combo.append(path, label)
+        if self.settings.kit_path:
+            self.kit_combo.set_active_id(self.settings.kit_path)
+        if connected:
+            self.kit_combo.handler_unblock_by_func(self._on_kit_combo_changed)
+
+    def _on_kit_combo_changed(self, combo):
+        path = combo.get_active_id()
+        if path and path != self.settings.kit_path:
+            self.settings.kit_path = path
+            self.settings.save()
+            self._apply_kit_to_computer()
+
+    def _on_kit_enabled_switched(self, _switch, state):
+        self.settings.kit_enabled = state
+        if state and not self.settings.kit_path:
+            # flipping the switch with nothing chosen picks the first kit
+            model = self.kit_combo.get_model()
+            if model is not None and len(model):
+                self.kit_combo.set_active(0)
+                self.settings.kit_path = self.kit_combo.get_active_id()
+        self.settings.save()
+        self._apply_kit_to_computer()
+
+    def _apply_kit_to_computer(self, quiet=False):
+        """Load the chosen kit (when enabled) onto the segment computer —
+        both engines, under the compute lock."""
+        stages = None
+        label = None
+        if self.settings.kit_enabled and self.settings.kit_path:
+            try:
+                name, author, stages = phosphor_kit.load(
+                    self.settings.kit_path)
+                label = f"{name} — {author}" if author else name
+            except (OSError, ValueError) as error:
+                if not quiet:
+                    self.status_label.set_text(f"kit failed to load: {error}")
+                stages = None
+        with self.compute_lock:
+            self.segment_computer.set_kit(stages)
+        if not quiet and stages:
+            self.status_label.set_text(f"signal kit: {label}")
+        elif not quiet and not self.settings.kit_enabled:
+            self.status_label.set_text("signal kit off")
+
+    def apply_kit_stages_live(self, stages):
+        """The kit editor's live preview: run these stages right now,
+        bypassing the saved settings (used while composing a kit)."""
+        with self.compute_lock:
+            self.segment_computer.set_kit(stages if stages else None)
+
+    def _on_kit_editor_clicked(self, _button):
+        phosphor_kit_editor.open_kit_editor(self)
+
+    def import_kits(self, paths):
+        """Drag-dropped .phoskit files: validate, install, activate the
+        last one, and light the switch."""
+        installed = None
+        for path in paths:
+            try:
+                installed = phosphor_kit.install(path)
+            except (OSError, ValueError) as error:
+                self.status_label.set_text(
+                    f"kit import failed: {os.path.basename(path)} — {error}")
+                return
+        if installed:
+            self.settings.kit_path = installed
+            self.settings.kit_enabled = True
+            self.settings.save()
+            self._refresh_kit_combo()
+            self.kit_combo.set_active_id(installed)
+            self.kit_switch.set_active(True)
+            self._apply_kit_to_computer()
 
     # ------------------------------------------------- signal postcards --
 
@@ -1331,6 +1439,10 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                 continue
             if filename:
                 paths.append(filename)
+        kits = [path for path in paths if path.lower().endswith(".phoskit")]
+        if kits:
+            self.import_kits(kits)
+        paths = [path for path in paths if path not in kits]
         if paths:
             self.player.play_dropped(paths)
 
@@ -2013,6 +2125,9 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                        lambda active: self.show_fps_switch.set_active(active))
         add_check_item("Auto gain — fit to screen", self.settings.auto_gain,
                        lambda active: self.auto_gain_switch.set_active(active))
+        add_check_item("Glass scope — transparent background",
+                       self.settings.scope_glass,
+                       lambda active: self.glass_switch.set_active(active))
         add_check_item("Pin above  (P)", self.settings.pinned,
                        lambda active: self.pin_toggle.set_active(active))
         menu.append(Gtk.SeparatorMenuItem())

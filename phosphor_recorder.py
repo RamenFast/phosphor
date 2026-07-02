@@ -41,6 +41,13 @@ def _build_offline_pipeline(settings, width, height, sample_rate, gain=None,
     computer.gain = gain
     computer.beam_energy = settings.beam_energy
     computer.set_sample_rate(sample_rate, oversample)
+    if getattr(settings, "kit_enabled", False) and settings.kit_path:
+        try:
+            import phosphor_kit
+            _name, _author, stages = phosphor_kit.load(settings.kit_path)
+            computer.set_kit(stages)
+        except (OSError, ValueError):
+            pass    # a broken kit shouldn't kill an export; render it plain
     renderer = OfflineFrameRenderer(width, height, settings.current_theme(),
                                     settings.persistence, settings.grid_enabled,
                                     beam_focus=settings.beam_focus,
