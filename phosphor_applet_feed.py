@@ -93,7 +93,7 @@ def apply_command(line, computer, timing):
             computer.reset()
     elif parts[0] == "fps" and len(parts) > 1:
         try:
-            timing["interval"] = 1.0 / max(5, min(240, int(parts[1])))
+            timing["interval"] = 1.0 / max(5, min(480, int(parts[1])))
         except ValueError:
             pass
     return True
@@ -148,7 +148,7 @@ def main():
     for index, argument in enumerate(sys.argv):
         if argument == "--fps" and index + 1 < len(sys.argv):
             try:
-                fps = max(5, min(240, int(sys.argv[index + 1])))
+                fps = max(5, min(480, int(sys.argv[index + 1])))
             except ValueError:
                 pass
     timing = {"interval": 1.0 / fps}

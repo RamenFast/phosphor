@@ -79,8 +79,12 @@ CPU_RESOLUTION_CHOICES = (("1.0", "Full resolution"),
 # between samples, so fine scope-art detail stops washing out
 SCOPE_RATE_CHOICES = (("48000", "Standard · 48 kHz"),
                       ("96000", "Fine · 96 kHz"),
-                      ("192000", "Ultra · 192 kHz"))
-VALID_SCOPE_RATES = (48000, 96000, 192000)
+                      ("192000", "Ultra · 192 kHz"),
+                      ("384000", "Extreme · 384 kHz"))
+VALID_SCOPE_RATES = (48000, 96000, 192000, 384000)
+# frame-rate cap presets; 0 = follow the monitor. The list reaches into
+# high-refresh territory and the box stays editable for anything between.
+MAX_FPS_PRESETS = (0, 30, 60, 90, 120, 144, 165, 240, 360, 480)
 
 class LiveCairoRenderer(Gtk.DrawingArea):
     """CPU renderer widget; signal math and phosphor decay run on a worker
@@ -569,13 +573,22 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                                     self._on_show_pin_switched))
         self.show_fps_switch = attach("Show FPS", switch(
             self.settings.show_fps, self._on_show_fps_switched))
-        max_fps_spin = Gtk.SpinButton.new_with_range(0, 240, 5)
-        max_fps_spin.set_value(self.settings.max_fps)
-        max_fps_spin.set_tooltip_text(
-            "Frame rate cap — 0 follows the monitor refresh rate (165 Hz "
-            "monitor = 165 fps); lower it to trade smoothness for power")
-        max_fps_spin.connect("value-changed", self._on_max_fps_changed)
-        attach("Max FPS", max_fps_spin)
+        self.max_fps_combo = Gtk.ComboBoxText.new_with_entry()
+        for fps_value in MAX_FPS_PRESETS:
+            self.max_fps_combo.append(
+                str(fps_value),
+                "Monitor (uncapped)" if fps_value == 0 else str(fps_value))
+        fps_entry = self.max_fps_combo.get_child()
+        fps_entry.set_width_chars(8)
+        self.max_fps_combo.set_tooltip_text(
+            "Frame rate cap — Monitor follows the display's refresh rate;\n"
+            "pick a preset or type any rate up to 1000. Lower trades\n"
+            "smoothness for power; setting it equal to the refresh rate\n"
+            "races vsync and drops frames, so prefer Monitor for that.")
+        if not self.max_fps_combo.set_active_id(str(self.settings.max_fps)):
+            fps_entry.set_text(str(self.settings.max_fps))
+        self.max_fps_combo.connect("changed", self._on_max_fps_changed)
+        attach("Max FPS", self.max_fps_combo)
 
         grid.show_all()
         popover.add(grid)
@@ -989,8 +1002,15 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._fps_window_start = time.monotonic()
         return False
 
-    def _on_max_fps_changed(self, spin):
-        self.settings.max_fps = int(spin.get_value())
+    def _on_max_fps_changed(self, combo):
+        text = combo.get_active_id()
+        if text is None:                     # typed into the entry
+            text = combo.get_child().get_text().strip()
+        try:
+            value = int(text)
+        except ValueError:
+            return                           # mid-edit or a preset label
+        self.settings.max_fps = max(0, min(1000, value))
         self.settings.save()
 
     def _on_grid_switched(self, _switch, state):
