@@ -44,6 +44,16 @@ BASE_UI_CSS = b"""
     border-radius: 9px;
     font-size: 13px;
 }
+/* glass scope: the window opens a smoked pane so the desktop shows
+   through the scope; each style tints its own pane */
+window.glass-scope decoration {
+    background-color: transparent;
+    background-image: none;
+}
+window.glass-scope {
+    background-color: rgba(18, 18, 22, 0.32);
+    background-image: none;
+}
 """
 
 # AMOLED UI style: pure-black window, soft multi-shade pinks, warm gold
@@ -168,6 +178,10 @@ actionbar { background-color: #000000; }
 *:selected { background-color: #97276b; color: #ffdf87; }
 #fps-overlay { color: #ffdf87; }
 #now-playing { color: #fbcfe8; border: 1px solid #57203f; }
+window.glass-scope {
+    background-color: rgba(0, 0, 0, 0.30);
+    background-image: none;
+}
 #playlist-panel { background-color: #0d040a; border-left: 1px solid #1d0916; }
 #playlist-panel list, #playlist-panel row { background-color: transparent; }
 #playlist-panel row { border-radius: 6px; }
@@ -315,6 +329,10 @@ actionbar { background-color: #000000; }
     border: 1px solid #b65c92;
     box-shadow: 0 0 10px rgba(224, 120, 184, 0.35);
 }
+window.glass-scope {
+    background-color: rgba(0, 0, 0, 0.30);
+    background-image: none;
+}
 #playlist-panel { background-color: #0d040a; border-left: 1px solid #57203f; }
 #playlist-panel list, #playlist-panel row { background-color: transparent; }
 #playlist-panel row { border-radius: 8px; }
@@ -453,6 +471,10 @@ actionbar { background-color: #4a453e; }
     border: 2px solid;
     border-color: #8a8375 #2e2a25 #2e2a25 #8a8375;
     border-radius: 0;
+}
+window.glass-scope {
+    background-color: rgba(56, 52, 46, 0.38);
+    background-image: none;
 }
 #playlist-panel { background-color: #3e3a34; border-left: 2px solid #2e2a25; }
 #playlist-panel list, #playlist-panel row { background-color: transparent; }
@@ -613,6 +635,10 @@ actionbar { background-color: #38342e; }
     border-color: #7d766a #211d18 #211d18 #7d766a;
     border-radius: 0;
     box-shadow: 0 0 12px rgba(255, 190, 80, 0.3);
+}
+window.glass-scope {
+    background-color: rgba(38, 34, 30, 0.38);
+    background-image: none;
 }
 #playlist-panel { background-color: #2e2a24; border-left: 2px solid #211d18; }
 #playlist-panel list, #playlist-panel row { background-color: transparent; }
@@ -780,6 +806,10 @@ actionbar { background-color: #cfe9f5; }
     color: #0d3752;
     border: 1px solid #7db8d6;
 }
+window.glass-scope {
+    background-color: rgba(196, 228, 243, 0.30);
+    background-image: none;
+}
 #playlist-panel {
     background-color: rgba(207, 233, 245, 0.72);
     border-left: 1px solid rgba(159, 205, 226, 0.8);
@@ -918,6 +948,10 @@ actionbar { background-color: #e1eef6; }
     background-color: rgba(255, 255, 255, 0.88);
     color: #10344e;
     border: 1px solid #b5d4e5;
+}
+window.glass-scope {
+    background-color: rgba(240, 247, 251, 0.40);
+    background-image: none;
 }
 #playlist-panel { background-color: #e1eef6; border-left: 1px solid #c2dcea; }
 #playlist-panel list, #playlist-panel row { background-color: transparent; }

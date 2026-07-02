@@ -95,7 +95,11 @@ The gear popover is organized into sections:
   the true curves *between* samples, so fine scope-art detail stops washing
   out), **Precompute files**, beam **Focus**, **Auto gain** (autosize: gain
   follows the signal's peak — instant attack when something would clip
-  off-screen, slow glide release), **Grid**, **AMOLED scope** background.
+  off-screen, slow glide release), **Grid**, **AMOLED scope** background, and **Glass scope** — a
+  translucent scope pane (the window opens a smoked panel and the beam's
+  own light stays opaque), so the trace floats over your desktop; needs a
+  compositing WM, auto-enabled with the Aero glass style, wonderful in
+  the mini view.
 - **Appearance** — themes (P7 Green, Amber, Ice Blue, White, Vaporwave,
   Red Phosphor, Ultraviolet, Solar Gold, Cyan Tube, Custom with two color
   pickers), UI style (System / Dark / Ice Blue ❄ / AMOLED pink / Bloom neon /

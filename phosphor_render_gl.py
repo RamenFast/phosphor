@@ -265,6 +265,7 @@ uniform vec3 background_color;
 uniform float grid_enabled;
 uniform float grid_spacing;   // device pixels per graticule division
 uniform int supersample;      // energy buffer scale relative to the screen
+uniform float scope_alpha;    // 1 = opaque scope; lower = glass over desktop
 
 float grid_line(float coordinate, float spacing) {
     float distance_to_line = abs(coordinate - spacing * floor(coordinate / spacing + 0.5));
@@ -315,9 +316,14 @@ void main() {
     // scope must not sparkle against the pure-black window chrome.
     float noise = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233)))
                         * 43758.5453);
-    float dither_gate = smoothstep(0.0, 0.004,
-                                   max(color.r, max(color.g, color.b)));
-    out_color = vec4(color + vec3((noise - 0.5) / 255.0) * dither_gate, 1.0);
+    float brightness = max(color.r, max(color.g, color.b));
+    float dither_gate = smoothstep(0.0, 0.004, brightness);
+    // glass scope: the pane is scope_alpha, and the beam's own light makes
+    // its pixels opaque - a glow floating over whatever is behind
+    float alpha = clamp(scope_alpha + (1.0 - scope_alpha) * brightness * 2.0,
+                        0.0, 1.0);
+    out_color = vec4(color + vec3((noise - 0.5) / 255.0) * dither_gate,
+                     alpha);
 }
 """
 
@@ -372,12 +378,14 @@ class GLBeamRenderer(Gtk.GLArea):
         self.grid_spacing_fraction = 0.1125  # of min(viewport); tracks gain/zoom
         self.beam_focus = 1.6              # beam sigma in logical pixels
         self.supersample = 1               # energy buffer scale: 1 = native, 2 = fine
+        self.scope_alpha = 1.0             # 1 = opaque; lower = glass scope
         self.pending_segments = None       # set by advance(), consumed in render
         self.ready = False
         self._failed = False
         # CPU time spent submitting GL work, drained by the FPS overlay
         self.cpu_seconds_accumulated = 0.0
 
+        self.set_has_alpha(True)   # alpha-capable; opaque unless glass asks
         self.set_required_version(3, 3)
         self.set_has_depth_buffer(False)
         self.set_has_stencil_buffer(False)
@@ -416,7 +424,7 @@ class GLBeamRenderer(Gtk.GLArea):
             self.composite_uniforms = _uniforms(self.composite_program, [
                 "energy_texture", "viewport_size", "beam_color", "flash_color",
                 "grid_color", "background_color", "grid_enabled", "grid_spacing",
-                "supersample"])
+                "supersample", "scope_alpha"])
 
             vertex_arrays = (ctypes.c_uint * 2)()
             gl.glGenVertexArrays(2, vertex_arrays)
@@ -614,6 +622,7 @@ class GLBeamRenderer(Gtk.GLArea):
         gl.glUniform1f(uniforms["grid_spacing"],
                        self.grid_spacing_fraction * min(width, height))
         gl.glUniform1i(uniforms["supersample"], supersample)
+        gl.glUniform1f(uniforms["scope_alpha"], self.scope_alpha)
         gl.glBindVertexArray(self.fullscreen_vao)
         gl.glDrawArrays(GL_TRIANGLES, 0, 3)
         gl.glBindVertexArray(0)
