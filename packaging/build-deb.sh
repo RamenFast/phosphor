@@ -35,6 +35,13 @@ if [ -f "$native_library" ]; then
     install -m 644 "$native_library" "$staging_directory/usr/lib/phosphor/"
     architecture="$(dpkg --print-architecture)"
 fi
+# Starter signal kits (.phoskit postcards) — user kits shadow these
+if [ -d "$project_directory/kits" ]; then
+    install -d "$staging_directory/usr/share/phosphor/kits"
+    install -m 644 "$project_directory"/kits/*.phoskit \
+        "$staging_directory/usr/share/phosphor/kits/"
+fi
+
 install -m 644 "$project_directory/phosphor-scope.svg" "$staging_directory/usr/lib/phosphor/"
 install -m 644 "$project_directory/phosphor-scope.svg" \
     "$staging_directory/usr/share/icons/hicolor/scalable/apps/phosphor-scope.svg"

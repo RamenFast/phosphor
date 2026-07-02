@@ -1,0 +1,10 @@
+{
+  "phoskit": 1,
+  "name": "haunt",
+  "author": "TURTLE VECTOR",
+  "stages": [
+    {"op": "chandelay", "ms": 8.0, "channel": 1},
+    {"op": "wobble", "hz": 0.4, "depth": 0.3},
+    {"op": "midside", "width": 1.3}
+  ]
+}

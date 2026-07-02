@@ -31,9 +31,16 @@ overlay.
 Render-ahead `.phos` cache read by the playback clock.
 Still open: an LRU size cap; precomputing a whole folder in one go.
 
-## Shareable scope-art + 3D visualizer — specs in HANDOFF.md
-Signal postcards (.phos sharing + .phoskit live transform chains) and the
-Takens-embedding 3D view with orbit controls. Both spec'd, next session.
+## Shareable scope-art ("signal postcards") — ✅ shipped in 3.2
+.phos streams play/export with title + "trace by" credit; .phoskit
+transform chains (rotate/midside/ringmod/wobble/matrix/chandelay) run in
+both engines with exact parity, composed live in the kit editor, imported
+by drag-drop, three starter kits bundled.
+Still open: more ops (the beat-synced mode-automation timeline is the
+AFTERGLOW seed), kit browsing/sharing beyond files.
+
+## 3D visualizer — spec in HANDOFF.md
+Takens-embedding 3D view with orbit controls; time-as-Z helix. Next.
 
 ## Multi-app mixing
 Per-app capture currently scopes one app at a time (one parec per

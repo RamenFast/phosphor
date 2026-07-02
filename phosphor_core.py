@@ -24,10 +24,13 @@ LIBRARY_LOCATIONS = (
     os.path.join(_PROJECT_DIRECTORY, "libphosphor_core.so"),
     "/usr/lib/phosphor/libphosphor_core.so",
 )
-API_VERSION = 1
+API_VERSION = 2
 
 MODE_IDS = {"xy": 0, "xy45": 1, "xy_dots": 2, "waveform": 3,
             "spectrum": 4, "spectrum_radial": 5}
+KIT_OP_IDS = {"rotate": 0, "midside": 1, "ringmod": 2, "wobble": 3,
+              "matrix": 4, "chandelay": 5}
+KIT_PARAMETERS_PER_STAGE = 4
 
 
 def _load_library():
@@ -46,6 +49,8 @@ def _load_library():
         library.pc_configure.argtypes = [ctypes.c_void_p, ctypes.c_uint32,
                                          ctypes.c_uint32]
         library.pc_reset.argtypes = [ctypes.c_void_p]
+        library.pc_set_kit.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                       ctypes.c_void_p, ctypes.c_size_t]
         library.pc_compute.restype = ctypes.c_size_t
         library.pc_compute.argtypes = [
             ctypes.c_void_p, ctypes.c_uint32, ctypes.c_float, ctypes.c_float,
@@ -83,6 +88,22 @@ class NativeComputer:
 
     def reset(self):
         _library.pc_reset(self._handle)
+
+    def set_kit(self, stages):
+        """Install a signal kit chain: canonical [(op_name, [p0..p3])]
+        stages (see phosphor_kit), or None/empty to clear."""
+        if not stages:
+            _library.pc_set_kit(self._handle, None, None, 0)
+            return
+        count = len(stages)
+        ops = (ctypes.c_uint32 * count)(
+            *(KIT_OP_IDS[op] for op, _params in stages))
+        flat = (ctypes.c_double * (count * KIT_PARAMETERS_PER_STAGE))()
+        for index, (_op, parameters) in enumerate(stages):
+            for slot in range(KIT_PARAMETERS_PER_STAGE):
+                flat[index * KIT_PARAMETERS_PER_STAGE + slot] = (
+                    parameters[slot] if slot < len(parameters) else 0.0)
+        _library.pc_set_kit(self._handle, ops, flat, count)
 
     def compute(self, mode, gain, beam_energy, glow_keep, samples,
                 width, height):

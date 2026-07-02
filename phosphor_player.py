@@ -23,7 +23,8 @@ import phosphor_mpris
 from phosphor_audio import probe_metadata
 
 AUDIO_FILE_EXTENSIONS = (".mp3", ".flac", ".ogg", ".oga", ".opus", ".wav",
-                         ".m4a", ".aac", ".wma", ".aif", ".aiff", ".mka")
+                         ".m4a", ".aac", ".wma", ".aif", ".aiff", ".mka",
+                         ".phos")   # signal postcards play like any track
 
 # quiet nods to the artists this scope was built around
 ARTIST_NODS = {"jerobeam fenderson": "🍄 the real deal",
@@ -247,6 +248,7 @@ class PhosphorPlayer:
         audio_filter = Gtk.FileFilter()
         audio_filter.set_name("Audio files")
         audio_filter.add_mime_type("audio/*")
+        audio_filter.add_pattern("*.phos")
         dialog.add_filter(audio_filter)
         everything_filter = Gtk.FileFilter()
         everything_filter.set_name("All files")

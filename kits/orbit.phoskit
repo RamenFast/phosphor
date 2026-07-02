@@ -1,0 +1,8 @@
+{
+  "phoskit": 1,
+  "name": "orbit",
+  "author": "TURTLE VECTOR",
+  "stages": [
+    {"op": "rotate", "hz": 0.08, "angle": 0.0}
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "phoskit": 1,
+  "name": "heartbeat",
+  "author": "TURTLE VECTOR",
+  "stages": [
+    {"op": "ringmod", "hz": 1.2, "depth": 0.5},
+    {"op": "rotate", "hz": 0.03, "angle": 0.0}
+  ]
+}

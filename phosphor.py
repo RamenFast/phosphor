@@ -39,6 +39,8 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gdk, GLib  # noqa: E402
 
 import phosphor_compose
+import phosphor_kit
+import phosphor_kit_editor
 import phosphor_mpris
 import phosphor_precompute
 import phosphor_recorder
@@ -54,13 +56,14 @@ from phosphor_signal import SegmentComputer, plan_feed
 from phosphor_ui_style import UI_STYLE_CHOICES
 
 APPLICATION_ID = "io.github.ben.Phosphor"
-APPLICATION_VERSION = "3.1.4"
+APPLICATION_VERSION = "3.2.0"
 PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 QUIET_PEAK_THRESHOLD = 1e-4
 QUIET_FRAMES_BEFORE_SLEEP = 120
 MINI_SIZE_PRESETS = (("Small", 200), ("Medium", 280), ("Large", 380),
                      ("Extra large", 520))
 MINI_RESIZE_CORNER_PIXELS = 26       # bottom-right drag-to-resize hot zone
+MINI_SNAP_PIXELS = 32                # edge magnetism after a mini-view drag
 COMPOSE_PREVIEW_INTENSITY = 0.25     # restamped every frame while drawing
 COMPOSE_MINIMUM_POINTS = 8
 REACQUIRE_POLL_LIMIT = 180   # seconds to wait for a dead app stream to return
@@ -249,6 +252,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._precompute_worker_path = None
         # mini-mode corner resize
         self._mini_resize_start = None     # (start size, x_root, y_root)
+        self._mini_snap_source = None      # pending edge-magnetism check
 
         phosphor_ui_style.install_base_style()
         self._sync_glass_class()
@@ -258,6 +262,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._apply_render_quality()
         self._apply_grid_geometry()
         self._apply_ui_style()
+        self._apply_kit_to_computer(quiet=True)
 
         try:
             self._mpris_watcher = phosphor_mpris.MprisWatcher(
@@ -699,6 +704,27 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             "Fade the artist/title into the corner when the song changes —\n"
             "for files Phosphor plays and for other players (MPRIS)")
 
+        section("Signal kit")
+        self.kit_combo = Gtk.ComboBoxText()
+        self.kit_combo.set_tooltip_text(
+            "A .phoskit transform chain bent into whatever plays — rotate,\n"
+            "widen, ring-mod, delay… Friends send these; drop one on the\n"
+            "window to import it.")
+        self._refresh_kit_combo()
+        self.kit_combo.connect("changed", self._on_kit_combo_changed)
+        self._kit_combo_connected = True
+        attach("Kit", self.kit_combo)
+        self.kit_switch = attach("Apply kit", switch(
+            self.settings.kit_enabled, self._on_kit_enabled_switched))
+        self.kit_switch.set_tooltip_text(
+            "Run the chosen kit's ops on the signal before every display\n"
+            "mode — the figure, the goniometer, the tunnel, all of it")
+        kit_editor_button = Gtk.Button(label="Kit editor…")
+        kit_editor_button.set_tooltip_text(
+            "Build or tweak a chain live and save it as a .phoskit postcard")
+        kit_editor_button.connect("clicked", self._on_kit_editor_clicked)
+        attach("Compose one", kit_editor_button)
+
         section("Performance")
         self.max_fps_combo = Gtk.ComboBoxText.new_with_entry()
         for fps_value in MAX_FPS_PRESETS:
@@ -849,7 +875,18 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         """Scope side of playing `path`: attach a matching precomputed
         stream (audible pipe drops to 48 kHz, the scope reads the stream by
         the playback clock) or fall back to the live pipe; queue generation
-        when the setting asks for it."""
+        when the setting asks for it.
+
+        A .phos signal postcard IS the stream — it attaches directly at the
+        rate its sender chose, whatever this machine's settings say."""
+        if path.lower().endswith(".phos"):
+            try:
+                self.attach_precomputed(
+                    phosphor_precompute.PrecomputedTrack(path))
+            except (OSError, ValueError):
+                self.attach_precomputed(None)
+                self.status_label.set_text("not a valid .phos stream")
+            return
         track = (phosphor_precompute.find(path, self.settings.scope_sample_rate)
                  if self.settings.precompute_enabled else None)
         self.attach_precomputed(track)
@@ -952,6 +989,159 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         freed = phosphor_precompute.clear_cache()
         self.status_label.set_text(
             f"precomputed streams cleared ({freed / 1e6:.0f} MB)")
+
+    # ------------------------------------------------------ signal kits --
+
+    def _refresh_kit_combo(self):
+        """Repopulate the kit picker from the kit directories, keeping the
+        active choice when it still exists."""
+        connected = getattr(self, "_kit_combo_connected", False)
+        if connected:
+            self.kit_combo.handler_block_by_func(self._on_kit_combo_changed)
+        self.kit_combo.remove_all()
+        for label, path in phosphor_kit.available_kits():
+            self.kit_combo.append(path, label)
+        if self.settings.kit_path:
+            self.kit_combo.set_active_id(self.settings.kit_path)
+        if connected:
+            self.kit_combo.handler_unblock_by_func(self._on_kit_combo_changed)
+
+    def _on_kit_combo_changed(self, combo):
+        path = combo.get_active_id()
+        if path and path != self.settings.kit_path:
+            self.settings.kit_path = path
+            self.settings.save()
+            self._apply_kit_to_computer()
+
+    def _on_kit_enabled_switched(self, _switch, state):
+        self.settings.kit_enabled = state
+        if state and not self.settings.kit_path:
+            # flipping the switch with nothing chosen picks the first kit
+            model = self.kit_combo.get_model()
+            if model is not None and len(model):
+                self.kit_combo.set_active(0)
+                self.settings.kit_path = self.kit_combo.get_active_id()
+        self.settings.save()
+        self._apply_kit_to_computer()
+
+    def _apply_kit_to_computer(self, quiet=False):
+        """Load the chosen kit (when enabled) onto the segment computer —
+        both engines, under the compute lock."""
+        stages = None
+        label = None
+        if self.settings.kit_enabled and self.settings.kit_path:
+            try:
+                name, author, stages = phosphor_kit.load(
+                    self.settings.kit_path)
+                label = f"{name} — {author}" if author else name
+            except (OSError, ValueError) as error:
+                if not quiet:
+                    self.status_label.set_text(f"kit failed to load: {error}")
+                stages = None
+        with self.compute_lock:
+            self.segment_computer.set_kit(stages)
+        if not quiet and stages:
+            self.status_label.set_text(f"signal kit: {label}")
+        elif not quiet and not self.settings.kit_enabled:
+            self.status_label.set_text("signal kit off")
+
+    def apply_kit_stages_live(self, stages):
+        """The kit editor's live preview: run these stages right now,
+        bypassing the saved settings (used while composing a kit)."""
+        with self.compute_lock:
+            self.segment_computer.set_kit(stages if stages else None)
+
+    def _on_kit_editor_clicked(self, _button):
+        phosphor_kit_editor.open_kit_editor(self)
+
+    def import_kits(self, paths):
+        """Drag-dropped .phoskit files: validate, install, activate the
+        last one, and light the switch."""
+        installed = None
+        for path in paths:
+            try:
+                installed = phosphor_kit.install(path)
+            except (OSError, ValueError) as error:
+                self.status_label.set_text(
+                    f"kit import failed: {os.path.basename(path)} — {error}")
+                return
+        if installed:
+            self.settings.kit_path = installed
+            self.settings.kit_enabled = True
+            self.settings.save()
+            self._refresh_kit_combo()
+            self.kit_combo.set_active_id(installed)
+            self.kit_switch.set_active(True)
+            self._apply_kit_to_computer()
+
+    # ------------------------------------------------- signal postcards --
+
+    def _export_postcard(self):
+        """Share the current track's scope stream: make sure it exists at
+        the current detail rate, stamp a title and credit into its header,
+        and save the .phos beside the other exports."""
+        path = self.player.playing_path
+        if path is None or path.lower().endswith(".phos"):
+            return
+        metadata = self.player.current_metadata or {}
+        dialog = Gtk.Dialog(title="Export signal postcard",
+                            transient_for=self, modal=True)
+        dialog.add_button("_Cancel", Gtk.ResponseType.CANCEL)
+        dialog.add_button("_Export", Gtk.ResponseType.OK)
+        dialog.set_default_response(Gtk.ResponseType.OK)
+        grid = Gtk.Grid(row_spacing=6, column_spacing=8)
+        for edge in ("start", "end", "top", "bottom"):
+            getattr(grid, f"set_margin_{edge}")(12)
+        title_entry = Gtk.Entry()
+        title_entry.set_text(metadata.get("title")
+                             or os.path.splitext(self.player.playing_file)[0])
+        title_entry.set_width_chars(34)
+        title_entry.set_activates_default(True)
+        credit_entry = Gtk.Entry()
+        credit_entry.set_text(self.settings.postcard_credit)
+        credit_entry.set_placeholder_text("who made this trace?")
+        credit_entry.set_activates_default(True)
+        for row, (label_text, entry) in enumerate((("Title", title_entry),
+                                                   ("Trace by", credit_entry))):
+            label = Gtk.Label(label=label_text)
+            label.set_xalign(1.0)
+            grid.attach(label, 0, row, 1, 1)
+            grid.attach(entry, 1, row, 1, 1)
+        dialog.get_content_area().add(grid)
+        dialog.show_all()
+        response = dialog.run()
+        title = title_entry.get_text().strip()
+        credit = credit_entry.get_text().strip()
+        dialog.destroy()
+        if response != Gtk.ResponseType.OK:
+            return
+        self.settings.postcard_credit = credit
+        self.settings.save()
+        rate = self.settings.scope_sample_rate
+        last_percent = [-1]
+
+        def report(fraction):
+            percent = int(fraction * 100)
+            if percent != last_percent[0]:
+                last_percent[0] = percent
+                GLib.idle_add(self.status_label.set_text,
+                              f"rendering postcard stream… {percent}%")
+
+        def worker():
+            try:
+                cache = phosphor_precompute.cache_path_for(path, rate)
+                if not os.path.exists(cache):
+                    phosphor_precompute.generate(path, rate, report)
+                destination = phosphor_precompute.postcard_path_for(
+                    path, rate, title=title)
+                phosphor_precompute.export_postcard(cache, destination,
+                                                    title, credit)
+                GLib.idle_add(self.status_label.set_text,
+                              f"postcard saved: {destination}")
+            except (RuntimeError, OSError, ValueError) as error:
+                GLib.idle_add(self.status_label.set_text,
+                              f"postcard export failed: {error}")
+        threading.Thread(target=worker, daemon=True).start()
 
     def _handle_stream_died(self):
         if not self.capture_toggle.get_active():
@@ -1251,6 +1441,10 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                 continue
             if filename:
                 paths.append(filename)
+        kits = [path for path in paths if path.lower().endswith(".phoskit")]
+        if kits:
+            self.import_kits(kits)
+        paths = [path for path in paths if path not in kits]
         if paths:
             self.player.play_dropped(paths)
 
@@ -1732,13 +1926,67 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         """Continuously remember the normal-view geometry. Reading it lazily
         at toggle time raced the window manager (and rapid M presses), which
         is what used to restore half-screen tile sizes."""
-        if (self.is_mini_mode or self._geometry_tracking_suspended
+        if (self._geometry_tracking_suspended
                 or self._window_is_tiled_or_maximized()):
+            return False
+        if self.is_mini_mode:
+            # edge magnetism: wait for the drag to settle, then snap. Every
+            # configure re-arms the timer, so it fires once, after the last
+            # movement — never mid-drag.
+            if self._mini_snap_source is not None:
+                GLib.source_remove(self._mini_snap_source)
+            self._mini_snap_source = GLib.timeout_add(
+                180, self._snap_mini_to_edges)
             return False
         if self.get_window() is not None:
             self.settings.window_width, self.settings.window_height = self.get_size()
             self.settings.window_x, self.settings.window_y = self.get_position()
         return False
+
+    def _mini_workarea(self):
+        """The current monitor's work area (panels excluded), or None."""
+        gdk_window = self.get_window()
+        if gdk_window is None:
+            return None
+        monitor = self.get_screen().get_display() \
+            .get_monitor_at_window(gdk_window)
+        return monitor.get_workarea() if monitor is not None else None
+
+    def _snap_mini_to_edges(self):
+        """Glide flush when a mini-view drag ends near a screen edge, so
+        parking the scope in a corner doesn't need pixel aim."""
+        self._mini_snap_source = None
+        if not self.is_mini_mode or self._mini_resize_start is not None:
+            return GLib.SOURCE_REMOVE
+        area = self._mini_workarea()
+        if area is None:
+            return GLib.SOURCE_REMOVE
+        x, y = self.get_position()
+        width, height = self.get_size()
+        snapped_x, snapped_y = x, y
+        if abs(x - area.x) <= MINI_SNAP_PIXELS:
+            snapped_x = area.x
+        elif abs((x + width) - (area.x + area.width)) <= MINI_SNAP_PIXELS:
+            snapped_x = area.x + area.width - width
+        if abs(y - area.y) <= MINI_SNAP_PIXELS:
+            snapped_y = area.y
+        elif abs((y + height) - (area.y + area.height)) <= MINI_SNAP_PIXELS:
+            snapped_y = area.y + area.height - height
+        if (snapped_x, snapped_y) != (x, y):
+            self.move(snapped_x, snapped_y)
+        self.settings.mini_x, self.settings.mini_y = snapped_x, snapped_y
+        return GLib.SOURCE_REMOVE
+
+    def _align_mini(self, fraction_x, fraction_y):
+        """Park the mini view at a work-area corner (or center)."""
+        area = self._mini_workarea()
+        if area is None:
+            return
+        width, height = self.get_size()
+        x = area.x + int(fraction_x * (area.width - width))
+        y = area.y + int(fraction_y * (area.height - height))
+        self.move(x, y)
+        self.settings.mini_x, self.settings.mini_y = x, y
 
     def _resume_geometry_tracking(self):
         self._geometry_tracking_suspended = False
@@ -1905,6 +2153,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                 add_item("Precompute scope stream",
                          lambda: self._queue_precompute(
                              self.player.playing_path))
+            if not self.player.playing_path.lower().endswith(".phos"):
+                add_item("Export signal postcard…", self._export_postcard)
         cache_bytes = phosphor_precompute.cache_size_bytes()
         if cache_bytes:
             add_item(f"Clear precomputed streams ({cache_bytes / 1e6:.0f} MB)",
@@ -1931,11 +2181,25 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                        lambda active: self.show_fps_switch.set_active(active))
         add_check_item("Auto gain — fit to screen", self.settings.auto_gain,
                        lambda active: self.auto_gain_switch.set_active(active))
+        add_check_item("Glass scope — transparent background",
+                       self.settings.scope_glass,
+                       lambda active: self.glass_switch.set_active(active))
         add_check_item("Pin above  (P)", self.settings.pinned,
                        lambda active: self.pin_toggle.set_active(active))
         menu.append(Gtk.SeparatorMenuItem())
 
         if self.is_mini_mode:
+            align_menu = add_submenu("Align")
+            for glyph, corner_label, fraction_x, fraction_y in (
+                    ("◰", "Top left", 0.0, 0.0),
+                    ("◳", "Top right", 1.0, 0.0),
+                    ("◱", "Bottom left", 0.0, 1.0),
+                    ("◲", "Bottom right", 1.0, 1.0),
+                    ("▣", "Center", 0.5, 0.5)):
+                add_item(f"{glyph}  {corner_label}",
+                         lambda fx=fraction_x, fy=fraction_y:
+                             self._align_mini(fx, fy),
+                         target_menu=align_menu)
             for preset_label, preset_size in MINI_SIZE_PRESETS:
                 add_item(f"Mini size: {preset_label}",
                          lambda s=preset_size: self._resize_mini(s))

@@ -14,6 +14,7 @@
 //!   pc_new() -> handle          pc_free(handle)
 //!   pc_configure(handle, sample_rate, oversample)
 //!   pc_reset(handle)
+//!   pc_set_kit(handle, ops, params, stage_count)   [params: 4 f64 per stage]
 //!   pc_compute(handle, mode, gain, beam_energy, glow_keep,
 //!              samples, n_floats, width, height,
 //!              out, out_capacity_segments) -> segments written
@@ -21,9 +22,10 @@
 //! Not thread-safe per handle; Phosphor serializes access with its existing
 //! compute lock.
 
+use std::collections::VecDeque;
 use std::f32::consts::PI;
 
-pub const API_VERSION: u32 = 1;
+pub const API_VERSION: u32 = 2;
 
 const BASE_SAMPLE_RATE: f32 = 48000.0;
 const MAX_POINTS_PER_FRAME: usize = 4000;
@@ -219,6 +221,126 @@ impl Upsampler {
 }
 
 // ---------------------------------------------------------------------------
+// Signal kit chain (.phoskit): stereo transforms applied upstream of every
+// mode. Parity contract with phosphor_signal.KitChain: phase accumulators
+// in f64 advanced per chunk by 2π·hz·frames/rate with euclidean wraparound;
+// trig computed in f64 and cast to f32 before the f32 sample math; channel
+// delays are exact integer sample counts.
+// ---------------------------------------------------------------------------
+
+const TAU64: f64 = std::f64::consts::TAU;
+const MAX_KIT_STAGES: usize = 16;
+
+#[derive(Clone, Copy, PartialEq)]
+enum KitOp {
+    Rotate = 0,
+    Midside = 1,
+    Ringmod = 2,
+    Wobble = 3,
+    Matrix = 4,
+    Chandelay = 5,
+}
+
+impl KitOp {
+    fn from_u32(value: u32) -> Option<KitOp> {
+        match value {
+            0 => Some(KitOp::Rotate),
+            1 => Some(KitOp::Midside),
+            2 => Some(KitOp::Ringmod),
+            3 => Some(KitOp::Wobble),
+            4 => Some(KitOp::Matrix),
+            5 => Some(KitOp::Chandelay),
+            _ => None,
+        }
+    }
+}
+
+struct KitStage {
+    op: KitOp,
+    params: [f64; 4],
+    phase: f64,
+    delay: VecDeque<f32>,
+}
+
+impl KitStage {
+    /// Zero the run state; delay length derives from the current rate.
+    fn reset(&mut self, sample_rate: f64) {
+        self.phase = 0.0;
+        self.delay.clear();
+        if self.op == KitOp::Chandelay {
+            let count = (self.params[0] / 1000.0 * sample_rate).round() as usize;
+            self.delay = std::iter::repeat(0.0f32).take(count).collect();
+        }
+    }
+
+    /// Transform interleaved stereo in place.
+    fn process(&mut self, buffer: &mut [f32], sample_rate: f64) {
+        let count = buffer.len() / 2;
+        match self.op {
+            KitOp::Rotate | KitOp::Wobble => {
+                let delta = TAU64 * self.params[0] / sample_rate;
+                for i in 0..count {
+                    let phase = self.phase + delta * i as f64;
+                    let angle = if self.op == KitOp::Rotate {
+                        phase + self.params[1]
+                    } else {
+                        self.params[1] * phase.sin()
+                    };
+                    let cosine = angle.cos() as f32;
+                    let sine = angle.sin() as f32;
+                    let left = buffer[2 * i];
+                    let right = buffer[2 * i + 1];
+                    buffer[2 * i] = left * cosine - right * sine;
+                    buffer[2 * i + 1] = left * sine + right * cosine;
+                }
+                self.phase = (self.phase + delta * count as f64).rem_euclid(TAU64);
+            }
+            KitOp::Midside => {
+                let width = self.params[0] as f32;
+                let half_plus = 0.5 * (1.0 + width);
+                let half_minus = 0.5 * (1.0 - width);
+                for frame in buffer.chunks_exact_mut(2) {
+                    let (left, right) = (frame[0], frame[1]);
+                    frame[0] = half_plus * left + half_minus * right;
+                    frame[1] = half_minus * left + half_plus * right;
+                }
+            }
+            KitOp::Ringmod => {
+                let delta = TAU64 * self.params[0] / sample_rate;
+                let depth = self.params[1];
+                for i in 0..count {
+                    let phase = self.phase + delta * i as f64;
+                    let gain = (1.0 - depth * (0.5 + 0.5 * phase.sin())) as f32;
+                    buffer[2 * i] *= gain;
+                    buffer[2 * i + 1] *= gain;
+                }
+                self.phase = (self.phase + delta * count as f64).rem_euclid(TAU64);
+            }
+            KitOp::Matrix => {
+                let a = self.params[0] as f32;
+                let b = self.params[1] as f32;
+                let c = self.params[2] as f32;
+                let d = self.params[3] as f32;
+                for frame in buffer.chunks_exact_mut(2) {
+                    let (left, right) = (frame[0], frame[1]);
+                    frame[0] = a * left + b * right;
+                    frame[1] = c * left + d * right;
+                }
+            }
+            KitOp::Chandelay => {
+                if !self.delay.is_empty() {
+                    let channel = usize::from(self.params[1] >= 0.5);
+                    for i in 0..count {
+                        self.delay.push_back(buffer[2 * i + channel]);
+                        buffer[2 * i + channel] = self.delay.pop_front().unwrap();
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The computer
 // ---------------------------------------------------------------------------
 
@@ -237,6 +359,8 @@ pub struct Computer {
     upsampler: Option<Upsampler>,
     upsample_buffer: Vec<f32>,
     magnitude_buffer: Vec<f32>,
+    kit: Vec<KitStage>,
+    kit_buffer: Vec<f32>,
     last_beam: Option<(f32, f32)>,
     waveform_history: Vec<f32>,
     spectrum_levels: [f32; SPECTRUM_BAR_COUNT],
@@ -273,6 +397,8 @@ impl Computer {
             upsampler: None,
             upsample_buffer: Vec::new(),
             magnitude_buffer: Vec::new(),
+            kit: Vec::new(),
+            kit_buffer: Vec::new(),
             last_beam: None,
             waveform_history: Vec::new(),
             spectrum_levels: [0.0; SPECTRUM_BAR_COUNT],
@@ -320,6 +446,32 @@ impl Computer {
         if let Some(upsampler) = self.upsampler.as_mut() {
             upsampler.reset();
         }
+        let sample_rate = self.sample_rate as f64;
+        for stage in self.kit.iter_mut() {
+            stage.reset(sample_rate);
+        }
+    }
+
+    /// Install (or clear, with empty slices) the signal kit chain; state
+    /// starts zeroed. `params` carries 4 f64 per op.
+    pub fn set_kit(&mut self, ops: &[u32], params: &[f64]) {
+        self.kit.clear();
+        let sample_rate = self.sample_rate as f64;
+        for (index, &op) in ops.iter().enumerate().take(MAX_KIT_STAGES) {
+            let Some(op) = KitOp::from_u32(op) else { continue };
+            let mut stage = KitStage {
+                op,
+                params: [0.0; 4],
+                phase: 0.0,
+                delay: VecDeque::new(),
+            };
+            for (slot, value) in stage.params.iter_mut()
+                .zip(&params[index * 4..index * 4 + 4]) {
+                *slot = *value;
+            }
+            stage.reset(sample_rate);
+            self.kit.push(stage);
+        }
     }
 
     /// Returns segments written to `out` (each 5 f32s), at most `capacity`.
@@ -328,6 +480,27 @@ impl Computer {
                    glow_keep: f32, samples: &[f32], width: f32, height: f32,
                    out: &mut SegmentSink) -> usize {
         let samples = &samples[..samples.len() - samples.len() % 2];
+        if !self.kit.is_empty() && !samples.is_empty() {
+            let mut buffer = std::mem::take(&mut self.kit_buffer);
+            buffer.clear();
+            buffer.extend_from_slice(samples);
+            let sample_rate = self.sample_rate as f64;
+            for stage in self.kit.iter_mut() {
+                stage.process(&mut buffer, sample_rate);
+            }
+            let count = self.compute_inner(mode, gain, beam_energy, glow_keep,
+                                           &buffer, width, height, out);
+            self.kit_buffer = buffer;
+            return count;
+        }
+        self.compute_inner(mode, gain, beam_energy, glow_keep, samples,
+                           width, height, out)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn compute_inner(&mut self, mode: Mode, gain: f32, beam_energy: f32,
+                     glow_keep: f32, samples: &[f32], width: f32, height: f32,
+                     out: &mut SegmentSink) -> usize {
         match mode {
             Mode::Xy | Mode::Xy45 | Mode::XyDots => {
                 if self.upsampler.is_some() {
@@ -629,6 +802,25 @@ pub unsafe extern "C" fn pc_reset(handle: *mut Computer) {
     }
 }
 
+/// Install a signal kit chain: `stage_count` ops with 4 f64 params each.
+/// Null pointers or zero count clear the chain.
+///
+/// # Safety
+/// `handle` from pc_new; `ops` valid for `stage_count` u32s and `params`
+/// for `stage_count * 4` f64s when non-null.
+#[no_mangle]
+pub unsafe extern "C" fn pc_set_kit(handle: *mut Computer, ops: *const u32,
+                                    params: *const f64, stage_count: usize) {
+    let Some(computer) = handle.as_mut() else { return };
+    if ops.is_null() || params.is_null() || stage_count == 0 {
+        computer.set_kit(&[], &[]);
+        return;
+    }
+    let ops = std::slice::from_raw_parts(ops, stage_count);
+    let params = std::slice::from_raw_parts(params, stage_count * 4);
+    computer.set_kit(ops, params);
+}
+
 /// Writes up to `capacity` segments (5 f32 each) into `out`; returns the
 /// number written.
 ///
@@ -802,6 +994,52 @@ mod tests {
         for &value in settled {
             assert!((value - 0.25).abs() < 1e-4);
         }
+    }
+
+    #[test]
+    fn kit_fixed_rotate_quarter_turn() {
+        // rotate hz=0 angle=π/2 maps (l, r) -> (-r, l): the xy figure turns
+        let mut computer = Computer::new();
+        computer.set_kit(&[0], &[0.0, std::f64::consts::FRAC_PI_2, 0.0, 0.0]);
+        let samples = [0.5f32, 0.0, 0.5, 0.0, 0.5, 0.0];
+        let segments = compute_vec(&mut computer, Mode::Xy, &samples,
+                                   1000.0, 1000.0);
+        // x = 0.5 rotated to y: expect points at (500, 500 - 0.5*450)
+        for segment in &segments {
+            assert!((segment[0] - 500.0).abs() < 0.01, "x: {}", segment[0]);
+            assert!((segment[1] - (500.0 - 0.5 * 450.0)).abs() < 0.01,
+                    "y: {}", segment[1]);
+        }
+    }
+
+    #[test]
+    fn kit_chandelay_is_exact_integer_delay() {
+        let mut computer = Computer::new();
+        // 1 ms at 48 kHz = 48 samples on the right channel
+        computer.set_kit(&[5], &[1.0, 1.0, 0.0, 0.0]);
+        let stage = &mut computer.kit[0];
+        assert_eq!(stage.delay.len(), 48);
+        let mut buffer: Vec<f32> = (0..200)
+            .flat_map(|i| [i as f32, i as f32])
+            .collect();
+        let rate = 48000.0f64;
+        computer.kit[0].process(&mut buffer, rate);
+        for i in 0..200 {
+            assert_eq!(buffer[2 * i], i as f32); // left untouched
+            let expected = if i < 48 { 0.0 } else { (i - 48) as f32 };
+            assert_eq!(buffer[2 * i + 1], expected, "frame {i}");
+        }
+    }
+
+    #[test]
+    fn kit_clears_and_caps() {
+        let mut computer = Computer::new();
+        let ops = vec![1u32; 40];
+        let params = vec![1.0f64; 40 * 4];
+        computer.set_kit(&ops, &params);
+        assert_eq!(computer.kit.len(), MAX_KIT_STAGES);
+        computer.set_kit(&[], &[]);
+        assert!(computer.kit.is_empty());
     }
 
     #[test]

@@ -48,8 +48,11 @@ def as_rows(segments):
     return [tuple(float(value) for value in row) for row in segments]
 
 
-def compare_mode(mode, sample_rate=48000, width=800, height=600):
+def compare_mode(mode, sample_rate=48000, width=800, height=600, kit=None):
     native, reference = build_pair(mode, sample_rate)
+    if kit is not None:
+        native.set_kit(kit)
+        reference.set_kit(kit)
     audio = make_audio(6000, sample_rate)
     chunk = 1600                        # stream in uneven pieces
     worst = 0.0
@@ -85,6 +88,30 @@ def test_all_modes_match_python():
                   f"{worst:.5f}px")
 
 
+KIT_CASES = {
+    "rotate": [("rotate", [0.8, 0.4, 0.0, 0.0])],
+    "midside": [("midside", [1.7, 0.0, 0.0, 0.0])],
+    "ringmod": [("ringmod", [3.0, 0.6, 0.0, 0.0])],
+    "wobble": [("wobble", [1.3, 0.9, 0.0, 0.0])],
+    "matrix": [("matrix", [0.9, 0.3, -0.2, 1.1])],
+    "chandelay": [("chandelay", [7.0, 1.0, 0.0, 0.0])],
+    "chain": [("rotate", [0.05, 0.0, 0.0, 0.0]),
+              ("midside", [1.4, 0.0, 0.0, 0.0]),
+              ("ringmod", [3.0, 0.2, 0.0, 0.0])],
+}
+
+
+def test_kit_chains_match_python():
+    """Stateful kit ops must stay in step across engines over many calls
+    (phase accumulation and delay lines are where parity usually dies)."""
+    for kit_name, stages in KIT_CASES.items():
+        for mode in ("xy", "spectrum"):
+            for sample_rate in (48000, 96000):
+                worst = compare_mode(mode, sample_rate, kit=stages)
+                print(f"  kit {kit_name:10s} over {mode:8s} @ {sample_rate}:"
+                      f" worst delta {worst:.5f}px")
+
+
 def test_plan_feed_mapping():
     assert phosphor_signal.plan_feed(48000) == (48000, 1)
     assert phosphor_signal.plan_feed(96000) == (48000, 2)
@@ -112,6 +139,7 @@ if __name__ == "__main__":
     test_plan_feed_mapping()
     print("plan_feed mapping ok")
     test_all_modes_match_python()
+    test_kit_chains_match_python()
     test_oversample_output_density()
     print("oversample density ok")
     print("PARITY OK")

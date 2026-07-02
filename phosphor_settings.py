@@ -124,6 +124,10 @@ class Settings:
         self.shuffle = False
         self.repeat_mode = "off"       # "off" | "all" | "one"
         self.playlist_panel_open = False
+        self.postcard_credit = ""      # remembered "trace by" signature
+        # signal kit (.phoskit): a transform chain bent into the signal
+        self.kit_path = None           # active kit file, or None
+        self.kit_enabled = False
         # appearance
         self.theme_name = "P7 Green"
         self.custom_beam_color = [0.42, 1.0, 0.55]

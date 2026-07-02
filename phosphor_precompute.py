@@ -33,10 +33,44 @@ except ImportError:
 from phosphor_audio import probe_duration_seconds
 
 CACHE_DIRECTORY = os.path.expanduser("~/.local/share/phosphor/precomputed")
+POSTCARD_DIRECTORY = os.path.expanduser("~/Music/Phosphor")
 AUDIO_PIPE_RATE = 48000     # audible pipe while the scope reads from cache
 MAGIC = b"PHOSC1"
 HEADER_BYTES = 256
 INT16_SCALE = 32767.0
+
+
+def pack_header(fields):
+    """The fixed 256-byte header record for `fields`. The JSON must fit the
+    record, so free-text fields (title, credit, source) are trimmed until it
+    does — a shared .phos should never fail over a long album title."""
+    for keep in (80, 48, 24, 8, 0):
+        candidate = dict(fields)
+        for key in ("title", "credit", "source"):
+            value = candidate.get(key)
+            if value:
+                candidate[key] = value[:keep]
+            if not candidate.get(key):
+                candidate.pop(key, None)
+        encoded = MAGIC + json.dumps(candidate, ensure_ascii=False).encode()
+        if len(encoded) <= HEADER_BYTES - 1:
+            return encoded.ljust(HEADER_BYTES - 1) + b"\n"
+    raise ValueError("phos header does not fit")
+
+
+def read_header(path):
+    """The header fields of a .phos file, or None if it isn't one."""
+    try:
+        with open(path, "rb") as source:
+            header = source.read(HEADER_BYTES)
+    except OSError:
+        return None
+    if not header.startswith(MAGIC):
+        return None
+    try:
+        return json.loads(header[len(MAGIC):].decode().strip())
+    except (UnicodeDecodeError, ValueError):
+        return None
 
 
 def _content_key(path, rate):
@@ -71,6 +105,8 @@ class PrecomputedTrack:
         self.sample_rate = int(fields["rate"])
         self.frame_count = int(fields["frames"])
         self.source_name = fields.get("source", "")
+        self.title = fields.get("title") or ""
+        self.credit = fields.get("credit") or ""
         self._map = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
 
     @property
@@ -137,13 +173,12 @@ def generate(path, rate, progress_callback=None):
             error_output = decoder.stderr.read().decode(errors="replace")
             if decoder.wait() != 0 or written < 4:
                 raise RuntimeError(f"decode failed: {error_output[:200]}")
-            header = MAGIC + json.dumps({
+            sink.seek(0)
+            sink.write(pack_header({
                 "rate": rate,
                 "frames": written // 4,
                 "source": os.path.basename(path),
-            }).encode()
-            sink.seek(0)
-            sink.write(header.ljust(HEADER_BYTES - 1) + b"\n")
+            }))
         os.replace(scratch_path, final_path)
     except BaseException:
         decoder.kill()
@@ -153,6 +188,50 @@ def generate(path, rate, progress_callback=None):
             pass
         raise
     return PrecomputedTrack(final_path)
+
+
+def export_postcard(source_phos_path, destination_path, title, credit):
+    """Copy a .phos stream with title/credit stamped into its header — the
+    shareable "signal postcard". Returns the destination path."""
+    fields = read_header(source_phos_path)
+    if fields is None:
+        raise ValueError("not a phos stream")
+    if title:
+        fields["title"] = title
+    if credit:
+        fields["credit"] = credit
+    destination_directory = os.path.dirname(destination_path)
+    if destination_directory:
+        os.makedirs(destination_directory, exist_ok=True)
+    scratch_path = destination_path + ".part"
+    try:
+        with open(source_phos_path, "rb") as source, \
+                open(scratch_path, "wb") as sink:
+            source.seek(HEADER_BYTES)
+            sink.write(pack_header(fields))
+            while True:
+                chunk = source.read(1 << 20)
+                if not chunk:
+                    break
+                sink.write(chunk)
+        os.replace(scratch_path, destination_path)
+    except BaseException:
+        try:
+            os.unlink(scratch_path)
+        except OSError:
+            pass
+        raise
+    return destination_path
+
+
+def postcard_path_for(source_path, rate, title=None):
+    """Default export location: ~/Music/Phosphor/<name>-<rate>k.phos."""
+    stem = (title or
+            os.path.splitext(os.path.basename(source_path))[0] or "postcard")
+    safe = "".join(ch if ch.isalnum() or ch in " -_." else "_"
+                   for ch in stem).strip() or "postcard"
+    return os.path.join(POSTCARD_DIRECTORY,
+                        f"{safe}-{rate // 1000}k.phos")
 
 
 def cache_size_bytes():

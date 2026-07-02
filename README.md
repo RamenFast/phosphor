@@ -87,6 +87,13 @@ Shipped to GitHub by Claude&nbsp;Opus&nbsp;4.8, the day Fable&nbsp;5 went dark (
   nothing drops.
 - **Compose mode** — draw a shape on the scope and it *becomes* audio: a
   loop that draws itself, exportable as WAV for any oscilloscope.
+- **Signal postcards** — share the scope itself: export any track's trace
+  as a `.phos` stream a friend can drop on their Phosphor (it plays, at
+  *your* detail rate, with *"trace by you"* fading in), or send a
+  `.phoskit` — a chain of signal-space transforms (rotate, widen,
+  ring-mod, channel delay…) that bends into **whatever they're
+  listening to**, live. A built-in kit editor composes chains against
+  the running beam; three starter kits ship in the box.
 - **Exports** — snapshots and 10-second mp4 clips *with sound*, re-rendered
   offline so they look exactly like the screen did.
 - **Cinnamon panel applet** — a tiny live vectorscope in your panel, with
@@ -140,6 +147,7 @@ applet/install.sh   # then add "Phosphor Scope" from Menu -> Applets
   https://oscilloscopemusic.com
 - Any normal song in **XY · goniometer**, and watch the stereo image dance.
 - Hit `D` and draw something. It plays.
+- Load the **haunt** kit on a mono podcast and watch voices grow shapes.
 
 ## License
 
