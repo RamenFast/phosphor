@@ -131,6 +131,7 @@ class Settings:
         self.grid_enabled = True
         self.amoled_background = False
         self.scope_glass = False       # translucent scope pane (glass over desktop)
+        self.glass_tint = 0.5          # pane darkness while glass is on, 0..0.95
         self.renderer = "gl"
         self.gl_supersample = 1        # GPU energy buffer scale: 1 or 2
         self.cairo_resolution = 1.0    # CPU phosphor buffer scale: 0.5..1.0
