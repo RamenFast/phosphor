@@ -37,6 +37,7 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gdk, GLib  # noqa: E402
 
 import phosphor_compose
+import phosphor_precompute
 import phosphor_recorder
 import phosphor_ui_style
 from phosphor_audio import (AudioCaptureStream, default_monitor_target_id,
@@ -221,6 +222,10 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._compose_points = []          # widget pixels while drawing
         self._compose_loop_points = None   # finished shape in signal space
         self._compose_regenerate_source = None
+        # precomputed scope streams (phosphor_precompute)
+        self._precomputed = None
+        self._precomputed_clock = 0.0      # seconds of the stream traced so far
+        self._precompute_worker_path = None
         # mini-mode corner resize
         self._mini_resize_start = None     # (start size, x_root, y_root)
 
@@ -492,6 +497,12 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             box.connect("changed", on_changed)
             return box
 
+        def switch(active, on_state):
+            widget = Gtk.Switch(halign=Gtk.Align.START)
+            widget.set_active(active)
+            widget.connect("state-set", on_state)
+            return widget
+
         self.renderer_combo = Gtk.ComboBoxText()
         if self.gl_available:
             self.renderer_combo.append("gl", "GPU · CRT beam (recommended)")
@@ -510,6 +521,14 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             "Scope feed sample rate — higher rates trace the true curves\n"
             "between samples, recovering fine scope-art detail")
         attach("Scope detail", scope_rate_combo)
+        precompute_switch = attach("Precompute files", switch(
+            self.settings.precompute_enabled, self._on_precompute_switched))
+        precompute_switch.set_tooltip_text(
+            "Render opened tracks' scope streams ahead of time to\n"
+            "~/.local/share/phosphor/precomputed and play from disk:\n"
+            "no realtime reconstruction, nothing dropped on slow machines.\n"
+            "Costs disk — ~92 MB per track-minute at 384 kHz, less at\n"
+            "lower rates. Right-click the scope to clear the cache.")
         resolution_id = min(
             (choice_id for choice_id, _ in CPU_RESOLUTION_CHOICES),
             key=lambda choice_id:
@@ -551,12 +570,6 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self.custom_grid_button = attach("Custom grid", color_button(
             self.settings.custom_grid_color,
             lambda rgb: setattr(self.settings, "custom_grid_color", rgb)))
-
-        def switch(active, on_state):
-            widget = Gtk.Switch(halign=Gtk.Align.START)
-            widget.set_active(active)
-            widget.connect("state-set", on_state)
-            return widget
 
         self.auto_gain_switch = attach("Auto gain", switch(
             self.settings.auto_gain, self._on_auto_gain_switched))
@@ -676,6 +689,116 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self.capture_toggle.set_active(active)
         self.capture_toggle.handler_unblock_by_func(self._on_capture_toggled)
 
+    # ---------------------------------------------- precomputed streams --
+
+    def prepare_scope_feed(self, path):
+        """Scope side of playing `path`: attach a matching precomputed
+        stream (audible pipe drops to 48 kHz, the scope reads the stream by
+        the playback clock) or fall back to the live pipe; queue generation
+        when the setting asks for it."""
+        track = (phosphor_precompute.find(path, self.settings.scope_sample_rate)
+                 if self.settings.precompute_enabled else None)
+        self.attach_precomputed(track)
+        if (track is None and self.settings.precompute_enabled
+                and self.settings.scope_sample_rate
+                > phosphor_precompute.AUDIO_PIPE_RATE):
+            self._queue_precompute(path)
+
+    def attach_precomputed(self, track):
+        previous, self._precomputed = self._precomputed, track
+        if previous is not None:
+            previous.close()
+        self._precomputed_clock = 0.0
+        if track is not None:
+            self.capture_stream.configure_sample_rate(
+                phosphor_precompute.AUDIO_PIPE_RATE)
+            with self.compute_lock:
+                self.segment_computer.set_sample_rate(track.sample_rate, 1)
+                self.segment_computer.reset()
+        else:
+            pipe_rate, oversample = plan_feed(self.settings.scope_sample_rate)
+            self.capture_stream.configure_sample_rate(pipe_rate)
+            with self.compute_lock:
+                self.segment_computer.set_sample_rate(pipe_rate, oversample)
+                self.segment_computer.reset()
+
+    def detach_precomputed(self):
+        if self._precomputed is not None:
+            self.attach_precomputed(None)
+
+    def on_playback_restarted(self, seconds):
+        """After a seek or rate reload: jump the stream clock, break the
+        trace so the beam doesn\'t bridge the jump."""
+        self._precomputed_clock = seconds
+        with self.compute_lock:
+            self.segment_computer.reset()
+
+    def _pull_precomputed_samples(self):
+        """The stream slice the playback clock crossed since the last frame.
+        A stalled frame reads a longer slice — detail is never dropped, just
+        traced late (capped so a long stall doesn\'t burst)."""
+        position = min(self.capture_stream.playback_position_seconds,
+                       self._precomputed.duration_seconds)
+        start = self._precomputed_clock
+        if position - start > 0.25:
+            start = position - 0.25
+        chunk = self._precomputed.samples_between(start, position)
+        self._precomputed_clock = position
+        return chunk
+
+    def _export_detail_oversample(self):
+        """Exports re-render from the 48 kHz history; match the screen."""
+        if self._precomputed is not None:
+            return max(1, round(self._precomputed.sample_rate
+                                / self.capture_stream.sample_rate))
+        return self.segment_computer.oversample
+
+    def _queue_precompute(self, path):
+        if self._precompute_worker_path is not None:
+            return
+        self._precompute_worker_path = path
+        rate = self.settings.scope_sample_rate
+        last_percent = [-1]
+
+        def report(fraction):
+            percent = int(fraction * 100)
+            if percent != last_percent[0]:
+                last_percent[0] = percent
+                GLib.idle_add(self.status_label.set_text,
+                              f"precomputing scope stream… {percent}%")
+
+        def finished(track):
+            self._precompute_worker_path = None
+            if self.player.playing_path == path:
+                position = self.capture_stream.playback_position_seconds
+                self.attach_precomputed(track)
+                self.on_playback_restarted(position)
+                self.status_label.set_text(
+                    f"▶ {self.player.playing_file} — precomputed ✓")
+            else:
+                track.close()
+                self.status_label.set_text("scope stream precomputed ✓")
+            return False
+
+        def failed(message):
+            self._precompute_worker_path = None
+            self.status_label.set_text(f"precompute failed: {message}")
+            return False
+
+        def worker():
+            try:
+                track = phosphor_precompute.generate(path, rate, report)
+                GLib.idle_add(finished, track)
+            except (RuntimeError, OSError) as error:
+                GLib.idle_add(failed, str(error))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _clear_precompute_cache(self):
+        self.detach_precomputed()
+        freed = phosphor_precompute.clear_cache()
+        self.status_label.set_text(
+            f"precomputed streams cleared ({freed / 1e6:.0f} MB)")
+
     def _handle_stream_died(self):
         if not self.capture_toggle.get_active():
             return
@@ -761,9 +884,20 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             return GLib.SOURCE_CONTINUE
         if self.capture_stream.is_running:
             samples = self.capture_stream.take_stereo_samples()
+            if (self._precomputed is not None
+                    and self.player.playing_file is not None):
+                # the live pipe only carries the audible audio; the scope
+                # reads the precomputed stream by the playback clock
+                samples = self._pull_precomputed_samples()
             # The monitor delivers zeros while nothing plays; detect silence by
             # content and stop redrawing once the glow has settled.
-            peak = max(max(samples), -min(samples)) if samples else 0.0
+            if len(samples):
+                if numpy is not None and isinstance(samples, numpy.ndarray):
+                    peak = float(numpy.abs(samples).max())
+                else:
+                    peak = max(max(samples), -min(samples))
+            else:
+                peak = 0.0
             is_quiet = peak < QUIET_PEAK_THRESHOLD
             self.quiet_frame_count = self.quiet_frame_count + 1 if is_quiet else 0
             if self.quiet_frame_count > QUIET_FRAMES_BEFORE_SLEEP:
@@ -956,22 +1090,26 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         # capture the playback position before the stream's clock changes
         resume_seconds = self.capture_stream.playback_position_seconds
         self.settings.scope_sample_rate = rate
-        pipe_rate, oversample = plan_feed(rate)
-        self.capture_stream.configure_sample_rate(pipe_rate)
-        with self.compute_lock:
-            self.segment_computer.set_sample_rate(pipe_rate, oversample)
-            self.segment_computer.reset()
         # restart whatever is flowing so the new rate applies immediately
         try:
             if self.player.playing_path is not None:
+                self.prepare_scope_feed(self.player.playing_path)
                 self.capture_stream.start_file(self.player.playing_path,
                                                seek_seconds=resume_seconds)
-            elif self.is_composing and self._compose_loop_points:
-                self._restart_compose_loop()
-            elif self.capture_stream.is_running:
-                target_id = self.target_combo.get_active_id()
-                if target_id in self.capture_targets:
-                    self.capture_stream.start(self.capture_targets[target_id])
+                self.on_playback_restarted(resume_seconds)
+            else:
+                pipe_rate, oversample = plan_feed(rate)
+                self.capture_stream.configure_sample_rate(pipe_rate)
+                with self.compute_lock:
+                    self.segment_computer.set_sample_rate(pipe_rate, oversample)
+                    self.segment_computer.reset()
+                if self.is_composing and self._compose_loop_points:
+                    self._restart_compose_loop()
+                elif self.capture_stream.is_running:
+                    target_id = self.target_combo.get_active_id()
+                    if target_id in self.capture_targets:
+                        self.capture_stream.start(
+                            self.capture_targets[target_id])
         except OSError as error:
             self.status_label.set_text(f"rate change failed: {error}")
         self.settings.save()
@@ -989,6 +1127,13 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self.settings.ui_style = combo.get_active_id()
         self._apply_ui_style()
         self.settings.save()
+
+    def _on_precompute_switched(self, _switch, state):
+        self.settings.precompute_enabled = state
+        playing = self.player.playing_path
+        if state and playing is not None and self._precomputed is None:
+            self._queue_precompute(playing)
+        return False
 
     def _on_show_pin_switched(self, _switch, state):
         self.settings.show_pin_button = state
@@ -1060,7 +1205,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                     audio, self.settings,
                     sample_rate=self.capture_stream.sample_rate,
                     gain=self._effective_gain,
-                    oversample=self.segment_computer.oversample)
+                    oversample=self._export_detail_oversample())
                 GLib.idle_add(worker_done, path)
             except (RuntimeError, OSError) as error:
                 GLib.idle_add(self._export_failed, str(error))
@@ -1082,7 +1227,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             on_error=lambda message: GLib.idle_add(self._export_failed, message),
             sample_rate=self.capture_stream.sample_rate,
             gain=self._effective_gain,
-            oversample=self.segment_computer.oversample)
+            oversample=self._export_detail_oversample())
 
     def _export_done(self, path):
         self.exporting = False
@@ -1394,6 +1539,21 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             add_item("Export drawing as WAV  (10 s)", self.export_drawing)
         add_item("Snapshot  (S)", self.save_snapshot)
         add_item("Save last 10 s  (C)", self.save_clip)
+        if self.player.playing_path is not None:
+            if self._precomputed is not None:
+                add_item("Scope stream: precomputed ✓", lambda: None,
+                         sensitive=False)
+            elif self._precompute_worker_path is not None:
+                add_item("Precomputing scope stream…", lambda: None,
+                         sensitive=False)
+            else:
+                add_item("Precompute scope stream",
+                         lambda: self._queue_precompute(
+                             self.player.playing_path))
+        cache_bytes = phosphor_precompute.cache_size_bytes()
+        if cache_bytes:
+            add_item(f"Clear precomputed streams ({cache_bytes / 1e6:.0f} MB)",
+                     self._clear_precompute_cache)
         menu.append(Gtk.SeparatorMenuItem())
 
         mode_menu = add_submenu("Display mode")

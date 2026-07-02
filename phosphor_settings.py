@@ -114,6 +114,8 @@ class Settings:
         # (sinc reconstruction via PulseAudio/ffmpeg) instead of straight
         # lines between 48 kHz samples — finer detail on scope music
         self.scope_sample_rate = 96000
+        # precompute scope streams to disk on open, and play from them
+        self.precompute_enabled = False
         self.compose_frequency_hz = 80.0   # loop pitch for drawn shapes
         self.pinned = False
         # appearance

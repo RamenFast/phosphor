@@ -107,6 +107,9 @@ class PhosphorPlayer:
         window = self.window
         window._cancel_reacquire()
         window._exit_compose_mode(stop_loop=False)
+        # attach a precomputed scope stream (or the live pipe) before the
+        # decoder starts, so the audible pipe rate is already right
+        window.prepare_scope_feed(path)
         try:
             self.capture_stream.start_file(path)
         except OSError as error:
@@ -145,6 +148,7 @@ class PhosphorPlayer:
             self.playing_path = None
             self.track_duration_seconds = None
             self.position_box.hide()
+            self.window.detach_precomputed()
         self.transport_box.set_no_show_all(not loaded)
         if loaded:
             self.transport_box.show_all()
@@ -259,6 +263,7 @@ class PhosphorPlayer:
         except OSError as error:
             self.window.status_label.set_text(f"seek failed: {error}")
             return GLib.SOURCE_REMOVE
+        self.window.on_playback_restarted(target_seconds)
         if was_paused:
             self.capture_stream.set_playback_paused(True)
         else:
