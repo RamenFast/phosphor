@@ -56,13 +56,14 @@ from phosphor_signal import SegmentComputer, plan_feed
 from phosphor_ui_style import UI_STYLE_CHOICES
 
 APPLICATION_ID = "io.github.ben.Phosphor"
-APPLICATION_VERSION = "3.1.4"
+APPLICATION_VERSION = "3.2.0"
 PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 QUIET_PEAK_THRESHOLD = 1e-4
 QUIET_FRAMES_BEFORE_SLEEP = 120
 MINI_SIZE_PRESETS = (("Small", 200), ("Medium", 280), ("Large", 380),
                      ("Extra large", 520))
 MINI_RESIZE_CORNER_PIXELS = 26       # bottom-right drag-to-resize hot zone
+MINI_SNAP_PIXELS = 32                # edge magnetism after a mini-view drag
 COMPOSE_PREVIEW_INTENSITY = 0.25     # restamped every frame while drawing
 COMPOSE_MINIMUM_POINTS = 8
 REACQUIRE_POLL_LIMIT = 180   # seconds to wait for a dead app stream to return
@@ -251,6 +252,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._precompute_worker_path = None
         # mini-mode corner resize
         self._mini_resize_start = None     # (start size, x_root, y_root)
+        self._mini_snap_source = None      # pending edge-magnetism check
 
         phosphor_ui_style.install_base_style()
         self._sync_glass_class()
@@ -1924,13 +1926,67 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         """Continuously remember the normal-view geometry. Reading it lazily
         at toggle time raced the window manager (and rapid M presses), which
         is what used to restore half-screen tile sizes."""
-        if (self.is_mini_mode or self._geometry_tracking_suspended
+        if (self._geometry_tracking_suspended
                 or self._window_is_tiled_or_maximized()):
+            return False
+        if self.is_mini_mode:
+            # edge magnetism: wait for the drag to settle, then snap. Every
+            # configure re-arms the timer, so it fires once, after the last
+            # movement — never mid-drag.
+            if self._mini_snap_source is not None:
+                GLib.source_remove(self._mini_snap_source)
+            self._mini_snap_source = GLib.timeout_add(
+                180, self._snap_mini_to_edges)
             return False
         if self.get_window() is not None:
             self.settings.window_width, self.settings.window_height = self.get_size()
             self.settings.window_x, self.settings.window_y = self.get_position()
         return False
+
+    def _mini_workarea(self):
+        """The current monitor's work area (panels excluded), or None."""
+        gdk_window = self.get_window()
+        if gdk_window is None:
+            return None
+        monitor = self.get_screen().get_display() \
+            .get_monitor_at_window(gdk_window)
+        return monitor.get_workarea() if monitor is not None else None
+
+    def _snap_mini_to_edges(self):
+        """Glide flush when a mini-view drag ends near a screen edge, so
+        parking the scope in a corner doesn't need pixel aim."""
+        self._mini_snap_source = None
+        if not self.is_mini_mode or self._mini_resize_start is not None:
+            return GLib.SOURCE_REMOVE
+        area = self._mini_workarea()
+        if area is None:
+            return GLib.SOURCE_REMOVE
+        x, y = self.get_position()
+        width, height = self.get_size()
+        snapped_x, snapped_y = x, y
+        if abs(x - area.x) <= MINI_SNAP_PIXELS:
+            snapped_x = area.x
+        elif abs((x + width) - (area.x + area.width)) <= MINI_SNAP_PIXELS:
+            snapped_x = area.x + area.width - width
+        if abs(y - area.y) <= MINI_SNAP_PIXELS:
+            snapped_y = area.y
+        elif abs((y + height) - (area.y + area.height)) <= MINI_SNAP_PIXELS:
+            snapped_y = area.y + area.height - height
+        if (snapped_x, snapped_y) != (x, y):
+            self.move(snapped_x, snapped_y)
+        self.settings.mini_x, self.settings.mini_y = snapped_x, snapped_y
+        return GLib.SOURCE_REMOVE
+
+    def _align_mini(self, fraction_x, fraction_y):
+        """Park the mini view at a work-area corner (or center)."""
+        area = self._mini_workarea()
+        if area is None:
+            return
+        width, height = self.get_size()
+        x = area.x + int(fraction_x * (area.width - width))
+        y = area.y + int(fraction_y * (area.height - height))
+        self.move(x, y)
+        self.settings.mini_x, self.settings.mini_y = x, y
 
     def _resume_geometry_tracking(self):
         self._geometry_tracking_suspended = False
@@ -2133,6 +2189,17 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         menu.append(Gtk.SeparatorMenuItem())
 
         if self.is_mini_mode:
+            align_menu = add_submenu("Align")
+            for glyph, corner_label, fraction_x, fraction_y in (
+                    ("◰", "Top left", 0.0, 0.0),
+                    ("◳", "Top right", 1.0, 0.0),
+                    ("◱", "Bottom left", 0.0, 1.0),
+                    ("◲", "Bottom right", 1.0, 1.0),
+                    ("▣", "Center", 0.5, 0.5)):
+                add_item(f"{glyph}  {corner_label}",
+                         lambda fx=fraction_x, fy=fraction_y:
+                             self._align_mini(fx, fy),
+                         target_menu=align_menu)
             for preset_label, preset_size in MINI_SIZE_PRESETS:
                 add_item(f"Mini size: {preset_label}",
                          lambda s=preset_size: self._resize_mini(s))
