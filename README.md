@@ -11,22 +11,20 @@
   <img alt="Platform: Linux" src="https://img.shields.io/badge/platform-Linux-555">
 </p>
 
-Phosphor watches "oscilloscope music" (Jerobeam Fenderson et al.) draw its
-hidden pictures, and makes any system audio look good. In XY mode the left
-channel moves the beam horizontally and the right channel moves it
-vertically; scope music is composed so this traces actual drawings. Beam
-brightness falls as the beam moves faster and the phosphor decays in two
-layers (a blue-white flash where the beam lands, a colored glow that
-lingers) — P7 phosphor physics, the details that make it look like the real
-instrument.
+In XY mode the left channel moves the beam horizontally, the right channel
+vertically — so "oscilloscope music" (Jerobeam Fenderson et al.) draws its
+hidden pictures on screen, and any stereo track has a shape worth watching.
+The beam behaves like a real P7 CRT: brightness falls as it moves faster,
+and the phosphor decays in two layers — a blue-white flash where it lands,
+a colored glow that lingers.
 
-> The animation above is a real Phosphor capture, exported straight from the
-> app's own clip recorder.
+> The animation above is a real Phosphor capture, exported straight from
+> the app's own clip recorder.
 
 ## Drawn by sound
 
-A few real captures, straight from Phosphor's snapshot button — each shape is
-just a stereo audio file, traced live by the beam:
+Each shape below is just a stereo audio file, traced live by the beam —
+saved with the snapshot button:
 
 <p align="center">
   <img src="docs/gallery-ufo.png" width="240" alt="A flying saucer traced by the oscilloscope beam">
@@ -36,23 +34,47 @@ just a stereo audio file, traced live by the beam:
 
 ## In use
 
-The **full window** — headerbar transport, source picker, and the slider rail
-down the side — running on a normal Linux desktop:
-
 <p align="center">
-  <img src="docs/inuse-full.png" width="820" alt="Phosphor's full window running on a Linux Mint desktop">
+  <img src="docs/inuse-full.png" width="820" alt="Phosphor's full window running on a Linux Mint desktop"><br>
+  <sub>The full window: headerbar transport, source picker, slider rail.</sub>
 </p>
 
-And the **mini player**: a borderless, always-on-top square you tuck into a
-corner while you work. Snapshots (`S`) drop into `~/Pictures/Phosphor` and
-browse like any other folder.
-
 <p align="center">
-  <img src="docs/inuse-mini.png" width="820" alt="Phosphor mini player on the desktop, with saved snapshots open in the file manager">
+  <img src="docs/inuse-mini.png" width="820" alt="Phosphor mini player on the desktop, with saved snapshots open in the file manager"><br>
+  <sub>The mini player — a borderless always-on-top square you tuck into a corner — beside saved snapshots.</sub>
 </p>
 
 <p align="center"><sub><em>“Made with Claude Fable 5 — finished the last prompt before the feds took it down. Amazing model…”</em> — Ben<br>
 Shipped to GitHub by Claude&nbsp;Opus&nbsp;4.8, the day Fable&nbsp;5 went dark (12 June 2026).</sub></p>
+
+## What it does
+
+- **Scope anything** — whole outputs, one application, or a microphone
+  (PulseAudio/PipeWire); capture off costs ~0% CPU.
+- **Play music in it** — a built-in player with folder playlists, a
+  playlist panel with shuffle/repeat, drag-and-drop, seek, per-stream
+  volume, artist/title fading in on track change, and full **MPRIS** both
+  ways: media keys drive Phosphor, and songs changing in your browser or
+  Spotify still show on the scope.
+- **Six displays** — XY scope art, goniometer, XY dots, triggered
+  waveform, spectrum, radial spectrum.
+- **A real beam** — analytic Gaussian beam integral on the GPU, linear-light
+  compositing, two-layer phosphor decay, octave-stepped graticule.
+- **A Rust core** — the samples→segments math runs native, and in-process
+  sinc oversampling reconstructs up to **384 kHz of trace detail** from a
+  48/96 kHz capture feed (Python fallbacks keep everything working
+  without it).
+- **Precompute** — render a track's scope stream to disk ahead of time and
+  trace it synced to playback time: slow machines get perfect detail,
+  nothing drops.
+- **Compose mode** — draw a shape on the scope and it *becomes* audio: a
+  loop that draws itself, exportable as WAV for any oscilloscope.
+- **Exports** — snapshots and 10-second mp4 clips *with sound*, re-rendered
+  offline so they look exactly like the screen did.
+- **Cinnamon panel applet** — a tiny live vectorscope in your panel, with
+  its own themes, refresh rate, and CRT power switch.
+
+The [manual](docs/MANUAL.md) covers all of it in detail.
 
 ## Install
 
@@ -61,14 +83,11 @@ Shipped to GitHub by Claude&nbsp;Opus&nbsp;4.8, the day Fable&nbsp;5 went dark (
 Download the `.deb` from the [latest release](https://github.com/RamenFast/phosphor/releases/latest), then:
 
 ```bash
-sudo apt install ./phosphor_2.6.0_all.deb
+sudo apt install ./phosphor_3.0.0_amd64.deb
 ```
 
-That installs the **Phosphor** launcher (applications menu + desktop icon)
-and pulls in the dependencies below automatically. (A harmless
-`N: Download is performed unsandboxed…` note just means apt couldn't read the
-file as its sandbox user from your home directory — the install still
-succeeds; install from `/tmp` to avoid it.)
+(An `N: Download is performed unsandboxed…` note from apt is harmless —
+install from `/tmp` to avoid it.)
 
 **From source**
 
@@ -78,165 +97,31 @@ cd phosphor
 python3 phosphor.py
 ```
 
-Dependencies, all in the stock Mint / Ubuntu repositories:
+Dependencies, all in the stock Debian / Mint / Ubuntu repositories:
 
 ```bash
 sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 \
                  pulseaudio-utils ffmpeg python3-numpy
 ```
 
-- **PyGObject + GTK 3** — the application and its UI
-- **`parec` / `pacat`** (pulseaudio-utils) — audio capture and playback,
-  over PulseAudio or PipeWire
-- **`ffmpeg`** — audio-file decoding and clip (mp4) export
-- **`numpy`** *(optional)* — vectorizes the signal path (~7× faster,
-  comfortably feeding high-refresh monitors); a pure-python fallback keeps
-  working without it
-
-The GPU renderer binds OpenGL through GTK's own libepoxy with ctypes — no
-PyOpenGL needed. Phosphor targets Linux desktops (X11 or Wayland) running
-PipeWire or PulseAudio.
-
-**Build the package yourself**
+Optional but worth it — the native signal core (any recent Rust):
 
 ```bash
-packaging/build-deb.sh     # -> packaging/dist/phosphor_<version>_all.deb
+cd core && cargo build --release
 ```
 
-## Panel applet (Cinnamon)
-
-A live vectorscope right in your Cinnamon panel — like a CPU monitor, but it
-draws your audio. It reuses Phosphor's exact signal path through a tiny
-headless feed, so the panel traces the signal identically to the full app.
+**Panel applet (Cinnamon)**
 
 ```bash
 applet/install.sh   # then add "Phosphor Scope" from Menu -> Applets
 ```
 
-Hover for a bigger scope, switch modes, follow your panel theme or pick a
-Phosphor colour (AMOLED background included), set the refresh rate to match
-your monitor, and a ⏻ toggle gives it a proper CRT power-off. See
-[`applet/README.md`](applet/README.md).
-
-## What to scope
-
-The source picker offers three kinds of target:
-- **APP** — one playing application (game audio without the music player,
-  or vice versa); these come and go, the refresh button re-scans
-- **OUT** — everything a given output plays (default: your default output)
-- **IN** — microphones (hum into the Q2U for live Lissajous figures)
-
-Or skip capture entirely: **open an audio file** (`O`, the folder button,
-or the right-click menu) and Phosphor decodes it with ffmpeg, plays it out
-loud, and scopes it directly — no separate player needed. Opening a file
-discovers every track in its folder: transport buttons (⏮ ⏯ ⏭) and a seek
-slider with an elapsed/total readout appear in the title bar, tracks
-auto-advance, and pause freezes decode and playback in place. A
-speaker/mic/app icon beside the source picker shows what kind of target
-is selected.
-
-## Compose (draw your own oscilloscope music)
-
-The scope, run in reverse. Hit the ✏ pencil (or `D`), draw a shape on the
-screen, release — Phosphor resamples your path into a closed audio loop
-traversed at constant speed (left channel = X, right channel = Y), plays
-it out loud, and the scope draws it back. Draw a mushroom, hear the
-mushroom.
-
-- **scroll** retunes the loop frequency (20–400 Hz): same shape, new pitch
-- draw again to replace the shape; `Esc` or the pencil exits
-- right-click → **Export drawing as WAV** writes 10 s to
-  `~/Music/Phosphor/` — that file draws your shape on *any* XY
-  oscilloscope (or in Phosphor itself, or sent to a friend)
-- snapshots (`S`) and clips (`C`) work while a loop plays, so you can
-  keep a picture or a video of your drawing drawing itself
-
-App targets are remembered **by application name**, not stream number —
-when Chrome finishes a song its stream dies, and Phosphor now waits for
-that same app to play again and re-grabs it automatically (up to 3 min)
-instead of dumping you onto another source.
-
-## Modes
-
-| Mode | What it's for |
-| --- | --- |
-| XY (scope art) | Oscilloscope music. The real deal. |
-| XY · goniometer | Ordinary songs: raw XY collapses stereo music into a diagonal line; rotated 45° the mono energy stands upright and stereo width blooms sideways. |
-| XY · dots | The same XY field as discrete sample dots, like a vectorscope's dot display — shows where the beam *dwells*. |
-| Waveform | Dual trace with rising-edge triggering so pitched sounds hold still. |
-| Spectrum | Log-frequency bars, fast attack / phosphor fall. |
-| Spectrum · radial | The same analysis swept around a circle, bass at twelve o'clock. |
-
-## Controls
-
-- **⏻ Live** — capture on/off, with the status readout right beside it.
-  Off = stream closed, render loop stopped, ~0% CPU.
-- **Title bar** — open file, mini view, pin-above (hideable in settings),
-  and the settings gear, sysmon-style.
-- **📷 / ⏺** — snapshot to `~/Pictures/Phosphor`, save the last 10 s as
-  mp4 *with sound* to `~/Videos/Phosphor`. Both re-render the captured
-  audio offline, so exports look exactly like the screen did.
-- **Sliders** — Gain / Glow / Beam, each with an editable percent box:
-  click and type an exact value. Scroll the scope to zoom gain; the
-  graticule grows and shrinks with it, octave-stepped like a volts/div
-  switch. Or flip on **Auto gain** (settings or right-click) and the trace
-  autosizes to the screen: gain follows the signal's peak — instant attack
-  when something would clip off-screen, slow glide as it fades.
-- **⚙ settings** — renderer (GPU/CPU), GPU quality (2×/3× supersampling)
-  and CPU resolution selectors, **Scope detail** (feed sample rate:
-  48/96/192 kHz — higher rates resample with proper sinc reconstruction,
-  so the scope traces the true curves *between* samples and fine scope-art
-  detail stops washing out), beam Focus (sharper beams keep dense
-  scope-art scenes from washing out), themes (P7 Green, Amber, Ice Blue,
-  White, Vaporwave, Red Phosphor, Ultraviolet, Solar Gold, Cyan Tube,
-  Custom), grid, AMOLED scope background, UI style (System / Dark / Light
-  / AMOLED pink-on-black chrome with yellow selected states), FPS overlay
-  (now also shows python ms per frame — if that's tiny and fps is below
-  refresh, the GPU or compositor is the limit), and a Max FPS cap (leave
-  at **0** to follow the monitor's refresh rate; setting it equal to the
-  refresh rate makes the cap race vsync and drop frames).
-
-  The GPU beam uses an analytic erf line integral (the woscope trick):
-  consecutive segments join without double-depositing energy, which is
-  what keeps complex scenes like *72 Pantera* from blooming into fuzz.
-  Compositing happens in linear light with output dithering: faint trail
-  detail is no longer crushed by display gamma, and dark glow falloff has
-  no banding rings.
-- **Mini** — borderless always-on-top square. Drag to move, drag the
-  bottom-right corner or Ctrl+scroll to resize (square stays square, up
-  to 1000 px), right-click for the full menu (modes, themes, grid, pin,
-  sizes up to Extra large…), double-click to restore. Window positions,
-  sizes, and all settings are remembered in
-  `~/.config/phosphor/settings.json`, including whether you quit in mini.
-- **Keys** — `Space` capture · `O` open file · `D` compose (draw) · `M`
-  mini · `F11` fullscreen scope (chrome-less; also the path to the
-  monitor's full refresh rate, since compositors unredirect fullscreen
-  windows) · `S` snapshot · `C` clip · `P` pin · `G` grid · `F` fps
-  · scroll = gain (pitch while composing) · `Q`/`Esc` quit.
-
-Trails grade continuously in time: each sample's deposit is pre-decayed
-by its age within the frame, so slowly drifting sweeps blend the way real
-phosphor does instead of leaving stepped duplicate lines.
-
-## Resource behavior (measured)
-
-| State | CPU |
-| --- | --- |
-| Capture off | ~0% (parec killed, render loop removed, PipeWire suspends the source) |
-| Armed but silent | <1% (silence detected by content; monitors deliver zeros, so an empty-buffer check doesn't work) |
-| Live, GPU renderer | ~10% of one core |
-| Live, CPU renderer | ~25–35% of one core (signal math + phosphor decay now run on a worker thread, so the UI stays smooth and slow frames drop instead of queueing) |
-
 ## Things to try
 
 - Jerobeam Fenderson — *How To Draw Mushrooms*; whole albums at
   https://oscilloscopemusic.com
-- Put on any normal song in **XY · goniometer** and watch the stereo image dance.
-
-## Future
-
-See [FUTURE.md](FUTURE.md) — compose mode shipped in 2.4; next candidates:
-SVG import for compose, GL bloom, multi-app mixing, a Cinnamon applet.
+- Any normal song in **XY · goniometer**, and watch the stereo image dance.
+- Hit `D` and draw something. It plays.
 
 ## License
 

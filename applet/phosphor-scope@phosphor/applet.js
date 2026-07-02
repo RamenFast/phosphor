@@ -84,6 +84,13 @@ PhosphorScopeApplet.prototype = {
         this.settings.bind("mode", "mode", () => this._onModeSetting());
         this.settings.bind("fps", "fps", () => this._sendFps());
         this.settings.bind("showFps", "showFps", () => this._repaintAll());
+        this.settings.bind("startPowered", "startPowered", null);
+        this.settings.bind("lastPowerState", "lastPowerState", null);
+
+        // autostart: the CRT comes up on, off, or however it was left
+        this._displayOn = this.startPowered === "on" ? true
+                        : this.startPowered === "off" ? false
+                        : this.lastPowerState !== false;
 
         this._panelArea = new St.DrawingArea({ style_class: "phosphor-panel-scope" });
         this._panelArea.connect("repaint", (area) => this._paint(area, false));
@@ -91,7 +98,10 @@ PhosphorScopeApplet.prototype = {
         this._applyPanelSize();
 
         this._buildMenu(orientation);
-        this._startFeed();
+        if (this._powerItem && !this._displayOn)
+            this._powerItem.label.text = "\u23fb  Turn on display";
+        if (this._displayOn)
+            this._startFeed();
     },
 
     // -- sizing --------------------------------------------------------------
@@ -228,6 +238,7 @@ PhosphorScopeApplet.prototype = {
         }
         this._stopFeed();
         this._displayOn = false;
+        this.settings.setValue("lastPowerState", false);
         this._powering = "off";
         this._crtPhase = 1.0;
         if (this._powerItem) this._powerItem.label.text = "⏻  Turn on display";
@@ -251,6 +262,7 @@ PhosphorScopeApplet.prototype = {
         this._stopCrtTimer();
         this._powering = null;
         this._displayOn = true;
+        this.settings.setValue("lastPowerState", true);
         this._frameHistory = [];
         if (this._powerItem) this._powerItem.label.text = "⏻  Turn off display";
         this._startFeed();

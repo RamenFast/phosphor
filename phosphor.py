@@ -14,9 +14,10 @@ through pacat) so you can scope a track without a separate player.
 Compose mode runs the whole machine in reverse: draw a shape on the
 scope and it becomes a constant-speed audio loop that draws itself.
 
-Keys:  Space capture · O open file · D draw (compose) · M mini
-       S snapshot · C save clip · P pin · G grid · F fps · F11 fullscreen
-       scroll = gain (compose: pitch · Ctrl+scroll in mini: resize) · Q quit
+Keys:  Space capture · O open file · L playlist · D draw (compose)
+       M mini · S snapshot · C save clip · P pin · G grid · F fps
+       F11 fullscreen · scroll = gain (compose: pitch · Ctrl+scroll in
+       mini: resize) · Q quit
 Mini mode: drag with the left button, drag the bottom-right corner to
 resize, double-click to restore, right-click anywhere for the menu.
 """
@@ -37,17 +38,22 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import Gtk, Gdk, GLib  # noqa: E402
 
 import phosphor_compose
+import phosphor_mpris
+import phosphor_precompute
 import phosphor_recorder
+import phosphor_ui_style
 from phosphor_audio import (AudioCaptureStream, default_monitor_target_id,
-                            list_capture_targets, probe_duration_seconds)
+                            list_capture_targets)
+from phosphor_player import PhosphorPlayer
 from phosphor_render_cairo import CairoBeamCore
 from phosphor_render_gl import GL_BINDINGS_AVAILABLE, GLBeamRenderer
 from phosphor_settings import (CUSTOM_THEME_NAME, THEME_PRESETS, Settings,
                                grid_spacing_fraction)
-from phosphor_signal import SegmentComputer
+from phosphor_signal import SegmentComputer, plan_feed
+from phosphor_ui_style import UI_STYLE_CHOICES
 
 APPLICATION_ID = "io.github.ben.Phosphor"
-APPLICATION_VERSION = "2.6.0"
+APPLICATION_VERSION = "3.0.0"
 PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 QUIET_PEAK_THRESHOLD = 1e-4
 QUIET_FRAMES_BEFORE_SLEEP = 120
@@ -56,8 +62,6 @@ MINI_SIZE_PRESETS = (("Small", 200), ("Medium", 280), ("Large", 380),
 MINI_RESIZE_CORNER_PIXELS = 26       # bottom-right drag-to-resize hot zone
 COMPOSE_PREVIEW_INTENSITY = 0.25     # restamped every frame while drawing
 COMPOSE_MINIMUM_POINTS = 8
-AUDIO_FILE_EXTENSIONS = (".mp3", ".flac", ".ogg", ".oga", ".opus", ".wav",
-                         ".m4a", ".aac", ".wma", ".aif", ".aiff", ".mka")
 REACQUIRE_POLL_LIMIT = 180   # seconds to wait for a dead app stream to return
 
 DISPLAY_MODES = (
@@ -74,207 +78,16 @@ GPU_QUALITY_CHOICES = (("1", "Standard"), ("2", "High · 2× supersampled"),
 CPU_RESOLUTION_CHOICES = (("1.0", "Full resolution"),
                           ("0.75", "Balanced · 75%"),
                           ("0.5", "Fast · 50%"))
-UI_STYLE_CHOICES = (("system", "System"), ("dark", "Dark"),
-                    ("light", "Light"), ("black", "AMOLED pink"))
 # scope feed rate: above 48 kHz the resampler reconstructs the true curves
 # between samples, so fine scope-art detail stops washing out
 SCOPE_RATE_CHOICES = (("48000", "Standard · 48 kHz"),
                       ("96000", "Fine · 96 kHz"),
-                      ("192000", "Ultra · 192 kHz"))
-VALID_SCOPE_RATES = (48000, 96000, 192000)
-
-# Always loaded: just the FPS overlay chip.
-BASE_UI_CSS = b"""
-#fps-overlay {
-    background-color: rgba(0, 0, 0, 0.55);
-    color: #7dff9e;
-    padding: 2px 8px;
-    border-radius: 6px;
-    font-family: monospace;
-    font-size: 11px;
-}
-"""
-
-# AMOLED UI style: pure-black window, soft multi-shade pinks, warm yellow
-# for anything selected/active. Controls are flat — they sit flush with
-# the black and only fill on hover/press/toggle, no outline boxes.
-BLACK_UI_CSS = b"""
-window, headerbar, dialog, popover, popover.background, menu, .background {
-    background-color: #000000;
-    color: #f2aed8;
-}
-/* explicit label/cell colors win over the system theme, so popover and
-   dropdown text stays readable no matter which GTK theme is underneath */
-label, popover label, menu label, cellview { color: #f2aed8; }
-menu check, menu radio { color: #e078b8; }
-headerbar {
-    min-height: 32px;
-    padding: 0 4px;
-    box-shadow: none;
-    border-bottom: 1px solid #1d0916;
-}
-headerbar .title, headerbar label { color: #fbcfe8; }
-button, combobox button.combo, spinbutton button, button.color {
-    background-image: none;
-    background-color: transparent;
-    color: #f2aed8;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    padding: 1px 8px;
-    min-height: 22px;
-    box-shadow: none;
-}
-spinbutton button { padding: 1px 5px; }
-button:hover { background-color: #2b0d20; }
-button:active { background-color: #3c142d; }
-button:checked { background-color: #2b2208; color: #ffdf87; }
-button:checked label, button:checked image { color: #ffdf87; }
-/* entries are flat too; a box appears only while editing */
-entry, spinbutton, spinbutton entry {
-    background-image: none;
-    background-color: transparent;
-    color: #ffdf87;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    min-height: 20px;
-    box-shadow: none;
-}
-entry:focus, spinbutton entry:focus {
-    background-color: #120510;
-    border-color: #57203f;
-}
-scale trough { background-color: #2b0d20; border: none; }
-scale highlight { background-color: #e078b8; }
-scale slider { background-color: #fbcfe8; border: 1px solid #b65c92; }
-switch {
-    background-image: none;
-    background-color: #2b0d20;
-    border: 1px solid #57203f;
-    border-radius: 999px;
-}
-switch:checked { background-color: #97276b; border-color: #e078b8; }
-switch slider {
-    background-image: none;
-    background-color: #fbcfe8;
-    border: 1px solid #b65c92;
-    border-radius: 999px;
-    min-width: 18px;
-    min-height: 18px;
-    margin: 2px;
-}
-menu menuitem:hover, popover modelbutton:hover { background-color: #2b0d20; }
-menu menuitem:hover label { color: #fbcfe8; }
-menu, popover { border: 1px solid #2b0d20; }
-tooltip, tooltip.background {
-    background-color: #120510;
-    color: #fbcfe8;
-    border: 1px solid #57203f;
-}
-/* file chooser, kept on-theme: pink on black */
-dialog headerbar { background-color: #000000; }
-filechooser, filechooser box, filechooser paned { background-color: #000000; }
-placessidebar, placessidebar list { background-color: #0d040a; }
-placessidebar row label { color: #f2aed8; }
-placessidebar row:selected { background-color: #97276b; }
-placessidebar row:selected label { color: #ffdf87; }
-treeview.view { background-color: #0d040a; color: #f2aed8; }
-treeview.view:selected { background-color: #97276b; color: #ffdf87; }
-treeview.view header button { background-color: #120510; color: #f2aed8; }
-actionbar { background-color: #000000; }
-*:selected { background-color: #97276b; color: #ffdf87; }
-#fps-overlay { color: #ffdf87; }
-"""
-
-# Light UI style: bright neutral chrome with a blue accent. Everything is
-# flat — buttons, combos, and spin steppers sit flush with the background
-# (one shared corner radius) and only show chrome on hover/press/toggle.
-LIGHT_UI_CSS = b"""
-window, headerbar, dialog, popover, popover.background, menu, .background {
-    background-color: #fafafa;
-    color: #303030;
-}
-/* explicit label/cell colors win over the system theme, so popover and
-   dropdown text stays readable even on top of a dark GTK theme */
-label, popover label, menu label, cellview { color: #303030; }
-menu check, menu radio { color: #1c4e9e; }
-headerbar {
-    background-image: none;
-    background-color: #f0f0f0;
-    min-height: 32px;
-    padding: 0 4px;
-    box-shadow: none;
-    border-bottom: 1px solid #d8d8d8;
-}
-headerbar .title, headerbar label { color: #303030; }
-button, combobox button.combo, spinbutton button, button.color {
-    background-image: none;
-    background-color: transparent;
-    color: #303030;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    padding: 1px 8px;
-    min-height: 22px;
-    box-shadow: none;
-}
-spinbutton button { padding: 1px 5px; }
-button:hover { background-color: #e7e7e7; }
-button:active { background-color: #dadada; }
-button:checked { background-color: #dceaff; color: #1c4e9e; }
-button:checked label, button:checked image { color: #1c4e9e; }
-/* entries are flat too; a box appears only while editing */
-entry, spinbutton, spinbutton entry {
-    background-image: none;
-    background-color: transparent;
-    color: #222222;
-    border: 1px solid transparent;
-    border-radius: 5px;
-    min-height: 20px;
-    box-shadow: none;
-}
-entry:focus, spinbutton entry:focus {
-    background-color: #ffffff;
-    border-color: #7aa7e0;
-}
-scale trough { background-color: #e4e4e4; border: none; }
-scale highlight { background-color: #5a8fd6; }
-scale slider { background-color: #ffffff; border: 1px solid #9a9a9a; }
-switch {
-    background-image: none;
-    background-color: #e0e0e0;
-    border: 1px solid #c9c9c9;
-    border-radius: 999px;
-}
-switch:checked { background-color: #5a8fd6; }
-switch slider {
-    background-image: none;
-    background-color: #ffffff;
-    border: 1px solid #9a9a9a;
-    border-radius: 999px;
-    min-width: 18px;
-    min-height: 18px;
-    margin: 2px;
-}
-menu menuitem:hover, popover modelbutton:hover { background-color: #e8eef8; }
-tooltip, tooltip.background {
-    background-color: #303030;
-    color: #fafafa;
-}
-/* file chooser: force the whole dialog light so it can't come up in the
-   system dark theme with our dark label color on top (unreadable) */
-dialog headerbar { background-color: #f0f0f0; }
-filechooser, filechooser box, filechooser paned { background-color: #fafafa; }
-placessidebar, placessidebar list { background-color: #f0f0f0; }
-placessidebar row label { color: #303030; }
-placessidebar row:selected { background-color: #5a8fd6; }
-placessidebar row:selected label { color: #ffffff; }
-treeview.view { background-color: #ffffff; color: #303030; }
-treeview.view:selected { background-color: #5a8fd6; color: #ffffff; }
-treeview.view header button { background-color: #f0f0f0; color: #303030; }
-actionbar { background-color: #f0f0f0; }
-*:selected { background-color: #5a8fd6; color: #ffffff; }
-#fps-overlay { background-color: rgba(255, 255, 255, 0.75); color: #1c4e9e; }
-"""
-
+                      ("192000", "Ultra · 192 kHz"),
+                      ("384000", "Extreme · 384 kHz"))
+VALID_SCOPE_RATES = (48000, 96000, 192000, 384000)
+# frame-rate cap presets; 0 = follow the monitor. The list reaches into
+# high-refresh territory and the box stays editable for anything between.
+MAX_FPS_PRESETS = (0, 30, 60, 90, 120, 144, 165, 240, 360, 480)
 
 class LiveCairoRenderer(Gtk.DrawingArea):
     """CPU renderer widget; signal math and phosphor decay run on a worker
@@ -366,22 +179,21 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         if self.settings.scope_sample_rate not in VALID_SCOPE_RATES:
             self.settings.scope_sample_rate = 96000
 
+        # the native core reconstructs high detail rates in-process from a
+        # modest pipe rate; without it the pipe carries the full rate
+        pipe_rate, oversample = plan_feed(self.settings.scope_sample_rate)
         self.segment_computer = SegmentComputer()
         self.segment_computer.mode = self.settings.display_mode
         self.segment_computer.gain = self.settings.gain
         self.segment_computer.beam_energy = self.settings.beam_energy
-        self.segment_computer.set_sample_rate(self.settings.scope_sample_rate)
+        self.segment_computer.set_sample_rate(pipe_rate, oversample)
         self.compute_lock = threading.Lock()
 
         self.capture_stream = AudioCaptureStream(
             on_stream_ended=lambda: GLib.idle_add(self._handle_stream_died),
-            sample_rate=self.settings.scope_sample_rate)
+            sample_rate=pipe_rate)
         self.capture_targets = {}
-        self.playing_file = None
-        self.playing_path = None
-        self.track_duration_seconds = None
-        self.playlist = []
-        self.playlist_index = -1
+        self.player = PhosphorPlayer(self)
         self.is_mini_mode = False
         self.tick_callback_id = None
         self.fade_out_frames_remaining = 0
@@ -412,23 +224,28 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._compose_points = []          # widget pixels while drawing
         self._compose_loop_points = None   # finished shape in signal space
         self._compose_regenerate_source = None
-        # mini-mode corner resize and track seeking
+        # now-playing overlay fade animation
+        self._overlay_fade_source = None
+        # precomputed scope streams (phosphor_precompute)
+        self._precomputed = None
+        self._precomputed_clock = 0.0      # seconds of the stream traced so far
+        self._precompute_worker_path = None
+        # mini-mode corner resize
         self._mini_resize_start = None     # (start size, x_root, y_root)
-        self._position_update_source = None
-        self._seek_debounce_source = None
 
-        base_css_provider = Gtk.CssProvider()
-        base_css_provider.load_from_data(BASE_UI_CSS)
-        Gtk.StyleContext.add_provider_for_screen(
-            Gdk.Screen.get_default(), base_css_provider,
-            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-
+        phosphor_ui_style.install_base_style()
         self._build_renderers()
         self._build_user_interface()
         self._apply_theme()
         self._apply_render_quality()
         self._apply_grid_geometry()
         self._apply_ui_style()
+
+        try:
+            self._mpris_watcher = phosphor_mpris.MprisWatcher(
+                self._on_external_track)
+        except GLib.Error:
+            self._mpris_watcher = None   # no session bus; overlay still works
 
         self.connect("key-press-event", self._on_key_press)
         self.connect("configure-event", self._on_configure_event)
@@ -492,11 +309,31 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self.fps_label.set_no_show_all(True)
         self.fps_label.set_visible(self.settings.show_fps)
 
+        self.now_playing_label = Gtk.Label()
+        self.now_playing_label.set_name("now-playing")
+        self.now_playing_label.set_halign(Gtk.Align.START)
+        self.now_playing_label.set_valign(Gtk.Align.START)
+        for edge in ("top", "start"):
+            getattr(self.now_playing_label, f"set_margin_{edge}")(12)
+        self.now_playing_label.set_max_width_chars(46)
+        self.now_playing_label.set_ellipsize(3)  # Pango.EllipsizeMode.END
+        self.now_playing_label.set_no_show_all(True)
+
         display_overlay = Gtk.Overlay()
         display_overlay.add(event_box)
         display_overlay.add_overlay(self.fps_label)
-        layout.pack_start(display_overlay, True, True, 0)
+        display_overlay.add_overlay(self.now_playing_label)
+
+        scope_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        scope_row.pack_start(display_overlay, True, True, 0)
+        scope_row.pack_end(self.player.panel_revealer, False, False, 0)
+        layout.pack_start(scope_row, True, True, 0)
         self.add(layout)
+
+        # audio files dropped anywhere on the window play on the scope
+        self.drag_dest_set(Gtk.DestDefaults.ALL, [], Gdk.DragAction.COPY)
+        self.drag_dest_add_uri_targets()
+        self.connect("drag-data-received", self._on_drag_data_received)
 
     def _build_header_bar(self):
         self.header_bar = Gtk.HeaderBar()
@@ -507,7 +344,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         open_button = Gtk.Button.new_from_icon_name("document-open-symbolic",
                                                     Gtk.IconSize.BUTTON)
         open_button.set_tooltip_text("Play an audio file on the scope (O)")
-        open_button.connect("clicked", lambda _b: self.open_audio_file())
+        open_button.connect("clicked", lambda _b: self.player.open_audio_file())
         self.header_bar.pack_start(open_button)
 
         self.compose_toggle = Gtk.ToggleButton()
@@ -520,45 +357,9 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self.compose_toggle.connect("toggled", self._on_compose_toggled)
         self.header_bar.pack_start(self.compose_toggle)
 
-        # transport appears only while a file is loaded
-        self.transport_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-        self.transport_box.get_style_context().add_class("linked")
-        for icon_name, tooltip, callback in (
-                ("media-skip-backward-symbolic", "Previous track in folder",
-                 self.play_previous_track),
-                (None, "Play/pause the loaded file", self._on_transport_play_pause),
-                ("media-skip-forward-symbolic", "Next track in folder",
-                 self.play_next_track)):
-            if icon_name is None:
-                self.play_pause_image = Gtk.Image.new_from_icon_name(
-                    "media-playback-pause-symbolic", Gtk.IconSize.BUTTON)
-                button = Gtk.Button()
-                button.add(self.play_pause_image)
-            else:
-                button = Gtk.Button.new_from_icon_name(icon_name,
-                                                       Gtk.IconSize.BUTTON)
-            button.set_tooltip_text(tooltip)
-            button.connect("clicked", lambda _b, c=callback: c())
-            self.transport_box.pack_start(button, False, False, 0)
-        self.transport_box.set_no_show_all(True)
-        self.header_bar.pack_start(self.transport_box)
-
-        # track position: a seek slider plus elapsed/total readout, shown
-        # beside the transport whenever a file with a known length plays
-        self.position_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL,
-                                    spacing=6)
-        self.position_scale = Gtk.Scale.new_with_range(
-            Gtk.Orientation.HORIZONTAL, 0.0, 1.0, 1.0)
-        self.position_scale.set_draw_value(False)
-        self.position_scale.set_size_request(170, -1)
-        self.position_scale.set_tooltip_text("Track position — drag to seek")
-        self.position_scale.connect("change-value",
-                                    self._on_position_slider_moved)
-        self.position_box.pack_start(self.position_scale, True, True, 0)
-        self.time_label = Gtk.Label(label="0:00 / 0:00")
-        self.position_box.pack_start(self.time_label, False, False, 0)
-        self.position_box.set_no_show_all(True)
-        self.header_bar.pack_start(self.position_box)
+        # transport + seek slider live in the player; shown while a file plays
+        self.header_bar.pack_start(self.player.transport_box)
+        self.header_bar.pack_start(self.player.position_box)
 
         settings_button = self._build_settings_button()
         self.header_bar.pack_end(settings_button)
@@ -579,6 +380,17 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             "to resize, double-click to restore.")
         mini_button.connect("clicked", lambda _b: self.set_mini_mode(True))
         self.header_bar.pack_end(mini_button)
+
+        self.playlist_toggle = Gtk.ToggleButton()
+        self.playlist_toggle.add(Gtk.Image.new_from_icon_name(
+            "view-list-symbolic", Gtk.IconSize.BUTTON))
+        self.playlist_toggle.set_tooltip_text(
+            "Playlist panel (L) — the opened file's folder;\n"
+            "drop audio files anywhere to queue them instead")
+        self.playlist_toggle.set_active(self.settings.playlist_panel_open)
+        self.playlist_toggle.connect(
+            "toggled", lambda t: self.player.set_panel_open(t.get_active()))
+        self.header_bar.pack_end(self.playlist_toggle)
 
     def _build_main_toolbar_row(self):
         row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
@@ -706,16 +518,36 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         return row
 
     def _build_settings_button(self):
+        """The gear popover: two columns of labeled sections."""
         popover = Gtk.Popover()
-        grid = Gtk.Grid(row_spacing=8, column_spacing=10)
+        columns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=18)
         for edge in ("start", "end", "top", "bottom"):
-            getattr(grid, f"set_margin_{edge}")(12)
-        next_row = [0]
+            getattr(columns, f"set_margin_{edge}")(14)
+        state = {"grid": None, "row": 0}
 
-        def attach(label, widget):
-            grid.attach(Gtk.Label(label=label, xalign=0), 0, next_row[0], 1, 1)
-            grid.attach(widget, 1, next_row[0], 1, 1)
-            next_row[0] += 1
+        def column():
+            if state["grid"] is not None:
+                columns.pack_start(Gtk.Separator(
+                    orientation=Gtk.Orientation.VERTICAL), False, False, 0)
+            grid = Gtk.Grid(row_spacing=8, column_spacing=10)
+            grid.set_valign(Gtk.Align.START)
+            columns.pack_start(grid, False, False, 0)
+            state["grid"] = grid
+            state["row"] = 0
+
+        def section(title):
+            header = Gtk.Label(label=title.upper(), xalign=0)
+            header.get_style_context().add_class("settings-section")
+            if state["row"] > 0:
+                header.set_margin_top(12)
+            state["grid"].attach(header, 0, state["row"], 2, 1)
+            state["row"] += 1
+
+        def attach(label_text, widget):
+            state["grid"].attach(Gtk.Label(label=label_text, xalign=0),
+                                 0, state["row"], 1, 1)
+            state["grid"].attach(widget, 1, state["row"], 1, 1)
+            state["row"] += 1
             return widget
 
         def combo(choices, active_id, on_changed):
@@ -726,6 +558,26 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             box.connect("changed", on_changed)
             return box
 
+        def switch(active, on_state):
+            widget = Gtk.Switch(halign=Gtk.Align.START)
+            widget.set_active(active)
+            widget.connect("state-set", on_state)
+            return widget
+
+        def color_button(initial_rgb, on_set):
+            rgba = Gdk.RGBA()
+            rgba.red, rgba.green, rgba.blue, rgba.alpha = (*initial_rgb, 1.0)
+            button = Gtk.ColorButton.new_with_rgba(rgba)
+
+            def changed(widget):
+                color = widget.get_rgba()
+                on_set([color.red, color.green, color.blue])
+                self._apply_theme()
+            button.connect("color-set", changed)
+            return button
+
+        column()
+        section("Renderer")
         self.renderer_combo = Gtk.ComboBoxText()
         if self.gl_available:
             self.renderer_combo.append("gl", "GPU · CRT beam (recommended)")
@@ -733,17 +585,9 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self.renderer_combo.set_active_id(self.settings.renderer)
         self.renderer_combo.connect("changed", self._on_renderer_changed)
         attach("Renderer", self.renderer_combo)
-
         attach("GPU quality", combo(GPU_QUALITY_CHOICES,
                                     str(self.settings.gl_supersample),
                                     self._on_gpu_quality_changed))
-        scope_rate_combo = combo(SCOPE_RATE_CHOICES,
-                                 str(self.settings.scope_sample_rate),
-                                 self._on_scope_rate_changed)
-        scope_rate_combo.set_tooltip_text(
-            "Scope feed sample rate — higher rates trace the true curves\n"
-            "between samples, recovering fine scope-art detail")
-        attach("Scope detail", scope_rate_combo)
         resolution_id = min(
             (choice_id for choice_id, _ in CPU_RESOLUTION_CHOICES),
             key=lambda choice_id:
@@ -751,6 +595,22 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         attach("CPU resolution", combo(CPU_RESOLUTION_CHOICES, resolution_id,
                                        self._on_cpu_resolution_changed))
 
+        section("Scope")
+        scope_rate_combo = combo(SCOPE_RATE_CHOICES,
+                                 str(self.settings.scope_sample_rate),
+                                 self._on_scope_rate_changed)
+        scope_rate_combo.set_tooltip_text(
+            "Scope feed sample rate — higher rates trace the true curves\n"
+            "between samples, recovering fine scope-art detail")
+        attach("Scope detail", scope_rate_combo)
+        precompute_switch = attach("Precompute files", switch(
+            self.settings.precompute_enabled, self._on_precompute_switched))
+        precompute_switch.set_tooltip_text(
+            "Render opened tracks' scope streams ahead of time to\n"
+            "~/.local/share/phosphor/precomputed and play from disk:\n"
+            "no realtime reconstruction, nothing dropped on slow machines.\n"
+            "Costs disk — ~92 MB per track-minute at 384 kHz, less at\n"
+            "lower rates. Right-click the scope to clear the cache.")
         focus_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL,
                                                0.6, 3.0, 0.1)
         focus_scale.set_value(self.settings.beam_focus)
@@ -760,38 +620,6 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             "Beam focus — narrower keeps dense scenes from washing out")
         focus_scale.connect("value-changed", self._on_focus_changed)
         attach("Focus", focus_scale)
-
-        self.theme_combo = Gtk.ComboBoxText()
-        for theme_name in list(THEME_PRESETS) + [CUSTOM_THEME_NAME]:
-            self.theme_combo.append(theme_name, theme_name)
-        self.theme_combo.set_active_id(self.settings.theme_name)
-        self.theme_combo.connect("changed", self._on_theme_changed)
-        attach("Theme", self.theme_combo)
-
-        def color_button(initial_rgb, on_set):
-            rgba = Gdk.RGBA()
-            rgba.red, rgba.green, rgba.blue, rgba.alpha = (*initial_rgb, 1.0)
-            button = Gtk.ColorButton.new_with_rgba(rgba)
-            def changed(widget):
-                color = widget.get_rgba()
-                on_set([color.red, color.green, color.blue])
-                self._apply_theme()
-            button.connect("color-set", changed)
-            return button
-
-        self.custom_beam_button = attach("Custom beam", color_button(
-            self.settings.custom_beam_color,
-            lambda rgb: setattr(self.settings, "custom_beam_color", rgb)))
-        self.custom_grid_button = attach("Custom grid", color_button(
-            self.settings.custom_grid_color,
-            lambda rgb: setattr(self.settings, "custom_grid_color", rgb)))
-
-        def switch(active, on_state):
-            widget = Gtk.Switch(halign=Gtk.Align.START)
-            widget.set_active(active)
-            widget.connect("state-set", on_state)
-            return widget
-
         self.auto_gain_switch = attach("Auto gain", switch(
             self.settings.auto_gain, self._on_auto_gain_switched))
         self.auto_gain_switch.set_tooltip_text(
@@ -801,22 +629,55 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                                                  self._on_grid_switched))
         attach("AMOLED scope", switch(self.settings.amoled_background,
                                       self._on_amoled_switched))
+
+        column()
+        section("Appearance")
+        self.theme_combo = Gtk.ComboBoxText()
+        for theme_name in list(THEME_PRESETS) + [CUSTOM_THEME_NAME]:
+            self.theme_combo.append(theme_name, theme_name)
+        self.theme_combo.set_active_id(self.settings.theme_name)
+        self.theme_combo.connect("changed", self._on_theme_changed)
+        attach("Theme", self.theme_combo)
+        self.custom_beam_button = attach("Custom beam", color_button(
+            self.settings.custom_beam_color,
+            lambda rgb: setattr(self.settings, "custom_beam_color", rgb)))
+        self.custom_grid_button = attach("Custom grid", color_button(
+            self.settings.custom_grid_color,
+            lambda rgb: setattr(self.settings, "custom_grid_color", rgb)))
         attach("UI style", combo(UI_STYLE_CHOICES, self.settings.ui_style,
                                  self._on_ui_style_changed))
         attach("Pin button", switch(self.settings.show_pin_button,
                                     self._on_show_pin_switched))
+
+        section("Player")
+        now_playing_switch = attach("Track info", switch(
+            self.settings.show_now_playing, self._on_now_playing_switched))
+        now_playing_switch.set_tooltip_text(
+            "Fade the artist/title into the corner when the song changes —\n"
+            "for files Phosphor plays and for other players (MPRIS)")
+
+        section("Performance")
+        self.max_fps_combo = Gtk.ComboBoxText.new_with_entry()
+        for fps_value in MAX_FPS_PRESETS:
+            self.max_fps_combo.append(
+                str(fps_value),
+                "Monitor" if fps_value == 0 else str(fps_value))
+        fps_entry = self.max_fps_combo.get_child()
+        fps_entry.set_width_chars(8)
+        self.max_fps_combo.set_tooltip_text(
+            "Frame rate cap — Monitor follows the display's refresh rate;\n"
+            "pick a preset or type any rate up to 1000. Lower trades\n"
+            "smoothness for power; setting it equal to the refresh rate\n"
+            "races vsync and drops frames, so prefer Monitor for that.")
+        if not self.max_fps_combo.set_active_id(str(self.settings.max_fps)):
+            fps_entry.set_text(str(self.settings.max_fps))
+        self.max_fps_combo.connect("changed", self._on_max_fps_changed)
+        attach("Max FPS", self.max_fps_combo)
         self.show_fps_switch = attach("Show FPS", switch(
             self.settings.show_fps, self._on_show_fps_switched))
-        max_fps_spin = Gtk.SpinButton.new_with_range(0, 240, 5)
-        max_fps_spin.set_value(self.settings.max_fps)
-        max_fps_spin.set_tooltip_text(
-            "Frame rate cap — 0 follows the monitor refresh rate (165 Hz "
-            "monitor = 165 fps); lower it to trade smoothness for power")
-        max_fps_spin.connect("value-changed", self._on_max_fps_changed)
-        attach("Max FPS", max_fps_spin)
 
-        grid.show_all()
-        popover.add(grid)
+        columns.show_all()
+        popover.add(columns)
         self._update_custom_color_sensitivity()
 
         settings_button = Gtk.MenuButton()
@@ -854,7 +715,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._cancel_reacquire()
         self.settings.target_id = target_id
         self._update_target_kind_icon()
-        if (self.capture_stream.is_running and self.playing_file is None
+        if (self.capture_stream.is_running and self.player.playing_file is None
                 and not self.is_composing):
             self.capture_stream.start(self.capture_targets[target_id])
 
@@ -866,16 +727,16 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         # track: off pauses it in place (SIGSTOP - still zero CPU), on
         # resumes it. Unloading it here made Live-on come back as silent
         # device capture, which read as "won't turn back on".
-        if self.playing_file is not None and self.capture_stream.is_running:
+        if self.player.playing_file is not None and self.capture_stream.is_running:
             if toggle.get_active() != self.capture_stream.playback_paused:
                 return
-            self._on_transport_play_pause()
+            self.player.toggle_play_pause()
             if not toggle.get_active():
                 self.fade_out_frames_remaining = 90
             return
         if toggle.get_active():
             self._exit_compose_mode(stop_loop=False)
-            self._set_file_loaded(False)
+            self.player.set_file_loaded(False)
             target_id = self.target_combo.get_active_id()
             if target_id is None or target_id not in self.capture_targets:
                 toggle.set_active(False)
@@ -891,198 +752,132 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             self._start_render_loop()
         else:
             self.capture_stream.stop()
-            self._set_file_loaded(False)
+            self.player.set_file_loaded(False)
             self.status_label.set_text("idle — no capture, no CPU")
             self.fade_out_frames_remaining = 90
 
-    def open_audio_file(self):
-        dialog = Gtk.FileChooserNative.new("Play audio file", self,
-                                           Gtk.FileChooserAction.OPEN,
-                                           "_Play", "_Cancel")
-        audio_filter = Gtk.FileFilter()
-        audio_filter.set_name("Audio files")
-        audio_filter.add_mime_type("audio/*")
-        dialog.add_filter(audio_filter)
-        everything_filter = Gtk.FileFilter()
-        everything_filter.set_name("All files")
-        everything_filter.add_pattern("*")
-        dialog.add_filter(everything_filter)
-        if dialog.run() == Gtk.ResponseType.ACCEPT:
-            path = dialog.get_filename()
-            if path:
-                self.play_file(path)
-        dialog.destroy()
-
-    def play_file(self, path, rebuild_playlist=True):
-        self._cancel_reacquire()
-        self._exit_compose_mode(stop_loop=False)
-        try:
-            self.capture_stream.start_file(path)
-        except OSError as error:
-            self.status_label.set_text(
-                f"file playback failed: {error} (is ffmpeg installed?)")
-            return
-        if rebuild_playlist:
-            self._build_playlist(path)
-        else:
-            self.playlist_index = self.playlist.index(path)
-        self.playing_file = os.path.basename(path)
-        self.playing_path = path
-        self._set_file_loaded(True)
-        self._setup_position_slider(path)
-        # reflect "running" in the toggle without re-triggering device capture
+    def sync_capture_toggle(self, active):
+        """Reflect state in the Live toggle without re-triggering capture."""
         self.capture_toggle.handler_block_by_func(self._on_capture_toggled)
-        self.capture_toggle.set_active(True)
+        self.capture_toggle.set_active(active)
         self.capture_toggle.handler_unblock_by_func(self._on_capture_toggled)
-        self.quiet_frame_count = 0
-        self.status_label.set_text(f"▶ {self.playing_file}")
-        self._start_render_loop()
 
-    def _build_playlist(self, path):
-        """Folder-based discovery: every audio file beside the opened one."""
-        directory = os.path.dirname(path)
-        try:
-            names = sorted(os.listdir(directory), key=str.casefold)
-        except OSError:
-            names = []
-        self.playlist = [os.path.join(directory, name) for name in names
-                         if name.lower().endswith(AUDIO_FILE_EXTENSIONS)]
-        if path not in self.playlist:
-            self.playlist.insert(0, path)
-        self.playlist_index = self.playlist.index(path)
+    # ---------------------------------------------- precomputed streams --
 
-    def _set_file_loaded(self, loaded):
-        if not loaded:
-            self.playing_file = None
-            self.playing_path = None
-            self.track_duration_seconds = None
-            self.position_box.hide()
-        self.transport_box.set_no_show_all(not loaded)
-        if loaded:
-            self.transport_box.show_all()
-            self.play_pause_image.set_from_icon_name(
-                "media-playback-pause-symbolic", Gtk.IconSize.BUTTON)
+    def prepare_scope_feed(self, path):
+        """Scope side of playing `path`: attach a matching precomputed
+        stream (audible pipe drops to 48 kHz, the scope reads the stream by
+        the playback clock) or fall back to the live pipe; queue generation
+        when the setting asks for it."""
+        track = (phosphor_precompute.find(path, self.settings.scope_sample_rate)
+                 if self.settings.precompute_enabled else None)
+        self.attach_precomputed(track)
+        if (track is None and self.settings.precompute_enabled
+                and self.settings.scope_sample_rate
+                > phosphor_precompute.AUDIO_PIPE_RATE):
+            self._queue_precompute(path)
+
+    def attach_precomputed(self, track):
+        previous, self._precomputed = self._precomputed, track
+        if previous is not None:
+            previous.close()
+        self._precomputed_clock = 0.0
+        if track is not None:
+            self.capture_stream.configure_sample_rate(
+                phosphor_precompute.AUDIO_PIPE_RATE)
+            with self.compute_lock:
+                self.segment_computer.set_sample_rate(track.sample_rate, 1)
+                self.segment_computer.reset()
         else:
-            self.transport_box.hide()
+            pipe_rate, oversample = plan_feed(self.settings.scope_sample_rate)
+            self.capture_stream.configure_sample_rate(pipe_rate)
+            with self.compute_lock:
+                self.segment_computer.set_sample_rate(pipe_rate, oversample)
+                self.segment_computer.reset()
 
-    # ------------------------------------------------------ track position --
+    def detach_precomputed(self):
+        if self._precomputed is not None:
+            self.attach_precomputed(None)
 
-    @staticmethod
-    def _format_time(seconds):
-        return f"{int(seconds) // 60}:{int(seconds) % 60:02d}"
+    def on_playback_restarted(self, seconds):
+        """After a seek or rate reload: jump the stream clock, break the
+        trace so the beam doesn\'t bridge the jump."""
+        self._precomputed_clock = seconds
+        with self.compute_lock:
+            self.segment_computer.reset()
 
-    def _setup_position_slider(self, path):
-        """Show the seek slider whenever ffprobe can tell us the length.
-        The probe runs on a worker thread so track starts never stall the
-        render loop or audio pipeline."""
-        self.track_duration_seconds = None
-        self.position_box.hide()
+    def _pull_precomputed_samples(self):
+        """The stream slice the playback clock crossed since the last frame.
+        A stalled frame reads a longer slice — detail is never dropped, just
+        traced late (capped so a long stall doesn\'t burst)."""
+        position = min(self.capture_stream.playback_position_seconds,
+                       self._precomputed.duration_seconds)
+        start = self._precomputed_clock
+        if position - start > 0.25:
+            start = position - 0.25
+        chunk = self._precomputed.samples_between(start, position)
+        self._precomputed_clock = position
+        return chunk
 
-        def probe_worker():
-            duration = probe_duration_seconds(path)
-            GLib.idle_add(self._show_position_slider, path, duration)
-        threading.Thread(target=probe_worker, daemon=True).start()
+    def _export_detail_oversample(self):
+        """Exports re-render from the 48 kHz history; match the screen."""
+        if self._precomputed is not None:
+            return max(1, round(self._precomputed.sample_rate
+                                / self.capture_stream.sample_rate))
+        return self.segment_computer.oversample
 
-    def _show_position_slider(self, path, duration):
-        if path != self.playing_path or duration is None or duration <= 0:
-            return False    # track changed while probing, or length unknown
-        self.track_duration_seconds = duration
-        self.position_scale.set_range(0.0, duration)
-        self.position_scale.set_value(0.0)
-        self._refresh_time_label(0.0)
-        self.position_box.set_no_show_all(False)
-        self.position_box.show_all()
-        if self._position_update_source is None:
-            self._position_update_source = GLib.timeout_add(
-                250, self._update_position_display)
-        return False
+    def _queue_precompute(self, path):
+        if self._precompute_worker_path is not None:
+            return
+        self._precompute_worker_path = path
+        rate = self.settings.scope_sample_rate
+        last_percent = [-1]
 
-    def _refresh_time_label(self, position_seconds):
-        self.time_label.set_text(
-            f"{self._format_time(position_seconds)} / "
-            f"{self._format_time(self.track_duration_seconds or 0)}")
+        def report(fraction):
+            percent = int(fraction * 100)
+            if percent != last_percent[0]:
+                last_percent[0] = percent
+                GLib.idle_add(self.status_label.set_text,
+                              f"precomputing scope stream… {percent}%")
 
-    def _update_position_display(self):
-        if self.playing_file is None or self.track_duration_seconds is None:
-            self._position_update_source = None
-            return GLib.SOURCE_REMOVE
-        # while a user drag is pending, the slider belongs to the user
-        if self._seek_debounce_source is None:
-            position = min(self.capture_stream.playback_position_seconds,
-                           self.track_duration_seconds)
-            self.position_scale.set_value(position)
-            self._refresh_time_label(position)
-        return GLib.SOURCE_CONTINUE
-
-    def _on_position_slider_moved(self, _scale, _scroll_type, value):
-        """User input on the seek slider; seeks are debounced so dragging
-        doesn't restart the decoder dozens of times."""
-        if self.playing_path is None or self.track_duration_seconds is None:
+        def finished(track):
+            self._precompute_worker_path = None
+            if self.player.playing_path == path:
+                position = self.capture_stream.playback_position_seconds
+                self.attach_precomputed(track)
+                self.on_playback_restarted(position)
+                self.status_label.set_text(
+                    f"▶ {self.player.playing_file} — precomputed ✓")
+            else:
+                track.close()
+                self.status_label.set_text("scope stream precomputed ✓")
             return False
-        target = max(0.0, min(float(value), self.track_duration_seconds))
-        self._refresh_time_label(target)
-        if self._seek_debounce_source is not None:
-            GLib.source_remove(self._seek_debounce_source)
-        self._seek_debounce_source = GLib.timeout_add(
-            250, self._perform_seek, target)
-        return False    # let the slider follow the pointer
 
-    def _perform_seek(self, target_seconds):
-        self._seek_debounce_source = None
-        if self.playing_path is None:
-            return GLib.SOURCE_REMOVE
-        was_paused = self.capture_stream.playback_paused
-        try:
-            self.capture_stream.start_file(self.playing_path,
-                                           seek_seconds=target_seconds)
-        except OSError as error:
-            self.status_label.set_text(f"seek failed: {error}")
-            return GLib.SOURCE_REMOVE
-        if was_paused:
-            self.capture_stream.set_playback_paused(True)
-        else:
-            self.quiet_frame_count = 0
-            self._start_render_loop()
-        return GLib.SOURCE_REMOVE
+        def failed(message):
+            self._precompute_worker_path = None
+            self.status_label.set_text(f"precompute failed: {message}")
+            return False
 
-    def _step_playlist(self, step):
-        if not self.playlist:
-            return
-        index = (self.playlist_index + step) % len(self.playlist)
-        self.play_file(self.playlist[index], rebuild_playlist=False)
+        def worker():
+            try:
+                track = phosphor_precompute.generate(path, rate, report)
+                GLib.idle_add(finished, track)
+            except (RuntimeError, OSError) as error:
+                GLib.idle_add(failed, str(error))
+        threading.Thread(target=worker, daemon=True).start()
 
-    def play_next_track(self):
-        self._step_playlist(1)
-
-    def play_previous_track(self):
-        self._step_playlist(-1)
-
-    def _on_transport_play_pause(self):
-        if self.playing_file is None:
-            return
-        paused = not self.capture_stream.playback_paused
-        self.capture_stream.set_playback_paused(paused)
-        self.play_pause_image.set_from_icon_name(
-            "media-playback-start-symbolic" if paused
-            else "media-playback-pause-symbolic", Gtk.IconSize.BUTTON)
-        # the Live toggle mirrors whether the track is audible
-        self.capture_toggle.handler_block_by_func(self._on_capture_toggled)
-        self.capture_toggle.set_active(not paused)
-        self.capture_toggle.handler_unblock_by_func(self._on_capture_toggled)
+    def _clear_precompute_cache(self):
+        self.detach_precomputed()
+        freed = phosphor_precompute.clear_cache()
         self.status_label.set_text(
-            f"{'⏸' if paused else '▶'} {self.playing_file}")
-        if not paused:
-            self.quiet_frame_count = 0
-            self._start_render_loop()
+            f"precomputed streams cleared ({freed / 1e6:.0f} MB)")
 
     def _handle_stream_died(self):
         if not self.capture_toggle.get_active():
             return
-        finished_file = self.playing_file
+        finished_file = self.player.playing_file
         died_target_id = self.settings.target_id or ""
-        self.capture_toggle.handler_block_by_func(self._on_capture_toggled)
-        self.capture_toggle.set_active(False)
-        self.capture_toggle.handler_unblock_by_func(self._on_capture_toggled)
+        self.sync_capture_toggle(False)
         self.capture_stream.stop()
         self.fade_out_frames_remaining = 90
         if self.is_composing:
@@ -1091,12 +886,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             self.status_label.set_text("✏ loop stopped — draw to start again")
             return
         if finished_file is not None:
-            # natural end of a track: keep the album going
-            if self.playlist and self.playlist_index < len(self.playlist) - 1:
-                self.play_next_track()
-            else:
-                self._set_file_loaded(False)
-                self.status_label.set_text(f"finished: {finished_file}")
+            self.player.handle_track_finished(finished_file)
         elif died_target_id.startswith("app:"):
             # app streams die between every song; wait for the app to play
             # again instead of dumping the user onto another source
@@ -1167,9 +957,20 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             return GLib.SOURCE_CONTINUE
         if self.capture_stream.is_running:
             samples = self.capture_stream.take_stereo_samples()
+            if (self._precomputed is not None
+                    and self.player.playing_file is not None):
+                # the live pipe only carries the audible audio; the scope
+                # reads the precomputed stream by the playback clock
+                samples = self._pull_precomputed_samples()
             # The monitor delivers zeros while nothing plays; detect silence by
             # content and stop redrawing once the glow has settled.
-            peak = max(max(samples), -min(samples)) if samples else 0.0
+            if len(samples):
+                if numpy is not None and isinstance(samples, numpy.ndarray):
+                    peak = float(numpy.abs(samples).max())
+                else:
+                    peak = max(max(samples), -min(samples))
+            else:
+                peak = 0.0
             is_quiet = peak < QUIET_PEAK_THRESHOLD
             self.quiet_frame_count = self.quiet_frame_count + 1 if is_quiet else 0
             if self.quiet_frame_count > QUIET_FRAMES_BEFORE_SLEEP:
@@ -1199,6 +1000,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                 self.gl_renderer.cpu_seconds_accumulated = 0.0
             milliseconds = python_seconds / max(1, self._fps_counter) * 1000.0
             renderer_name = "GPU" if self.settings.renderer == "gl" else "CPU"
+            if self.segment_computer.engine == "rust":
+                renderer_name += "·rs"
             # "py" is python time per frame (not which renderer is active);
             # "max" is the worst gap between drawn frames — a big number
             # there during a hitch tells us the main loop stalled
@@ -1231,6 +1034,76 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             renderer.queue_draw()
         else:
             renderer.queue_render()
+
+    # ---------------------------------------------------------- now playing --
+
+    def flash_now_playing(self, title, subtitle=None):
+        """Fade the track-info chip in over the scope, hold ~4 s, fade out."""
+        if not self.settings.show_now_playing:
+            return
+        markup = f"<b>{GLib.markup_escape_text(title)}</b>"
+        if subtitle:
+            markup += f"\n<small>{GLib.markup_escape_text(subtitle)}</small>"
+        label = self.now_playing_label
+        label.set_markup(markup)
+        if self._overlay_fade_source is not None:
+            GLib.source_remove(self._overlay_fade_source)
+        label.set_opacity(0.0)
+        label.set_visible(True)
+        state = {"phase": "in", "hold_until": time.monotonic() + 4.0}
+
+        def step():
+            opacity = label.get_opacity()
+            if state["phase"] == "in":
+                opacity = min(1.0, opacity + 0.09)
+                label.set_opacity(opacity)
+                if opacity >= 1.0:
+                    state["phase"] = "hold"
+            elif state["phase"] == "hold":
+                if time.monotonic() >= state["hold_until"]:
+                    state["phase"] = "out"
+            else:
+                opacity = max(0.0, opacity - 0.045)
+                label.set_opacity(opacity)
+                if opacity <= 0.0:
+                    label.set_visible(False)
+                    self._overlay_fade_source = None
+                    return GLib.SOURCE_REMOVE
+            return GLib.SOURCE_CONTINUE
+        self._overlay_fade_source = GLib.timeout_add(33, step)
+
+    def _on_external_track(self, title, artist, album, identity):
+        """A song changed in some other player (MPRIS): show it, but only
+        while the scope listens to the system, not its own file playback."""
+        if (self.player.playing_file is not None
+                or not self.capture_stream.is_running):
+            return
+        subtitle = " — ".join(part for part in (artist, album) if part)
+        if identity:
+            subtitle = f"{subtitle}  ·  {identity}" if subtitle else identity
+        self.flash_now_playing(title, subtitle or None)
+
+    def _on_now_playing_switched(self, _switch, state):
+        self.settings.show_now_playing = state
+        if not state:
+            if self._overlay_fade_source is not None:
+                GLib.source_remove(self._overlay_fade_source)
+                self._overlay_fade_source = None
+            self.now_playing_label.set_visible(False)
+        return False
+
+    def _on_drag_data_received(self, _widget, _context, _x, _y, data,
+                               _info, _time):
+        paths = []
+        for uri in data.get_uris():
+            try:
+                filename, _host = GLib.filename_from_uri(uri)
+            except GLib.Error:
+                continue
+            if filename:
+                paths.append(filename)
+        if paths:
+            self.player.play_dropped(paths)
 
     # ----------------------------------------------------- settings changes --
 
@@ -1265,21 +1138,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._wake_renderer()
 
     def _apply_ui_style(self):
-        style = self.settings.ui_style
-        Gtk.Settings.get_default().set_property(
-            "gtk-application-prefer-dark-theme", style in ("dark", "black"))
-        screen = Gdk.Screen.get_default()
-        if self._style_css_provider is not None:
-            Gtk.StyleContext.remove_provider_for_screen(
-                screen, self._style_css_provider)
-            self._style_css_provider = None
-        style_css = {"black": BLACK_UI_CSS, "light": LIGHT_UI_CSS}.get(style)
-        if style_css is not None:
-            self._style_css_provider = Gtk.CssProvider()
-            self._style_css_provider.load_from_data(style_css)
-            Gtk.StyleContext.add_provider_for_screen(
-                screen, self._style_css_provider,
-                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        self._style_css_provider = phosphor_ui_style.apply_ui_style(
+            self.settings.ui_style, self._style_css_provider)
 
     def _update_auto_gain(self, peak):
         """Autosize: scale the trace to fill the screen. The tracked peak
@@ -1373,21 +1233,26 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         # capture the playback position before the stream's clock changes
         resume_seconds = self.capture_stream.playback_position_seconds
         self.settings.scope_sample_rate = rate
-        self.capture_stream.configure_sample_rate(rate)
-        with self.compute_lock:
-            self.segment_computer.set_sample_rate(rate)
-            self.segment_computer.reset()
         # restart whatever is flowing so the new rate applies immediately
         try:
-            if self.playing_path is not None:
-                self.capture_stream.start_file(self.playing_path,
+            if self.player.playing_path is not None:
+                self.prepare_scope_feed(self.player.playing_path)
+                self.capture_stream.start_file(self.player.playing_path,
                                                seek_seconds=resume_seconds)
-            elif self.is_composing and self._compose_loop_points:
-                self._restart_compose_loop()
-            elif self.capture_stream.is_running:
-                target_id = self.target_combo.get_active_id()
-                if target_id in self.capture_targets:
-                    self.capture_stream.start(self.capture_targets[target_id])
+                self.on_playback_restarted(resume_seconds)
+            else:
+                pipe_rate, oversample = plan_feed(rate)
+                self.capture_stream.configure_sample_rate(pipe_rate)
+                with self.compute_lock:
+                    self.segment_computer.set_sample_rate(pipe_rate, oversample)
+                    self.segment_computer.reset()
+                if self.is_composing and self._compose_loop_points:
+                    self._restart_compose_loop()
+                elif self.capture_stream.is_running:
+                    target_id = self.target_combo.get_active_id()
+                    if target_id in self.capture_targets:
+                        self.capture_stream.start(
+                            self.capture_targets[target_id])
         except OSError as error:
             self.status_label.set_text(f"rate change failed: {error}")
         self.settings.save()
@@ -1406,6 +1271,13 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._apply_ui_style()
         self.settings.save()
 
+    def _on_precompute_switched(self, _switch, state):
+        self.settings.precompute_enabled = state
+        playing = self.player.playing_path
+        if state and playing is not None and self._precomputed is None:
+            self._queue_precompute(playing)
+        return False
+
     def _on_show_pin_switched(self, _switch, state):
         self.settings.show_pin_button = state
         self.pin_toggle.set_visible(state)
@@ -1418,8 +1290,15 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._fps_window_start = time.monotonic()
         return False
 
-    def _on_max_fps_changed(self, spin):
-        self.settings.max_fps = int(spin.get_value())
+    def _on_max_fps_changed(self, combo):
+        text = combo.get_active_id()
+        if text is None:                     # typed into the entry
+            text = combo.get_child().get_text().strip()
+        try:
+            value = int(text)
+        except ValueError:
+            return                           # mid-edit or a preset label
+        self.settings.max_fps = max(0, min(1000, value))
         self.settings.save()
 
     def _on_grid_switched(self, _switch, state):
@@ -1468,7 +1347,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                 path = phosphor_recorder.save_snapshot(
                     audio, self.settings,
                     sample_rate=self.capture_stream.sample_rate,
-                    gain=self._effective_gain)
+                    gain=self._effective_gain,
+                    oversample=self._export_detail_oversample())
                 GLib.idle_add(worker_done, path)
             except (RuntimeError, OSError) as error:
                 GLib.idle_add(self._export_failed, str(error))
@@ -1489,7 +1369,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             on_done=lambda path: GLib.idle_add(self._export_done, path),
             on_error=lambda message: GLib.idle_add(self._export_failed, message),
             sample_rate=self.capture_stream.sample_rate,
-            gain=self._effective_gain)
+            gain=self._effective_gain,
+            oversample=self._export_detail_oversample())
 
     def _export_done(self, path):
         self.exporting = False
@@ -1519,7 +1400,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             self.capture_toggle.set_active(False)   # stops capture/playback
         if self.capture_stream.is_running:
             self.capture_stream.stop()              # e.g. a paused track
-        self._set_file_loaded(False)
+        self.player.set_file_loaded(False)
         self.is_composing = True
         self._compose_drawing = False
         self._compose_points = []
@@ -1613,9 +1494,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         except (ValueError, OSError) as error:
             self.status_label.set_text(f"compose failed: {error}")
             return
-        self.capture_toggle.handler_block_by_func(self._on_capture_toggled)
-        self.capture_toggle.set_active(True)
-        self.capture_toggle.handler_unblock_by_func(self._on_capture_toggled)
+        self.sync_capture_toggle(True)
         self.quiet_frame_count = 0
         self.status_label.set_text(
             f"✏ {frequency:.0f} Hz loop — scroll to retune, draw to replace")
@@ -1701,9 +1580,11 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             if fullscreen:
                 self.controls_container.hide()
                 self.header_bar.hide()
+                self.player.panel_revealer.hide()
             else:
                 self.controls_container.show()
                 self.header_bar.show()
+                self.player.panel_revealer.show()
         return False
 
     def set_mini_mode(self, enabled):
@@ -1720,6 +1601,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             self.unmaximize()
             self.controls_container.hide()
             self.header_bar.hide()
+            self.player.panel_revealer.hide()
             self.set_decorated(False)
             self.set_keep_above(True)
             width = height = self.settings.mini_size
@@ -1730,6 +1612,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             self._set_scope_cursor(None)
             self.controls_container.show()
             self.header_bar.show()
+            self.player.panel_revealer.show()
             self.set_decorated(True)
             self.set_keep_above(self.settings.pinned)
             width, height = self.settings.window_width, self.settings.window_height
@@ -1787,22 +1670,40 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         capturing = self.capture_toggle.get_active()
         add_item("Pause capture" if capturing else "Resume capture",
                  lambda: self.capture_toggle.set_active(not capturing))
-        add_item("Play audio file…  (O)", self.open_audio_file)
-        if self.playing_file is not None:
+        add_item("Play audio file…  (O)", self.player.open_audio_file)
+        if self.player.playing_file is not None:
             paused = self.capture_stream.playback_paused
             add_item("Resume track" if paused else "Pause track",
-                     self._on_transport_play_pause)
-            add_item("Next track  ⏭", self.play_next_track,
-                     sensitive=len(self.playlist) > 1)
-            add_item("Previous track  ⏮", self.play_previous_track,
-                     sensitive=len(self.playlist) > 1)
+                     self.player.toggle_play_pause)
+            add_item("Next track  ⏭", self.player.play_next_track,
+                     sensitive=len(self.player.playlist) > 1)
+            add_item("Previous track  ⏮", self.player.play_previous_track,
+                     sensitive=len(self.player.playlist) > 1)
         if not self.is_mini_mode:
             add_check_item("Compose · draw a shape  (D)", self.is_composing,
                            lambda active: self.compose_toggle.set_active(active))
+            add_check_item("Playlist panel  (L)",
+                           self.settings.playlist_panel_open,
+                           lambda active: self.playlist_toggle.set_active(active))
         if self.is_composing and self._compose_loop_points:
             add_item("Export drawing as WAV  (10 s)", self.export_drawing)
         add_item("Snapshot  (S)", self.save_snapshot)
         add_item("Save last 10 s  (C)", self.save_clip)
+        if self.player.playing_path is not None:
+            if self._precomputed is not None:
+                add_item("Scope stream: precomputed ✓", lambda: None,
+                         sensitive=False)
+            elif self._precompute_worker_path is not None:
+                add_item("Precomputing scope stream…", lambda: None,
+                         sensitive=False)
+            else:
+                add_item("Precompute scope stream",
+                         lambda: self._queue_precompute(
+                             self.player.playing_path))
+        cache_bytes = phosphor_precompute.cache_size_bytes()
+        if cache_bytes:
+            add_item(f"Clear precomputed streams ({cache_bytes / 1e6:.0f} MB)",
+                     self._clear_precompute_cache)
         menu.append(Gtk.SeparatorMenuItem())
 
         mode_menu = add_submenu("Display mode")
@@ -1923,7 +1824,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         if key == Gdk.KEY_space:
             self.capture_toggle.set_active(not self.capture_toggle.get_active())
         elif key in (Gdk.KEY_o, Gdk.KEY_O):
-            self.open_audio_file()
+            self.player.open_audio_file()
         elif key in (Gdk.KEY_d, Gdk.KEY_D):
             self.compose_toggle.set_active(not self.compose_toggle.get_active())
         elif key in (Gdk.KEY_m, Gdk.KEY_M):
@@ -1936,6 +1837,9 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             self.pin_toggle.set_active(not self.pin_toggle.get_active())
         elif key in (Gdk.KEY_g, Gdk.KEY_G):
             self.grid_switch.set_active(not self.settings.grid_enabled)
+        elif key in (Gdk.KEY_l, Gdk.KEY_L):
+            self.playlist_toggle.set_active(
+                not self.playlist_toggle.get_active())
         elif key in (Gdk.KEY_f, Gdk.KEY_F):
             self.show_fps_switch.set_active(not self.settings.show_fps)
         elif key == Gdk.KEY_F11:

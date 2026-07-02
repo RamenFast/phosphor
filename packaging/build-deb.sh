@@ -23,6 +23,18 @@ install -d \
     "$staging_directory/usr/share/icons/hicolor/scalable/apps"
 
 install -m 644 "$project_directory"/phosphor*.py "$staging_directory/usr/lib/phosphor/"
+
+# Native signal core: build it if cargo is around (or reuse a previous
+# build). The package stays installable without it — Python falls back.
+architecture="all"
+native_library="$project_directory/core/target/release/libphosphor_core.so"
+if command -v cargo >/dev/null 2>&1; then
+    (cd "$project_directory/core" && cargo build --release --quiet)
+fi
+if [ -f "$native_library" ]; then
+    install -m 644 "$native_library" "$staging_directory/usr/lib/phosphor/"
+    architecture="$(dpkg --print-architecture)"
+fi
 install -m 644 "$project_directory/phosphor-scope.svg" "$staging_directory/usr/lib/phosphor/"
 install -m 644 "$project_directory/phosphor-scope.svg" \
     "$staging_directory/usr/share/icons/hicolor/scalable/apps/phosphor-scope.svg"
@@ -44,7 +56,7 @@ Package: $package_name
 Version: $version
 Section: sound
 Priority: optional
-Architecture: all
+Architecture: $architecture
 Installed-Size: $installed_size_kb
 Depends: python3, python3-gi, python3-gi-cairo, gir1.2-gtk-3.0, pulseaudio-utils
 Recommends: ffmpeg, python3-numpy
@@ -60,7 +72,7 @@ CONTROL
 
 output_directory="$packaging_directory/dist"
 mkdir -p "$output_directory"
-output_file="$output_directory/${package_name}_${version}_all.deb"
+output_file="$output_directory/${package_name}_${version}_${architecture}.deb"
 dpkg-deb --build --root-owner-group "$staging_directory" "$output_file" > /dev/null
 echo "built: $output_file"
 dpkg-deb --info "$output_file" | sed -n '1,12p'

@@ -17,7 +17,12 @@ cp -f "$here/$uuid"/* "$dest/"
 cp -f "$repo/phosphor_applet_feed.py" \
       "$repo/phosphor_audio.py" \
       "$repo/phosphor_signal.py" \
+      "$repo/phosphor_core.py" \
       "$dest/"
+# Native core, if it has been built (the feed falls back to Python without it).
+if [ -f "$repo/core/target/release/libphosphor_core.so" ]; then
+    cp -f "$repo/core/target/release/libphosphor_core.so" "$dest/"
+fi
 
 echo "Installed Phosphor Scope to:"
 echo "  $dest"

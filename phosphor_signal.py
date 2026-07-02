@@ -29,6 +29,29 @@ try:
 except ImportError:        # pure-python fallback keeps the package light
     numpy = None
 
+try:
+    import phosphor_core   # Rust core; optional, everything works without it
+except ImportError:
+    phosphor_core = None
+
+
+def native_available():
+    return phosphor_core is not None and phosphor_core.available()
+
+
+def plan_feed(scope_rate):
+    """(pipe_rate, oversample) that realizes a requested scope-detail rate.
+
+    With the native core, high rates are reconstructed in-process by its
+    windowed-sinc upsampler from a modest capture feed — same band-limited
+    interpolation PulseAudio/ffmpeg would do, without piping 384 kHz audio
+    around. Without it, the pipe carries the full rate as before.
+    """
+    if not native_available() or scope_rate <= 48000:
+        return scope_rate, 1
+    pipe_rate = 48000 if scope_rate <= 96000 else 96000
+    return pipe_rate, max(1, scope_rate // pipe_rate)
+
 # All rate-dependent sizes below are tuned at the base rate and scaled in
 # set_sample_rate(), so a higher-fidelity feed refines the trace without
 # changing brightness, the waveform's time span, or the spectrum's tuning.
@@ -106,15 +129,28 @@ class SegmentComputer:
         self.waveform_history = array("f")
         self.spectrum_levels = [0.0] * SPECTRUM_BAR_COUNT
         self.frames_since_fft = 0
+        self._native = (phosphor_core.NativeComputer()
+                        if native_available() else None)
         self.set_sample_rate(BASE_SAMPLE_RATE)
 
-    def set_sample_rate(self, sample_rate):
+    @property
+    def engine(self):
+        if self._native is not None:
+            return "rust"
+        return "numpy" if numpy is not None else "python"
+
+    def set_sample_rate(self, sample_rate, oversample=1):
         """Scale every rate-dependent size so a finer feed only adds detail.
 
         Beam intensity, the waveform's visible time span, and the spectrum's
         frequency resolution all stay exactly where they were tuned at 48 kHz.
+        `oversample` multiplies the XY feed in the native core (see
+        plan_feed); the Python path ignores it and traces the pipe rate.
         """
         self.sample_rate = sample_rate
+        self.oversample = max(1, int(oversample))
+        if self._native is not None:
+            self._native.configure(sample_rate, self.oversample)
         rate_ratio = sample_rate / BASE_SAMPLE_RATE
         # distances between consecutive samples shrink as the rate rises;
         # normalizing them back keeps dwell-time brightness identical
@@ -140,9 +176,16 @@ class SegmentComputer:
         self.last_beam_x = self.last_beam_y = None
         self.waveform_history = array("f")
         self.spectrum_levels = [0.0] * SPECTRUM_BAR_COUNT
+        if self._native is not None:
+            self._native.reset()
 
     def compute(self, samples, width, height):
         """New beam segments for this frame from this frame's new samples."""
+        if self._native is not None:
+            return self._native.compute(self.mode, self.gain,
+                                        self.beam_energy,
+                                        self.frame_glow_keep, samples,
+                                        width, height)
         if self.mode in ("xy", "xy45"):
             return self._xy_segments(samples, width, height)
         if self.mode == "xy_dots":

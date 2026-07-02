@@ -12,6 +12,7 @@ The stream also keeps a rolling ring of the last CLIP_SECONDS of audio so
 snapshots and clip exports can re-render what you just saw and heard.
 """
 
+import json
 import os
 import re
 import signal
@@ -114,6 +115,30 @@ def probe_duration_seconds(path):
         return float(output) if output else None
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return None
+
+
+def probe_metadata(path):
+    """Tags + duration via ffprobe: {'title', 'artist', 'album', 'duration'}.
+    Missing tags come back as None; one call serves the seek slider and the
+    now-playing overlay."""
+    try:
+        output = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries",
+             "format=duration:format_tags=title,artist,album",
+             "-of", "json", path],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+        details = json.loads(output or "{}").get("format", {})
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return {"title": None, "artist": None, "album": None, "duration": None}
+    tags = {key.lower(): value
+            for key, value in (details.get("tags") or {}).items()}
+    try:
+        duration = float(details.get("duration"))
+    except (TypeError, ValueError):
+        duration = None
+    return {"title": tags.get("title"), "artist": tags.get("artist"),
+            "album": tags.get("album"), "duration": duration}
 
 
 class AudioCaptureStream:
