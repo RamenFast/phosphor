@@ -50,14 +50,9 @@ sinc-reconstructed once, in the background, into
 content and detail rate).
 
 While a precomputed track plays, the audible pipe drops to 48 kHz and the
-scope reads the stream from disk — no realtime reconstruction. How it
-advances follows **Max FPS**: with an explicit rate selected, every drawn
-frame steps the stream by exactly one frame's audio at that rate — if the
-machine can't draw that fast, the trace falls behind rather than skipping
-ahead, so every frame of the selected rate is shown (the visuals run
-slower than the sound, on purpose). On Monitor, the stream follows the
-playback clock and stays in sync with the audio. Seeks are an index jump
-either way. Snapshots and clips re-render at matching detail.
+scope reads the stream by the playback clock — no realtime reconstruction,
+and a slow frame traces more audio late instead of dropping samples. Seeks
+are an index jump. Snapshots and clips re-render at matching detail.
 
 Disk cost is real: ~92 MB per track-minute at 384 kHz, proportionally less
 at lower rates. The right-click menu offers one-shot precompute for the
