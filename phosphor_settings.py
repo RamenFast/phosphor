@@ -125,6 +125,7 @@ class Settings:
         self.repeat_mode = "off"       # "off" | "all" | "one"
         self.playlist_panel_open = False
         self.postcard_credit = ""      # remembered "trace by" signature
+        self.vacuum_enabled = False    # file playback as light only (⌀)
         # signal kit (.phoskit): a transform chain bent into the signal
         self.kit_path = None           # active kit file, or None
         self.kit_enabled = False

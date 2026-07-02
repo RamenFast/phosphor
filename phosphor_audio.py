@@ -18,12 +18,14 @@ import re
 import signal
 import subprocess
 import threading
+import time
 from array import array
 
 DEFAULT_SAMPLE_RATE = 48000
 BYTES_PER_STEREO_FRAME = 8  # 2 channels x float32
 PENDING_BACKLOG_SECONDS = 1
 CLIP_SECONDS = 10
+VACUUM_SINK_NAME = "phosphor_vacuum"  # the null sink apps play into
 
 
 def _run_pactl(arguments):
@@ -33,6 +35,16 @@ def _run_pactl(arguments):
         ).stdout
     except (OSError, subprocess.TimeoutExpired):
         return ""
+
+
+def _pactl_succeeds(arguments):
+    """pactl is silent on success — the return code is the only truth."""
+    try:
+        return subprocess.run(
+            ["pactl"] + arguments, capture_output=True, text=True, timeout=5
+        ).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 class CaptureTarget:
@@ -164,6 +176,87 @@ def probe_metadata(path):
             "album": tags.get("album"), "duration": duration}
 
 
+def vacuum_sweep_stale():
+    """Unload phosphor_vacuum null-sinks left behind by a crash. atexit
+    never runs after kill -9, so every launch sweeps; PulseAudio moves any
+    orphaned streams back to the default sink when their sink vanishes.
+    Returns how many stale modules were removed."""
+    removed = 0
+    for line in _run_pactl(["list", "short", "modules"]).splitlines():
+        parts = line.split("\t")
+        if (len(parts) >= 3 and parts[1] == "module-null-sink"
+                and VACUUM_SINK_NAME in parts[2]):
+            _run_pactl(["unload-module", parts[0]])
+            removed += 1
+    return removed
+
+
+class VacuumRouter:
+    """Routes one app's stream into a null sink: the app plays full tilt
+    into the void, the beam scopes the void's monitor, the room hears
+    nothing. The restore path is sacred — the stream moves back and the
+    module unloads on release, and stale sinks are swept at startup."""
+
+    def __init__(self):
+        self.module_id = None
+        self.moved_input = None       # sink-input index we rerouted
+        self.previous_sink = None     # where it lived before
+
+    @property
+    def active(self):
+        return self.module_id is not None
+
+    @staticmethod
+    def capture_device():
+        return VACUUM_SINK_NAME + ".monitor"
+
+    def route(self, sink_input_index):
+        """Send one sink-input into the vacuum; returns the monitor device
+        to scope. Raises RuntimeError when PulseAudio says no."""
+        self.release()
+        listing = _run_pactl(["list", "sink-inputs"])
+        previous_sink = None
+        for block in re.split(r"^Sink Input #", listing, flags=re.MULTILINE):
+            if block.startswith(str(sink_input_index) + "\n") \
+                    or block.startswith(str(sink_input_index) + "\r"):
+                sink_match = re.search(r"^\s*Sink:\s*(\d+)", block,
+                                       re.MULTILINE)
+                if sink_match:
+                    previous_sink = sink_match.group(1)
+                break
+        module_id = _run_pactl([
+            "load-module", "module-null-sink",
+            f"sink_name={VACUUM_SINK_NAME}",
+            "sink_properties=device.description=Phosphor\\ Vacuum",
+        ]).strip()
+        if not module_id.isdigit():
+            raise RuntimeError("could not create the vacuum sink")
+        self.module_id = module_id
+        if not _pactl_succeeds(["move-sink-input", str(sink_input_index),
+                                VACUUM_SINK_NAME]):
+            self.release()
+            raise RuntimeError("could not move the app into the vacuum")
+        self.moved_input = str(sink_input_index)
+        self.previous_sink = previous_sink
+        return self.capture_device()
+
+    def release(self):
+        """Put the world back: stream to its old sink (or the default when
+        that sink is gone), module unloaded. Safe to call twice."""
+        if self.moved_input is not None:
+            destination = self.previous_sink or "@DEFAULT_SINK@"
+            if not _pactl_succeeds(["move-sink-input", self.moved_input,
+                                    destination]):
+                # old sink gone (or stream already dead): default catches it
+                _pactl_succeeds(["move-sink-input", self.moved_input,
+                                 "@DEFAULT_SINK@"])
+            self.moved_input = None
+            self.previous_sink = None
+        if self.module_id is not None:
+            _run_pactl(["unload-module", self.module_id])
+            self.module_id = None
+
+
 class AudioCaptureStream:
     """Owns the parec process. While stopped, nothing runs and nothing polls."""
 
@@ -171,6 +264,9 @@ class AudioCaptureStream:
         self._process = None
         self._playback_process = None      # pacat, only during file playback
         self.playback_paused = False
+        self._vacuum = False               # file playback as light only
+        self._vacuum_gate = threading.Event()  # cleared = reader holds
+        self._vacuum_gate.set()
         self._reader_thread = None
         self._pending_bytes = bytearray()
         self._history_bytes = bytearray()  # rolling last CLIP_SECONDS for export
@@ -220,13 +316,17 @@ class AudioCaptureStream:
         )
         self._start_reader(self._process, playback=None)
 
-    def start_file(self, path, seek_seconds=0.0, loop=False):
+    def start_file(self, path, seek_seconds=0.0, loop=False, vacuum=False):
         """Play an audio file out loud while feeding the scope directly.
 
         ffmpeg decodes to the scope's native format; pacat makes it audible.
         pacat's pipe backpressure paces the reader loop, keeping the picture
         in sync with the sound. `seek_seconds` starts mid-file; `loop`
         repeats the file forever (used by compose mode's drawn loops).
+
+        `vacuum` drops pacat entirely — the signal arrives only as light.
+        With no pipe backpressure to act as the clock, the reader paces
+        itself (see _reader_loop); position math and seeks are unchanged.
 
         A .phos signal postcard plays too: its body is raw s16le at the rate
         its header declares, so ffmpeg reads it with the header skipped and
@@ -251,21 +351,25 @@ class AudioCaptureStream:
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
         )
-        playback = subprocess.Popen(
-            [
-                "pacat",
-                "--format=float32le",
-                f"--rate={self.sample_rate}",
-                "--channels=2",
-                "--latency-msec=60",
-                "--client-name=Phosphor",
-                "--raw",
-            ],
-            stdin=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
+        playback = None
+        if not vacuum:
+            playback = subprocess.Popen(
+                [
+                    "pacat",
+                    "--format=float32le",
+                    f"--rate={self.sample_rate}",
+                    "--channels=2",
+                    "--latency-msec=60",
+                    "--client-name=Phosphor",
+                    "--raw",
+                ],
+                stdin=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
         self._process = decoder
         self._playback_process = playback
+        self._vacuum = vacuum
+        self._vacuum_gate.set()
         self._start_reader(decoder, playback, stream_start_seconds=seek_seconds)
 
     def _start_reader(self, process, playback, stream_start_seconds=0.0):
@@ -279,8 +383,23 @@ class AudioCaptureStream:
     def set_playback_paused(self, paused):
         """Freeze/unfreeze file playback. SIGSTOP holds both the decoder and
         pacat in place, so resuming continues exactly where the sound left
-        off — no buffer to rebuild, no seek needed."""
-        if self._playback_process is None or paused == self.playback_paused:
+        off — no buffer to rebuild, no seek needed.
+
+        In vacuum there is no pacat: the reader simply stops pulling (the
+        gate below), the pipe fills, and ffmpeg blocks — same freeze, no
+        signals, and the position clock stops because reads stop."""
+        if paused == self.playback_paused:
+            return
+        if self._vacuum:
+            if self._process is None:
+                return
+            self.playback_paused = paused
+            if paused:
+                self._vacuum_gate.clear()
+            else:
+                self._vacuum_gate.set()
+            return
+        if self._playback_process is None:
             return
         stop_or_continue = signal.SIGSTOP if paused else signal.SIGCONT
         for child in (self._process, self._playback_process):
@@ -293,6 +412,8 @@ class AudioCaptureStream:
 
     def stop(self):
         self.set_playback_paused(False)    # SIGTERM stays pending on a stopped process
+        self._vacuum = False
+        self._vacuum_gate.set()            # a held reader must wake to exit
         process, self._process = self._process, None
         playback, self._playback_process = self._playback_process, None
         for child in (process, playback):
@@ -308,10 +429,26 @@ class AudioCaptureStream:
             # history is kept so a clip can still be saved right after pausing
 
     def _reader_loop(self, process, playback):
+        # Vacuum pacing: with no pacat backpressure, the reader is the
+        # clock. A rolling deadline advances by each chunk's duration and
+        # re-anchors if we ever fall behind — pauses and stalls resume at
+        # real time instead of bursting to catch up (the -re failure mode).
+        vacuum_paced = playback is None and self._vacuum
+        bytes_per_second = self.sample_rate * BYTES_PER_STEREO_FRAME
+        deadline = time.monotonic()
         while True:
+            if vacuum_paced:
+                self._vacuum_gate.wait()
+                now = time.monotonic()
+                if deadline > now:
+                    time.sleep(deadline - now)
+                elif now - deadline > 0.25:
+                    deadline = now
             chunk = process.stdout.read(8192)
             if not chunk:
                 break
+            if vacuum_paced:
+                deadline += len(chunk) / bytes_per_second
             if playback is not None:
                 try:
                     playback.stdin.write(chunk)   # blocks → paces file playback
