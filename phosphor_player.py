@@ -84,6 +84,16 @@ class PhosphorPlayer:
             "Track volume — just this stream, not the whole system")
         self.volume_button.connect("value-changed", self._on_volume_changed)
         self.transport_box.pack_start(self.volume_button, False, False, 0)
+        self.vacuum_toggle = Gtk.ToggleButton()
+        self.vacuum_toggle.add(Gtk.Image.new_from_icon_name(
+            "audio-volume-muted-symbolic", Gtk.IconSize.BUTTON))
+        self.vacuum_toggle.set_tooltip_text(
+            "Vacuum mode — the track plays as light only: nothing reaches\n"
+            "the speakers, the beam sees everything. (Sound can't cross\n"
+            "a vacuum; a CRT is a vacuum tube.)")
+        self.vacuum_toggle.set_active(self.settings.vacuum_enabled)
+        self.vacuum_toggle.connect("toggled", self._on_vacuum_toggled)
+        self.transport_box.pack_start(self.vacuum_toggle, False, False, 0)
         self.transport_box.set_no_show_all(True)
 
         # track position: a seek slider plus elapsed/total readout, shown
@@ -200,6 +210,23 @@ class PhosphorPlayer:
         self.repeat_image.set_opacity(1.0 if mode != "off" else 0.4)
         self.repeat_button.set_tooltip_text(f"Repeat: {mode}")
 
+    def _on_vacuum_toggled(self, toggle):
+        """Vacuum on/off mid-track: reopen the pipeline at the current
+        position (same trick as a seek) with sound dropped or restored."""
+        active = toggle.get_active()
+        if active == self.settings.vacuum_enabled:
+            return
+        self.settings.vacuum_enabled = active
+        self.settings.save()
+        if self.playing_path is None:
+            return
+        position = self.capture_stream.playback_position_seconds
+        self._perform_seek(position)
+        silent = "⌀ " if active else ""
+        state = "⏸" if self.capture_stream.playback_paused else "▶"
+        self.window.status_label.set_text(
+            f"{state} {silent}{self.playing_file}")
+
     # ------------------------------------------------------------------ volume
 
     def _on_volume_changed(self, _button, value):
@@ -268,7 +295,8 @@ class PhosphorPlayer:
         # decoder starts, so the audible pipe rate is already right
         window.prepare_scope_feed(path)
         try:
-            self.capture_stream.start_file(path)
+            self.capture_stream.start_file(
+                path, vacuum=self.settings.vacuum_enabled)
         except OSError as error:
             window.status_label.set_text(
                 f"file playback failed: {error} (is ffmpeg installed?)")
@@ -283,9 +311,11 @@ class PhosphorPlayer:
         self._setup_position_slider(path)
         window.sync_capture_toggle(True)
         window.quiet_frame_count = 0
-        window.status_label.set_text(f"▶ {self.playing_file}")
+        silent = "⌀ " if self.settings.vacuum_enabled else ""
+        window.status_label.set_text(f"▶ {silent}{self.playing_file}")
         self.refresh_playlist_panel()
-        if self.settings.playback_volume < 0.995:
+        if self.settings.playback_volume < 0.995 \
+                and not self.settings.vacuum_enabled:
             GLib.timeout_add(300, self._apply_volume_now)
         window._start_render_loop()
 
@@ -473,13 +503,15 @@ class PhosphorPlayer:
             return GLib.SOURCE_REMOVE
         was_paused = self.capture_stream.playback_paused
         try:
-            self.capture_stream.start_file(self.playing_path,
-                                           seek_seconds=target_seconds)
+            self.capture_stream.start_file(
+                self.playing_path, seek_seconds=target_seconds,
+                vacuum=self.settings.vacuum_enabled)
         except OSError as error:
             self.window.status_label.set_text(f"seek failed: {error}")
             return GLib.SOURCE_REMOVE
         self.window.on_playback_restarted(target_seconds)
-        if self.settings.playback_volume < 0.995:
+        if self.settings.playback_volume < 0.995 \
+                and not self.settings.vacuum_enabled:
             GLib.timeout_add(300, self._apply_volume_now)
         if was_paused:
             self.capture_stream.set_playback_paused(True)

@@ -45,6 +45,7 @@ import phosphor_mpris
 import phosphor_precompute
 import phosphor_recorder
 import phosphor_ui_style
+import phosphor_audio
 from phosphor_audio import (AudioCaptureStream, default_monitor_target_id,
                             list_capture_targets)
 from phosphor_player import PhosphorPlayer
@@ -56,7 +57,7 @@ from phosphor_signal import SegmentComputer, plan_feed
 from phosphor_ui_style import UI_STYLE_CHOICES
 
 APPLICATION_ID = "io.github.ben.Phosphor"
-APPLICATION_VERSION = "3.3.0"
+APPLICATION_VERSION = "3.4.0"
 PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 QUIET_PEAK_THRESHOLD = 1e-4
 QUIET_FRAMES_BEFORE_SLEEP = 120
@@ -255,6 +256,10 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         # a certain ten-key sequence invites a visitor onto the scope
         self._konami_progress = 0
         self._visitor_started = None
+        # vacuum: route an app into a null sink, scope it silently
+        self._vacuum_router = phosphor_audio.VacuumRouter()
+        threading.Thread(target=phosphor_audio.vacuum_sweep_stale,
+                         daemon=True).start()   # crash leftovers, every launch
         # precomputed scope streams (phosphor_precompute)
         self._precomputed = None
         self._precomputed_clock = 0.0      # seconds of the stream traced so far
@@ -820,6 +825,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         if target_id is None or self._populating_targets:
             return
         self._cancel_reacquire()
+        self._release_app_vacuum()     # switching away restores the sound
         self.settings.target_id = target_id
         self._update_target_kind_icon()
         if self.is_composing:
@@ -873,10 +879,53 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             self.status_label.set_text("● live")
             self._start_render_loop()
         else:
+            self._release_app_vacuum()     # never leave an app muted unseen
             self.capture_stream.stop()
             self.player.set_file_loaded(False)
             self.status_label.set_text("idle — no capture, no CPU")
             self.fade_out_frames_remaining = 90
+
+    # --------------------------------------------------------------- vacuum --
+
+    def _release_app_vacuum(self):
+        if self._vacuum_router.active:
+            self._vacuum_router.release()
+
+    def _toggle_app_vacuum(self, active):
+        """Vacuum the currently selected app: it plays into a null sink
+        (silence in the room), the scope reads the sink's monitor. Off
+        moves the stream back to its old sink."""
+        target_id = self.target_combo.get_active_id()
+        target = self.capture_targets.get(target_id)
+        if active:
+            if target is None or target.kind != "app":
+                return
+            try:
+                monitor = self._vacuum_router.route(target.identifier)
+            except RuntimeError as error:
+                self.status_label.set_text(f"vacuum failed: {error}")
+                return
+            void_target = phosphor_audio.CaptureTarget(
+                "device", monitor, f"⌀ {target.label}")
+            try:
+                self.capture_stream.start(void_target)
+            except OSError as error:
+                self._vacuum_router.release()
+                self.status_label.set_text(f"vacuum failed: {error}")
+                return
+            self.sync_capture_toggle(True)
+            self.quiet_frame_count = 0
+            self.status_label.set_text(
+                "⌀ the app plays into the void — only the beam hears it")
+            self._start_render_loop()
+        else:
+            self._release_app_vacuum()
+            if target is not None and self.capture_stream.is_running:
+                try:
+                    self.capture_stream.start(target)
+                except OSError:
+                    pass
+            self.status_label.set_text("app restored to the speakers")
 
     def sync_capture_toggle(self, active):
         """Reflect state in the Live toggle without re-triggering capture."""
@@ -1891,7 +1940,9 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             loop_path = phosphor_compose.write_loop_wav(
                 self._compose_loop_points, frequency,
                 self.capture_stream.sample_rate)
-            self.capture_stream.start_file(loop_path, loop=True)
+            self.capture_stream.start_file(
+                loop_path, loop=True,
+                vacuum=self.settings.vacuum_enabled)
         except (ValueError, OSError) as error:
             self.status_label.set_text(f"compose failed: {error}")
             return
@@ -2129,6 +2180,14 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         capturing = self.capture_toggle.get_active()
         add_item("Pause capture" if capturing else "Resume capture",
                  lambda: self.capture_toggle.set_active(not capturing))
+        active_target = self.capture_targets.get(
+            self.target_combo.get_active_id())
+        if (self.player.playing_file is None and active_target is not None
+                and (active_target.kind == "app"
+                     or self._vacuum_router.active)):
+            add_check_item("Vacuum this app  ⌀  (light only)",
+                           self._vacuum_router.active,
+                           self._toggle_app_vacuum)
         add_item("Play audio file…  (O)", self.player.open_audio_file)
         if self.player.playing_file is not None:
             paused = self.capture_stream.playback_paused
@@ -2427,6 +2486,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             self.settings.mini_x, self.settings.mini_y = self.get_position()
         # normal-view geometry is already tracked via configure events
         self.settings.save()
+        self._release_app_vacuum()     # the restore path is sacred
         self.capture_stream.stop()
         return False
 
@@ -2445,6 +2505,9 @@ class PhosphorApplication(Gtk.Application):
             if self.start_in_mini:        # launched as a floating preview (--mini)
                 window.set_mini_mode(True)
             window.capture_toggle.set_active(True)  # start live; off is free
+            if "--visitor" in sys.argv[1:]:
+                GLib.timeout_add(1500, lambda: (window._begin_visitor(),
+                                                False)[1])
         window.present()
 
 
@@ -2461,6 +2524,9 @@ def _set_process_name(name):
 
 def main():
     _set_process_name("phosphor")
+    if "--render" in sys.argv[1:]:
+        # headless full-track render: no window, no PulseAudio, no GTK init
+        raise SystemExit(phosphor_recorder.render_main(sys.argv[1:]))
     GLib.set_prgname("phosphor")   # ties the window to phosphor.desktop's icon
     PhosphorApplication(start_in_mini="--mini" in sys.argv[1:]).run(None)
 

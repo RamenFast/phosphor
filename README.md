@@ -106,8 +106,17 @@ phosphor. Try one over a fully-clear **Glass scope**.
   ring-mod, channel delay…) that bends into **whatever they're
   listening to**, live. A built-in kit editor composes chains against
   the running beam; three starter kits ship in the box.
+- **Vacuum mode** — play without sound: the track (or a whole app, routed
+  into a null sink) plays full-tilt into the void and arrives only as
+  light. Sound can't cross a vacuum; a CRT is a vacuum tube. Scope a
+  muted game, preview loud things at 3 am, watch a second player
+  silently. The ⌀ toggle lives in the transport; *Vacuum this app* in
+  the right-click menu. The restore path is sacred — streams always
+  come back, even after a crash.
 - **Exports** — snapshots and 10-second mp4 clips *with sound*, re-rendered
-  offline so they look exactly like the screen did.
+  offline so they look exactly like the screen did — plus
+  `phosphor --render song.flac out.mp4`, a headless full-track render
+  of any audio file or `.phos` postcard through the same pipeline.
 - **Cinnamon panel applet** — a tiny live vectorscope in your panel, with
   its own themes, refresh rate, and CRT power switch.
 

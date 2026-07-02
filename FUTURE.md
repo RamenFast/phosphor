@@ -46,6 +46,13 @@ depth fog, numpy path (MODE_IDS gates native fallback per mode).
 Still open: porting 3D modes into the Rust core; a true 3D beam pass
 (per-segment sigma); persisting the camera.
 
+## Vacuum mode + headless render — ✅ shipped in 3.4
+Files play as light only (self-paced reader, no pacat, no -re bursts);
+apps route into a null sink with a sacred restore path + startup crash
+sweep. `phosphor --render in out.mp4` renders whole tracks/.phos
+offline — AFTERGLOW's capture engine.
+Still open: vacuum for the screensaver's generative scenes.
+
 ## Multi-app mixing
 Per-app capture currently scopes one app at a time (one parec per
 sink-input). Mixing several selected apps means summing multiple streams —
