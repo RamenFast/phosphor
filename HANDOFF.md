@@ -206,6 +206,29 @@ Both features are the scene compiler and the feed protocol earning rent
 a third and fourth time. Build AFTERGLOW's engine once; everything else
 is choreography.
 
+### Vacuum mode — playing without sound
+The name writes itself: sound can't cross a vacuum, light can — and a
+CRT is a vacuum tube. **Vacuum mode** plays songs and scopes applications
+with nothing reaching the speakers; the signal arrives only as light.
+(Runner-up name kept for the manual's flavor text: *pantomime*.)
+
+- **Files**: drop pacat from the pipeline and pace the decoder with
+  `ffmpeg -re` (read-at-native-rate replaces pacat's backpressure as the
+  clock). One flag, same seek/position math. A speaker-slash toggle in
+  the transport; MPRIS still reports Playing; the overlay notes the
+  silence with a small ⌀.
+- **Applications**: route the app into the void — `pactl load-module
+  module-null-sink sink_name=phosphor_vacuum`, move the app's sink-input
+  there, scope the null sink's monitor. The app plays full-tilt into
+  nothing; the beam sees everything; the room hears silence. Restore
+  path sacred (move the stream back + unload the module on exit/crash —
+  same holy-snapshot rule as Recess).
+- **Why it matters beyond the party trick**: screensaver ambience runs in
+  Vacuum by default (no sine tones at 3am), Recess can perform silently,
+  AFTERGLOW scenes preview mute while composing to a reference track,
+  and "watch what this app is playing without hearing it" is genuinely
+  useful (scope a muted game, a second player, a long render's audio).
+
 ## Hard-won constraints (don't relearn these)
 - Rust core keeps **exact parity** with Python (`tests/test_native_parity.py`)
   and zero crate deps. `plan_feed()` maps detail rate → pipe rate ×
