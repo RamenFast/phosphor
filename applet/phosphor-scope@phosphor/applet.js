@@ -36,10 +36,13 @@ const PHOSPHOR_COLOURS = {
 const MODES = [
     ["xy", "XY · scope art"],
     ["xy45", "Goniometer"],
+    ["xy_swirl", "XY · swirl"],
     ["xy_dots", "XY · dots"],
     ["waveform", "Waveform"],
+    ["ring", "Ring · oscillogram"],
     ["spectrum", "Spectrum"],
-    ["spectrum_radial", "Spectrum · radial"]
+    ["spectrum_radial", "Spectrum · radial"],
+    ["tunnel", "Spectrum · tunnel"]
 ];
 
 function roundedRectPath(cr, x, y, w, h, r) {

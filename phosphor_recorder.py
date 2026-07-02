@@ -64,7 +64,7 @@ def _frames_from_audio(audio_bytes, settings, width, height, sample_rate,
 
 
 def export_size(settings):
-    if settings.display_mode in ("xy", "xy45"):
+    if settings.display_mode in ("xy", "xy45", "xy_swirl", "ring", "tunnel"):
         return 720, 720
     return 1080, 720
 

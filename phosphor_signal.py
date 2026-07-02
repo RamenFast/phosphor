@@ -19,6 +19,12 @@ Modes:
                     attack and slow phosphor-style fall.
   spectrum_radial — the same analysis swept around a circle, bars radiating
                     outward from a quiet center.
+  xy_swirl        — the goniometer with a slowly revolving stereo field:
+                    the whole figure orbits once every ~18 s.
+  ring            — the oscillogram bent around a circle, one ring per
+                    channel, triggered so pitched sounds hold still.
+  tunnel          — spectrum bands as concentric rings pulsing outward,
+                    bass innermost — the tunnel breathes with the music.
 """
 
 import math
@@ -64,6 +70,10 @@ FFT_SIZE = 1024
 SPECTRUM_BAR_COUNT = 56
 SPECTRUM_LOW_HZ = 35.0
 SPECTRUM_HIGH_HZ = 18000.0
+SWIRL_RADIANS_PER_SECOND = 0.35    # one full revolution every ~18 s
+TUNNEL_RINGS = 8
+TUNNEL_RING_POINTS = 60
+RING_TRACE_POINTS = 720
 
 SQRT_HALF = math.sqrt(0.5)
 
@@ -129,6 +139,7 @@ class SegmentComputer:
         self.waveform_history = array("f")
         self.spectrum_levels = [0.0] * SPECTRUM_BAR_COUNT
         self.frames_since_fft = 0
+        self._swirl_phase = 0.0
         self._native = (phosphor_core.NativeComputer()
                         if native_available() else None)
         self.set_sample_rate(BASE_SAMPLE_RATE)
@@ -176,18 +187,23 @@ class SegmentComputer:
         self.last_beam_x = self.last_beam_y = None
         self.waveform_history = array("f")
         self.spectrum_levels = [0.0] * SPECTRUM_BAR_COUNT
+        self._swirl_phase = 0.0
         if self._native is not None:
             self._native.reset()
 
     def compute(self, samples, width, height):
         """New beam segments for this frame from this frame's new samples."""
-        if self._native is not None:
+        if (self._native is not None
+                and self.mode in phosphor_core.MODE_IDS):
             return self._native.compute(self.mode, self.gain,
                                         self.beam_energy,
                                         self.frame_glow_keep, samples,
                                         width, height)
         if self.mode in ("xy", "xy45"):
             return self._xy_segments(samples, width, height)
+        if self.mode == "xy_swirl":
+            return self._xy_segments(self._swirl_rotate(samples),
+                                     width, height)
         if self.mode == "xy_dots":
             return self._xy_dot_segments(samples, width, height)
         self.waveform_history.extend(samples)
@@ -196,9 +212,35 @@ class SegmentComputer:
             del self.waveform_history[:excess]
         if self.mode == "waveform":
             return self._waveform_segments(width, height)
+        if self.mode == "ring":
+            return self._ring_segments(width, height)
+        if self.mode == "tunnel":
+            return self._tunnel_segments(width, height)
         if self.mode == "spectrum_radial":
             return self._radial_spectrum_segments(width, height)
         return self._spectrum_segments(width, height)
+
+    def _swirl_rotate(self, samples):
+        """Rotate the stereo field by the swirl phase, advanced in real
+        time — the figure orbits while the shape stays intact."""
+        cosine = math.cos(self._swirl_phase)
+        sine = math.sin(self._swirl_phase)
+        self._swirl_phase = (self._swirl_phase
+                             + (len(samples) / 2) / self.sample_rate
+                             * SWIRL_RADIANS_PER_SECOND) % (2 * math.pi)
+        if numpy is not None:
+            frames = numpy.asarray(samples,
+                                   dtype=numpy.float32).reshape(-1, 2)
+            rotated = numpy.empty_like(frames)
+            rotated[:, 0] = frames[:, 0] * cosine - frames[:, 1] * sine
+            rotated[:, 1] = frames[:, 0] * sine + frames[:, 1] * cosine
+            return rotated.reshape(-1)
+        rotated = array("f", bytes(len(samples) * 4))
+        for index in range(0, len(samples) - 1, 2):
+            left, right = samples[index], samples[index + 1]
+            rotated[index] = left * cosine - right * sine
+            rotated[index + 1] = left * sine + right * cosine
+        return rotated
 
     # -- XY -----------------------------------------------------------------
 
@@ -359,6 +401,64 @@ class SegmentComputer:
                 y = baseline - history[2 * frame + channel] * amplitude
                 if previous is not None:
                     segments.append((previous[0], previous[1], x, y, 0.85))
+                previous = (x, y)
+        return segments
+
+    def _ring_segments(self, width, height):
+        """The oscillogram bent around a circle: time sweeps the angle,
+        amplitude moves the radius. One ring per channel (left inner,
+        right outer), triggered like the flat waveform."""
+        history = self.waveform_history
+        frame_count = len(history) // 2
+        if frame_count < 8:
+            return []
+        window = min(self.waveform_window, frame_count)
+        start_frame = self._trigger_offset() or (frame_count - window)
+        center_x, center_y = width / 2, height / 2
+        base = min(width, height)
+        step = max(1, window // RING_TRACE_POINTS)
+        segments = []
+        for channel, ring_radius in ((0, base * 0.24), (1, base * 0.36)):
+            amplitude = base * 0.09 * self.gain
+            previous = None
+            for offset in range(0, window, step):
+                frame = start_frame + offset
+                if frame >= frame_count:
+                    break
+                angle = 2 * math.pi * offset / window - math.pi / 2
+                radius = (ring_radius
+                          + history[2 * frame + channel] * amplitude)
+                x = center_x + math.cos(angle) * radius
+                y = center_y + math.sin(angle) * radius
+                if previous is not None:
+                    segments.append((previous[0], previous[1], x, y, 0.8))
+                previous = (x, y)
+        return segments
+
+    def _tunnel_segments(self, width, height):
+        """Spectrum bands as concentric rings — bass innermost, each ring
+        brightening and swelling with its band. The tunnel breathes."""
+        self._update_spectrum_levels()
+        segments = []
+        center_x, center_y = width / 2, height / 2
+        base = min(width, height)
+        bands = SPECTRUM_BAR_COUNT // TUNNEL_RINGS
+        for ring in range(TUNNEL_RINGS):
+            level = max(self.spectrum_levels[ring * bands:(ring + 1) * bands],
+                        default=0.0)
+            if level < 0.02:
+                continue
+            depth = (ring / (TUNNEL_RINGS - 1)) ** 1.35
+            radius = base * (0.07 + 0.36 * depth) + level * base * 0.03
+            intensity = 0.15 + 0.85 * level
+            previous = None
+            for point in range(TUNNEL_RING_POINTS + 1):
+                angle = 2 * math.pi * point / TUNNEL_RING_POINTS
+                x = center_x + math.cos(angle) * radius
+                y = center_y + math.sin(angle) * radius
+                if previous is not None:
+                    segments.append((previous[0], previous[1], x, y,
+                                     intensity))
                 previous = (x, y)
         return segments
 

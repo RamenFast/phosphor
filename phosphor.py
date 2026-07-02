@@ -67,10 +67,13 @@ REACQUIRE_POLL_LIMIT = 180   # seconds to wait for a dead app stream to return
 DISPLAY_MODES = (
     ("xy", "XY (scope art)"),
     ("xy45", "XY · goniometer"),
+    ("xy_swirl", "XY · swirl"),
     ("xy_dots", "XY · dots"),
     ("waveform", "Waveform"),
+    ("ring", "Ring · oscillogram"),
     ("spectrum", "Spectrum"),
     ("spectrum_radial", "Spectrum · radial"),
+    ("tunnel", "Spectrum · tunnel"),
 )
 
 GPU_QUALITY_CHOICES = (("1", "Standard"), ("2", "High · 2× supersampled"),
