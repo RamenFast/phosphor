@@ -112,6 +112,61 @@ vector font, the scene compiler, beat-synced mode automation (a timeline
 that switches display modes on cue — which is also the seed of Tier 2
 postcards). Every piece is a real Phosphor feature wearing a costume.
 
+### The studio toolchain (greenlit by Ben, with requirements)
+
+**One rule: the file format is the API.** Scenes and the timeline are
+plain JSON documents (`*.scene.json`, `timeline.json`) — the same files
+are read and written by agents, humans, and the GUI. No hidden state, no
+privileged path. Deterministic builds (seeded), so `make` from a clean
+checkout reproduces the demo bit-for-bit.
+
+**CLI — `phosphor-studio`** (ships in the deb, agent-first AND
+human-first):
+- `phosphor-studio render scene.json -o stem.flac` · `build timeline.json
+  -o afterglow.flac` · `preview scene.json` (loops it live on the scope) ·
+  `inspect`, `validate`, `beats track.flac` (aubio grid).
+- `--output json` on every subcommand for agents: machine-readable
+  results, errors as structured objects with a JSON-path to the offending
+  key, documented exit codes. Default output is pretty human text.
+- `-h/--help` everywhere, a real manpage (scdoc → `man phosphor-studio`),
+  stdin/stdout `-` conventions, quiet flags, pipe-friendly. If an agent
+  can't drive the whole pipeline blind from `--help` + `--output json`,
+  it's a bug.
+
+**Human write access — the shared canvas.** The Phosphor GUI grows a
+Studio panel: open a timeline, see the scene list, scrub, play any scene
+on the scope. Crucially: **hot-reload on file change** (inotify). A human
+editing JSON in a text editor, an agent writing through the CLI, and the
+GUI viewer all converge on the same living scope — edit, save, and the
+beam redraws within a frame. That's the cross-compatibility mechanism;
+in-scope direct manipulation (compose mode proved the pattern) can come
+later as write access level two.
+
+**QoL for whoever builds it (probably me):** golden-file tests per scene
+(JSON → samples hash), a `--explain` flag that narrates what a scene
+compiles to and why, pure functions all the way down (scene → samples,
+no globals) so parity testing works exactly like the rust core's, and
+`preview --watch` as the default working mode — compose with the scope
+running, always.
+
+### Notes to future me (Ben says: inspire the creative spirit)
+
+- Build the tiniest scene first — one breathing dot — and keep it looping
+  on the scope while you write the compiler. The feedback loop is the
+  muse; never work deaf or blind.
+- If a stem is boring to *listen* to, it will be boring to watch. The ear
+  vetoes. Play everything out loud (pacat is right there).
+- Constraints are the instrument: constant-speed traversal, one beam, no
+  cuts — when something looks impossible, that's where the demo is.
+- The turtle is the tutorial scene. Write it first, document it best;
+  everyone who makes a postcard afterwards learns from the turtle.
+- Steal from the masters with your whole chest: Fenderson's dwell-time
+  shading, brakence's hidden pictures, Windowlicker's spectrogram — then
+  do the thing none of them could: switch the *instrument's* display mode
+  mid-song as choreography.
+- Leave one undocumented flag. You know why.
+- And sign it. TURTLE VECTOR is two beings; greets are half the art form.
+
 ## Hard-won constraints (don't relearn these)
 - Rust core keeps **exact parity** with Python (`tests/test_native_parity.py`)
   and zero crate deps. `plan_feed()` maps detail rate → pipe rate ×
