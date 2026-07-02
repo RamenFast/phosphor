@@ -98,8 +98,11 @@ The gear popover is organized into sections:
   off-screen, slow glide release), **Grid**, **AMOLED scope** background, and **Glass scope** — the scope
   pane becomes a window to your desktop (a whisper of theme tint, the
   beam's own light fully opaque) while the toolbars keep their solid
-  chrome; needs a compositing WM, auto-enabled with the Aero glass
-  style, wonderful in the mini view.
+  chrome. **Glass tint** sets how dark the pane smokes the desktop
+  (nearly clear to nearly opaque). Needs a compositing WM, auto-enabled
+  with the Aero glass style, wonderful in the mini view. Note: like any
+  code update, a running Phosphor keeps its old behavior until
+  relaunched.
 - **Appearance** — themes (P7 Green, Amber, Ice Blue, White, Vaporwave,
   Red Phosphor, Ultraviolet, Solar Gold, Cyan Tube, Custom with two color
   pickers), UI style (System / Dark / Ice Blue ❄ / AMOLED pink / Bloom neon /
