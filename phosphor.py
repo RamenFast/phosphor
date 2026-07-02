@@ -193,6 +193,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
             on_stream_ended=lambda: GLib.idle_add(self._handle_stream_died),
             sample_rate=pipe_rate)
         self.capture_targets = {}
+        self._populating_targets = False
         self.player = PhosphorPlayer(self)
         self.is_mini_mode = False
         self.tick_callback_id = None
@@ -697,28 +698,55 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
     # -------------------------------------------------------------- targets --
 
     def _populate_targets(self):
+        """Re-scan sources. Purely a list rebuild: restoring the previous
+        selection must not fire the picked-a-source side effects (that used
+        to interrupt file playback on every refresh)."""
         previous_choice = self.target_combo.get_active_id() or self.settings.target_id
-        self.target_combo.remove_all()
-        self.capture_targets = {}
-        for target in list_capture_targets():
-            self.capture_targets[target.combo_id] = target
-            self.target_combo.append(target.combo_id, target.label)
-        for candidate in (previous_choice, default_monitor_target_id()):
-            if candidate and candidate in self.capture_targets:
-                self.target_combo.set_active_id(candidate)
-                break
-        if self.target_combo.get_active_id() is None:
-            self.target_combo.set_active(0)
+        self._populating_targets = True
+        try:
+            self.target_combo.remove_all()
+            self.capture_targets = {}
+            for target in list_capture_targets():
+                self.capture_targets[target.combo_id] = target
+                self.target_combo.append(target.combo_id, target.label)
+            for candidate in (previous_choice, default_monitor_target_id()):
+                if candidate and candidate in self.capture_targets:
+                    self.target_combo.set_active_id(candidate)
+                    break
+            if self.target_combo.get_active_id() is None:
+                self.target_combo.set_active(0)
+        finally:
+            self._populating_targets = False
+        target_id = self.target_combo.get_active_id()
+        if target_id is not None:
+            self.settings.target_id = target_id
+        if hasattr(self, "target_kind_icon"):   # first populate predates it
+            self._update_target_kind_icon()
 
     def _on_target_changed(self, _combo):
         target_id = self.target_combo.get_active_id()
-        if target_id is None:
+        if target_id is None or self._populating_targets:
             return
         self._cancel_reacquire()
         self.settings.target_id = target_id
         self._update_target_kind_icon()
-        if (self.capture_stream.is_running and self.player.playing_file is None
-                and not self.is_composing):
+        if self.is_composing:
+            return
+        if self.player.playing_file is not None:
+            # picking a source while a track plays means "scope that
+            # instead": unload the file and go live on the new target
+            self.player.set_file_loaded(False)
+            try:
+                self.capture_stream.start(self.capture_targets[target_id])
+            except OSError as error:
+                self.status_label.set_text(f"capture failed: {error}")
+                self.sync_capture_toggle(False)
+                return
+            self.sync_capture_toggle(True)
+            self.quiet_frame_count = 0
+            self.status_label.set_text("● live")
+            self._start_render_loop()
+        elif self.capture_stream.is_running:
             self.capture_stream.start(self.capture_targets[target_id])
 
     # -------------------------------------------------------------- capture --
@@ -1728,6 +1756,8 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
 
         add_check_item("Grid  (G)", self.settings.grid_enabled,
                        lambda active: self.grid_switch.set_active(active))
+        add_check_item("Show FPS  (F)", self.settings.show_fps,
+                       lambda active: self.show_fps_switch.set_active(active))
         add_check_item("Auto gain — fit to screen", self.settings.auto_gain,
                        lambda active: self.auto_gain_switch.set_active(active))
         add_check_item("Pin above  (P)", self.settings.pinned,
