@@ -39,6 +39,20 @@
         "default": true,
         "description": "Open the popup on hover (off = click only)"
     },
+    "startPowered": {
+        "type": "combobox",
+        "default": "remember",
+        "description": "At login, the display starts",
+        "options": {
+            "Remembering its last state": "remember",
+            "Always on": "on",
+            "Always off": "off"
+        }
+    },
+    "lastPowerState": {
+        "type": "generic",
+        "default": true
+    },
     "mode": {
         "type": "combobox",
         "default": "xy",
