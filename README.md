@@ -49,6 +49,11 @@ Shipped to GitHub by Claude&nbsp;Opus&nbsp;4.8, the day Fable&nbsp;5 went dark (
   <sub>Same scope, different metal: AMOLED pink · Bloom neon · Stonework 95 · Stonework bloom · Aero glass (genuinely translucent under a compositor) · Ice Blue ❄ — plus your system theme.</sub>
 </p>
 
+<p align="center">
+  <img src="docs/glass.png" width="700" alt="Aero glass with the glass scope: the desktop shows through the entire window while the beam floats on top"><br>
+  <sub>And with <b>Glass scope</b> on, the pane itself goes translucent — the beam floats over whatever is behind the window. Works in every style; pairs dangerously well with the mini view.</sub>
+</p>
+
 ## Nine ways to see sound
 
 <p align="center">

@@ -54,7 +54,7 @@ from phosphor_signal import SegmentComputer, plan_feed
 from phosphor_ui_style import UI_STYLE_CHOICES
 
 APPLICATION_ID = "io.github.ben.Phosphor"
-APPLICATION_VERSION = "3.1.0"
+APPLICATION_VERSION = "3.1.1"
 PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 QUIET_PEAK_THRESHOLD = 1e-4
 QUIET_FRAMES_BEFORE_SLEEP = 120
@@ -110,6 +110,7 @@ class LiveCairoRenderer(Gtk.DrawingArea):
         self.grid_spacing_fraction = 0.1125
         self.resolution = 1.0
         self.beam_focus = 1.6
+        self.glass_alpha = 1.0
         self._core_lock = threading.Lock()
         self._mailbox = None               # only the newest frame survives
         self._mailbox_condition = threading.Condition()
@@ -164,7 +165,8 @@ class LiveCairoRenderer(Gtk.DrawingArea):
                                   self.resolution)
             self.core.composite(context, allocation.width, allocation.height,
                                 self.theme, self.grid_enabled,
-                                self.grid_spacing_fraction)
+                                self.grid_spacing_fraction,
+                                glass_alpha=self.glass_alpha)
         return False
 
 
@@ -249,6 +251,7 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self._mini_resize_start = None     # (start size, x_root, y_root)
 
         phosphor_ui_style.install_base_style()
+        self._sync_glass_class()
         self._build_renderers()
         self._build_user_interface()
         self._apply_theme()
@@ -648,6 +651,12 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                                                  self._on_grid_switched))
         attach("AMOLED scope", switch(self.settings.amoled_background,
                                       self._on_amoled_switched))
+        self.glass_switch = attach("Glass scope", switch(
+            self.settings.scope_glass, self._on_glass_switched))
+        self.glass_switch.set_tooltip_text(
+            "Translucent scope pane — the beam glows over whatever is\n"
+            "behind the window (needs a compositing desktop; pairs\n"
+            "beautifully with the mini view and Aero glass)")
 
         column()
         section("Appearance")
@@ -1234,6 +1243,10 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
 
     def _apply_theme(self):
         theme = self.settings.current_theme()
+        glass_alpha = 0.30 if self.settings.scope_glass else 1.0
+        if self.gl_renderer is not None:
+            self.gl_renderer.scope_alpha = glass_alpha
+        self.cairo_renderer.glass_alpha = glass_alpha
         for renderer in (self.cairo_renderer, self.gl_renderer):
             if renderer is None:
                 continue
@@ -1390,10 +1403,14 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self.settings.save()
 
     def _on_ui_style_changed(self, combo):
-        if combo.get_active_id() is None:
+        style = combo.get_active_id()
+        if style is None:
             return
-        self.settings.ui_style = combo.get_active_id()
+        self.settings.ui_style = style
         self._apply_ui_style()
+        # aero implies a glass scope; the switch stays free to override
+        if self.settings.scope_glass != (style == "aero"):
+            self.glass_switch.set_active(style == "aero")
         self.settings.save()
 
     def _on_precompute_switched(self, _switch, state):
@@ -1435,6 +1452,20 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         self.settings.amoled_background = state
         self._apply_theme()
         return False
+
+    def _on_glass_switched(self, _switch, state):
+        self.settings.scope_glass = state
+        self._sync_glass_class()
+        self._apply_theme()
+        return False
+
+    def _sync_glass_class(self):
+        """The glass-scope window class opens each style's smoked pane."""
+        style_context = self.get_style_context()
+        if self.settings.scope_glass:
+            style_context.add_class("glass-scope")
+        else:
+            style_context.remove_class("glass-scope")
 
     def _on_pin_toggled(self, toggle):
         self.settings.pinned = toggle.get_active()

@@ -109,10 +109,21 @@ class CairoBeamCore:
             context.mask_surface(self.fresh_strokes, 0, 0)
 
     def composite(self, context, width, height, theme, grid_enabled,
-                  grid_spacing_fraction=0.1125):
+                  grid_spacing_fraction=0.1125, glass_alpha=1.0):
         background_red, background_green, background_blue = theme.background_color
-        context.set_source_rgb(background_red, background_green, background_blue)
-        context.paint()
+        if glass_alpha >= 0.999:
+            context.set_source_rgb(background_red, background_green,
+                                   background_blue)
+            context.paint()
+        else:
+            # glass scope: establish a translucent smoked pane, then let the
+            # additive beam layers raise opacity wherever there is light
+            context.save()
+            context.set_operator(cairo.OPERATOR_SOURCE)
+            context.set_source_rgba(background_red, background_green,
+                                    background_blue, glass_alpha)
+            context.paint()
+            context.restore()
         if grid_enabled:
             self._draw_graticule(context, width, height, theme.grid_color,
                                  grid_spacing_fraction)
