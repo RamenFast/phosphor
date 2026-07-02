@@ -56,7 +56,7 @@ from phosphor_signal import SegmentComputer, plan_feed
 from phosphor_ui_style import UI_STYLE_CHOICES
 
 APPLICATION_ID = "io.github.ben.Phosphor"
-APPLICATION_VERSION = "3.2.0"
+APPLICATION_VERSION = "3.3.0"
 PROJECT_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 QUIET_PEAK_THRESHOLD = 1e-4
 QUIET_FRAMES_BEFORE_SLEEP = 120
@@ -74,12 +74,21 @@ DISPLAY_MODES = (
     ("xy45", "XY · goniometer"),
     ("xy_swirl", "XY · swirl"),
     ("xy_dots", "XY · dots"),
+    ("xyz_takens", "3D · attractor"),
+    ("helix", "3D · time helix"),
     ("waveform", "Waveform"),
     ("ring", "Ring · oscillogram"),
     ("spectrum", "Spectrum"),
     ("spectrum_radial", "Spectrum · radial"),
     ("tunnel", "Spectrum · tunnel"),
 )
+
+# 3D modes share an orbitable camera: drag to orbit, wheel to dolly,
+# arrows to nudge; left alone, the view drifts on its own
+CAMERA_MODES = ("xyz_takens", "helix")
+ORBIT_SENSITIVITY = 0.008            # radians per dragged pixel
+CAMERA_IDLE_SECONDS = 6.0            # hands-off time before the drift
+CAMERA_IDLE_RATE = 0.05              # radians/second of idle orbit
 
 GPU_QUALITY_CHOICES = (("1", "Standard"), ("2", "High · 2× supersampled"),
                        ("3", "Ultra · 3× supersampled"))
@@ -253,6 +262,12 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         # mini-mode corner resize
         self._mini_resize_start = None     # (start size, x_root, y_root)
         self._mini_snap_source = None      # pending edge-magnetism check
+        # 3D camera (mirrors the segment computer's; pushed on change)
+        self._orbit_drag = None            # (x_root, y_root, yaw, pitch)
+        self._camera_yaw = 0.55
+        self._camera_pitch = 0.35
+        self._camera_dolly = 3.0
+        self._last_camera_touch = 0.0
 
         phosphor_ui_style.install_base_style()
         self._sync_glass_class()
@@ -1262,8 +1277,16 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         if self._last_frame_time > 0.0:
             self._worst_frame_gap = max(self._worst_frame_gap,
                                         now - self._last_frame_time)
+        frame_gap = now - self._last_frame_time if self._last_frame_time else 0.0
         self._last_frame_time = now
         self._count_fps_frame(now)
+
+        if (self._is_3d_mode() and self._orbit_drag is None
+                and now - self._last_camera_touch > CAMERA_IDLE_SECONDS):
+            # hands off: the attractor breathes on its own, slowly
+            self._camera_yaw += CAMERA_IDLE_RATE * min(frame_gap, 0.1)
+            with self.compute_lock:
+                self.segment_computer.set_camera(yaw=self._camera_yaw)
 
         if self._visitor_started is not None:
             self.quiet_frame_count = 0     # the visitor swims through silence
@@ -2213,6 +2236,17 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         menu.show_all()
         menu.popup_at_pointer(event)
 
+    def _is_3d_mode(self):
+        return self.settings.display_mode in CAMERA_MODES
+
+    def _push_camera(self):
+        with self.compute_lock:
+            self.segment_computer.set_camera(self._camera_yaw,
+                                             self._camera_pitch,
+                                             self._camera_dolly)
+        self._last_camera_touch = time.monotonic()
+        self._wake_renderer()
+
     def _on_button_press(self, _widget, event):
         if event.button == 3 and event.type == Gdk.EventType.BUTTON_PRESS:
             self._show_context_menu(event)
@@ -2223,6 +2257,11 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                 self._compose_drawing = True
                 self._compose_points = [(event.x, event.y)]
                 self._start_render_loop()
+                return True
+            if (self._is_3d_mode() and event.button == 1
+                    and event.type == Gdk.EventType.BUTTON_PRESS):
+                self._orbit_drag = (event.x_root, event.y_root,
+                                    self._camera_yaw, self._camera_pitch)
                 return True
             return False
         if event.type == Gdk.EventType._2BUTTON_PRESS:
@@ -2239,6 +2278,9 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
     def _on_button_release(self, _widget, event):
         if event.button != 1:
             return False
+        if self._orbit_drag is not None:
+            self._orbit_drag = None
+            return True
         if self._mini_resize_start is not None:
             self._mini_resize_start = None
             return True
@@ -2248,6 +2290,14 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         return False
 
     def _on_motion(self, _widget, event):
+        if self._orbit_drag is not None:
+            start_x, start_y, start_yaw, start_pitch = self._orbit_drag
+            self._camera_yaw = (start_yaw
+                                + (event.x_root - start_x) * ORBIT_SENSITIVITY)
+            self._camera_pitch = max(-1.45, min(1.45, (
+                start_pitch + (event.y_root - start_y) * ORBIT_SENSITIVITY)))
+            self._push_camera()
+            return True
         if self._mini_resize_start is not None:
             start_size, start_x_root, start_y_root = self._mini_resize_start
             # the window stays square, so the larger axis of the drag wins
@@ -2272,6 +2322,11 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
         if self.is_mini_mode and event.state & Gdk.ModifierType.CONTROL_MASK:
             factor = 1.12 if scroll_up else 1 / 1.12
             self._resize_mini(self.settings.mini_size * factor)
+            return True
+        if self._is_3d_mode() and not self.is_composing:
+            self._camera_dolly = max(1.6, min(8.0, self._camera_dolly
+                                              * (0.92 if scroll_up else 1.09)))
+            self._push_camera()
             return True
         if self.is_composing and not self.is_mini_mode:
             factor = 1.06 if scroll_up else 1 / 1.06
@@ -2303,6 +2358,15 @@ class OscilloscopeWindow(Gtk.ApplicationWindow):
                 return True
         else:
             self._konami_progress = 1 if key == sequence[0] else 0
+        if self._is_3d_mode() and key in (Gdk.KEY_Left, Gdk.KEY_Right,
+                                          Gdk.KEY_Up, Gdk.KEY_Down):
+            nudge = {Gdk.KEY_Left: (-0.1, 0.0), Gdk.KEY_Right: (0.1, 0.0),
+                     Gdk.KEY_Up: (0.0, -0.1), Gdk.KEY_Down: (0.0, 0.1)}[key]
+            self._camera_yaw += nudge[0]
+            self._camera_pitch = max(-1.45, min(1.45,
+                                                self._camera_pitch + nudge[1]))
+            self._push_camera()
+            return True
         if key == Gdk.KEY_space:
             self.capture_toggle.set_active(not self.capture_toggle.get_active())
         elif key in (Gdk.KEY_o, Gdk.KEY_O):

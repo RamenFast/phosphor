@@ -54,12 +54,23 @@ Shipped to GitHub by Claude&nbsp;Opus&nbsp;4.8, the day Fable&nbsp;5 went dark (
   <sub>And with <b>Glass scope</b> on, the scope becomes a window to your desktop — the beam draws over whatever is behind it while the controls keep their solid chrome. Works in every style; pairs dangerously well with the mini view.</sub>
 </p>
 
-## Nine ways to see sound
+## Eleven ways to see sound
 
 <p align="center">
-  <img src="docs/modes.png" width="860" alt="Three of the nine display modes: XY swirl, ring oscillogram, spectrum tunnel"><br>
-  <sub>Three of the nine: XY · swirl, Ring · oscillogram, Spectrum · tunnel. The others: XY scope art, goniometer, XY dots, waveform, spectrum, radial.</sub>
+  <img src="docs/modes.png" width="860" alt="Three of the eleven display modes: XY swirl, ring oscillogram, spectrum tunnel"><br>
+  <sub>Three of the eleven: XY · swirl, Ring · oscillogram, Spectrum · tunnel. The others: XY scope art, goniometer, XY dots, waveform, spectrum, radial — and two true-3D views below.</sub>
 </p>
+
+### The third dimension
+
+**3D · attractor** delay-embeds the signal — (x(t), x(t−τ), x(t−2τ)),
+τ chasing a quarter period of the dominant pitch — so the music's
+*attractor* appears: pure tones are tilted ellipses, chords weave tori,
+voices grow organic knots. **3D · time helix** extrudes the XY figure
+backwards into the past, newest audio floating near the eye. Drag to
+orbit either one, scroll to dolly, arrows to nudge — and left alone,
+the view slowly drifts on its own. Depth dims the beam like far
+phosphor. Try one over a fully-clear **Glass scope**.
 
 ## What it does
 
@@ -70,9 +81,10 @@ Shipped to GitHub by Claude&nbsp;Opus&nbsp;4.8, the day Fable&nbsp;5 went dark (
   volume, artist/title fading in on track change, and full **MPRIS** both
   ways: media keys drive Phosphor, and songs changing in your browser or
   Spotify still show on the scope.
-- **Nine displays** — XY scope art, goniometer, a slowly revolving
+- **Eleven displays** — XY scope art, goniometer, a slowly revolving
   swirl, XY dots, triggered waveform, ring oscillogram, spectrum, radial
-  spectrum, and a breathing spectrum tunnel.
+  spectrum, a breathing spectrum tunnel — and two true-3D views: the
+  Takens attractor and the time helix, both orbitable by mouse.
 - **Seven chrome styles** — AMOLED pink, Bloom neon, Stonework 95,
   Stonework · bloom, truly-translucent Aero glass, Ice Blue ❄, or your
   system theme.
