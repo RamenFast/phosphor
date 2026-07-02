@@ -1,29 +1,13 @@
-# Handoff — v3.1 branch, ready for Ben's light testing
+# Handoff — next session starts here
 
-Branch `v3.1` holds everything from the polish round, unmerged so you can
-test first. When you're happy: merge to master, tag, release (the .deb
-build now picks up the icon + native core automatically).
-
-## Test me (5 minutes)
-
-1. **Taskbar minimize/restore ×6 while playing** — the blank-screen bug's
-   root cause (silent GPU buffer allocation failure at 3× supersampling)
-   is fixed: allocations are verified, retried, and quality sheds itself
-   under VRAM pressure instead of going black. Also: consider GPU quality
-   **2×** — 3× at your window size is ~100 MB of energy buffers and most
-   of your GPU struggle.
-2. **Pick a source while a track plays** (your Spotify case) — the picker
-   now switches to live capture; the re-scan button no longer touches
-   playback.
-3. **AMOLED scope switch** on Custom and White themes — now a true pixel
-   black (Custom honors the switch; dither is gated at black).
-4. **Settings gear** — the scope scoots left while the popover is open.
-5. **New modes** — XY · swirl, Ring · oscillogram, Spectrum · tunnel (app
-   + panel applet). Try brakence on swirl.
-6. **New styles** — Bloom · neon, Stonework 95, Aero glass, Ice Blue ❄
-   (file picker icons now forced-visible). New icon installed too.
-7. There are two easter eggs. One listens for a famous sequence of keys
-   while the scope has focus. The other knows which artists matter here.
+State as of July 1, 2026 (evening): **everything is shipped.** master ==
+GitHub == the machine. v3.0.0 (Rust core, media player, precompute,
+384 kHz) and v3.1.0–v3.1.4 (Ben's test round: minimize fix, source picker,
+new modes, seven chrome styles, glass scope with per-style tint memory)
+are all merged, tagged, released with .debs, and installed. Ben tested
+each round live; the glass scope went through four refinements to land on:
+glass touches **only the scope pane**, tint slides from fully clear to
+nearly opaque, remembered per UI style.
 
 ## Next session: the two big ones
 
@@ -64,24 +48,36 @@ CPU/Rust-side camera (yaw/pitch orbit from mouse drag + arrow keys, wheel
 = dolly) projects to 2D each frame; depth modulates intensity (fog = far
 phosphor is dim) and beam sigma slightly (defocus). The GL pipeline keeps
 consuming 2D segments. Later: true 3D beam pass. Rust core does the
-embed+project per frame easily at 384 kHz.
+embed+project per frame easily at 384 kHz. Bonus pairing: 3D modes over
+a fully-clear glass scope.
 
-### Smaller deferred items
+### Smaller candidates
 - Theme config popout (per-style options in a pinned submenu that doesn't
-  dismiss on click) — wanted once styles grow options.
-- Applet: ship new modes needs a reinstall (`applet/install.sh` done on
-  this machine already).
-- AMD/GPU note: the beam shader already runs on the stream processors;
-  the honest wins are quality 2×, the FBO fix (done), and possibly a
-  half-res energy buffer option ("Performance · 0.5×") — a compute-shader
-  port would not beat the current instanced path. Ballpark: 0.5× option ≈
-  1 hour, ~4× less fragment work; ROCm/compute ≈ days, for ~nothing.
+  dismiss on click) — glass tint per style is the first such option and
+  lives in the main popover for now.
+- Port the three new display modes (xy_swirl / ring / tunnel) into the
+  Rust core — they run on the numpy path today (fine at any sane rate).
+- "Performance · 0.5×" half-res energy buffer option for weak GPUs
+  (~1 hour, ~4× less fragment work). Ben's GPU prefers quality 2×.
+- Cinnamon Spices store submission for the applet.
+- Cover art in the now-playing overlay; gapless transitions.
 
-## Answers logged elsewhere
-- Precompute is **frame-rate-free**: the cache stores the reconstructed
-  sample stream, not frames — display frames are cut at draw time by the
-  playback clock, so one cache serves any fps/gain/window/mode. "Done"
-  means the whole track's stream is on disk (progress % is decode
-  progress), never "done up to some framerate".
-- mmx/M3 field notes → `.claude/skills/mmx-playbook/` (+ copy for Nexus
-  in `~/.hermes/skills/claude-fable-mmx-playbook/`).
+## Hard-won constraints (don't relearn these)
+- Rust core keeps **exact parity** with Python (`tests/test_native_parity.py`)
+  and zero crate deps. `plan_feed()` maps detail rate → pipe rate ×
+  oversample. New modes must be added to BOTH paths or gated via
+  `phosphor_core.MODE_IDS` fallback.
+- Precompute playback is **clock-synced at any Max FPS** — fixed-step
+  advance was tried and reverted (Ben: "tunnel vision"); don't re-add.
+- GTK3 translucency: RGBA visual + transparent `decoration` node +
+  non-opaque `background-color` (not just gradient images) + GLArea
+  `set_has_alpha`. Style rules in the always-loaded BASE provider LOSE to
+  later theme providers regardless of specificity — per-theme overrides
+  only. Verify transparency by pixel-sampling root captures over
+  red/green backdrops.
+- A running Phosphor keeps pre-upgrade code; reinstalls need a relaunch
+  before judging behavior.
+- Ben's flow: one branch per round, full `--no-ff` merge to master, tag,
+  gh release with the .deb, `sudoplz` reinstall on his machine. mmx-M3
+  for delegation (see `.claude/skills/mmx-playbook/`). Easter eggs stay
+  undocumented (Konami turtle; ARTIST_NODS).
