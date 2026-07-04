@@ -1,0 +1,10 @@
+{
+  "scene": 1,
+  "name": "stress knot",
+  "seconds": 8,
+  "loop_hz": 30,
+  "shape": {"kind": "lissajous", "a": 31, "b": 29, "phase": 0.35,
+            "points": 8192},
+  "animate": {"scale": {"from": 0.55, "to": 0.95, "lfo_hz": 0.25},
+              "rotate_hz": 0.6}
+}

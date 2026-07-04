@@ -18,19 +18,21 @@ unloaded on every exit path.
 """
 
 import glob
+import hashlib
 import json
-import math
 import os
+import re
 import shutil
-import struct
 import subprocess
 import sys
 import threading
 import time
-import wave
 
 REPO = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
+sys.path.insert(0, os.path.join(REPO, "tests", "bench"))
+
+import signals
 SCRATCH = os.environ.get("BENCH_SCRATCH", "/tmp/phosphor-bench")
 RESULTS_PATH = os.path.join(REPO, "tests", "bench", "results",
                             "v3-baseline.json")
@@ -42,6 +44,7 @@ WARMUP_SECONDS = float(os.environ.get("BENCH_WARMUP_SECONDS", 6))
 MEASURE_SECONDS = float(os.environ.get("BENCH_MEASURE_SECONDS", 30))
 ONLY_PREFIX = os.environ.get("BENCH_ONLY", "")
 SKIP_OFFLINE = bool(os.environ.get("BENCH_SKIP_OFFLINE"))
+SKIP_EXISTING = bool(os.environ.get("BENCH_SKIP_EXISTING"))
 
 BASE_SETTINGS = {
     "window_width": 1600, "window_height": 1000,
@@ -57,55 +60,70 @@ BASE_SETTINGS = {
     "target_id": f"device:{SINK_NAME}.monitor",
 }
 
-# name -> settings overrides; xy is the canonical load, takens is the
-# 3D python-path context point
+GL_MAX = {"renderer": "gl", "display_mode": "xy",
+          "scope_sample_rate": 384000, "gl_supersample": 2}
+CAIRO_MAX = {"renderer": "cairo", "display_mode": "xy",
+             "scope_sample_rate": 384000, "cairo_resolution": 1.0}
+
+# Real scope-music workloads (Ben's WAV masters; the cut wavs live in
+# scratch, never the repo): name -> (source, start_s, seconds, out_rate,
+# loops). tp192 is 39 s so it tiles; Attack Vector is 96k/24 — at 384k
+# detail the capture pipe is exactly 96k, so it flows resample-free.
+MUSIC_DIRECTORY = os.path.expanduser("~/Music/WAV versions")
+FILE_SIGNALS = {
+    "music1": (os.path.join(MUSIC_DIRECTORY, "Attack Vector.wav"),
+               60, 90, 96000, 1),
+    "tp192": (os.path.join(MUSIC_DIRECTORY, "192k Test Pattern.wav"),
+              0, 115, 96000, 3),
+}
+
+# (name, signal, settings overrides[, extra probe env]); frame cap is
+# off in BASE_SETTINGS. The sweep entries keep their original
+# (v3-baseline) names; the stress signals are the real workloads —
+# dense FM chaos, full-deflection noise (fill-rate worst case), the
+# studio stress-knot scene, and real scope music. The -novsync variants
+# add Mesa's vblank_mode=0: with the fullscreen window unredirected the
+# GTK paint clock may free-run past 165 Hz — measured, not assumed.
+NOVSYNC = {"vblank_mode": "0"}
 LIVE_CONFIGS = [
-    ("gl-max-384k-ss2", {"renderer": "gl", "display_mode": "xy",
-                         "scope_sample_rate": 384000, "gl_supersample": 2}),
-    ("gl-384k-ss1", {"renderer": "gl", "display_mode": "xy",
-                     "scope_sample_rate": 384000, "gl_supersample": 1}),
-    ("cairo-max-384k", {"renderer": "cairo", "display_mode": "xy",
-                        "scope_sample_rate": 384000,
-                        "cairo_resolution": 1.0}),
-    ("gl-default-96k", {"renderer": "gl", "display_mode": "xy",
-                        "scope_sample_rate": 96000, "gl_supersample": 1}),
-    ("cairo-default-96k", {"renderer": "cairo", "display_mode": "xy",
-                           "scope_sample_rate": 96000,
-                           "cairo_resolution": 1.0}),
-    ("gl-takens-96k-ss2", {"renderer": "gl",
-                           "display_mode": "xyz_takens",
-                           "scope_sample_rate": 96000,
-                           "gl_supersample": 2}),
+    ("gl-max-384k-ss2", "sweep", dict(GL_MAX)),
+    ("gl-384k-ss1", "sweep", dict(GL_MAX, gl_supersample=1)),
+    ("cairo-max-384k", "sweep", dict(CAIRO_MAX)),
+    ("gl-default-96k", "sweep",
+     dict(GL_MAX, scope_sample_rate=96000, gl_supersample=1)),
+    ("cairo-default-96k", "sweep",
+     dict(CAIRO_MAX, scope_sample_rate=96000)),
+    ("gl-takens-96k-ss2", "sweep",
+     dict(GL_MAX, display_mode="xyz_takens", scope_sample_rate=96000)),
+    ("gl-max-384k-ss2--chaos", "chaos", dict(GL_MAX)),
+    ("gl-max-384k-ss2--noise", "noise", dict(GL_MAX)),
+    ("gl-max-384k-ss2--scene", "scene", dict(GL_MAX)),
+    ("gl-384k-ss1--noise", "noise", dict(GL_MAX, gl_supersample=1)),
+    ("cairo-max-384k--chaos", "chaos", dict(CAIRO_MAX)),
+    ("cairo-max-384k--noise", "noise", dict(CAIRO_MAX)),
+    ("cairo-max-384k--scene", "scene", dict(CAIRO_MAX)),
+    ("gl-max-384k-ss2--music1", "music1", dict(GL_MAX)),
+    ("gl-max-384k-ss2--tp192", "tp192", dict(GL_MAX)),
+    ("cairo-max-384k--music1", "music1", dict(CAIRO_MAX)),
+    ("gl-max-384k-ss2--noise-novsync", "noise", dict(GL_MAX), NOVSYNC),
+    ("gl-max-384k-ss2--music1-novsync", "music1", dict(GL_MAX), NOVSYNC),
+    ("gl-default-96k--novsync", "sweep",
+     dict(GL_MAX, scope_sample_rate=96000, gl_supersample=1), NOVSYNC),
 ]
 
-OFFLINE_RATES = (96000, 384000)
+# (result key, signal, detail rate)
+OFFLINE_RUNS = [
+    ("96000", "sweep", 96000),
+    ("384000", "sweep", 384000),
+    ("96000--chaos", "chaos", 96000),
+    ("384000--chaos", "chaos", 384000),
+    ("384000--noise", "noise", 384000),
+]
 
 
 def run(arguments, **kwargs):
     return subprocess.run(arguments, capture_output=True, text=True,
                           **kwargs)
-
-
-def write_tone(path, seconds):
-    """Stereo sweep + detuned right (the parity test's awkward signal),
-    frequency cycling every 8 s so the XY figure stays wide forever."""
-    rate = 48000
-    with wave.open(path, "w") as wav_file:
-        wav_file.setnchannels(2)
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(rate)
-        chunk = []
-        for i in range(seconds * rate):
-            t = i / rate
-            frequency = 220.0 + 400.0 * ((t % 8.0) / 8.0)
-            left = 0.6 * math.sin(2 * math.pi * frequency * t)
-            right = 0.6 * math.sin(2 * math.pi * frequency * 1.5 * t + 0.7)
-            chunk.append(struct.pack("<hh", int(left * 32767),
-                                     int(right * 32767)))
-            if len(chunk) >= rate:
-                wav_file.writeframes(b"".join(chunk))
-                chunk = []
-        wav_file.writeframes(b"".join(chunk))
 
 
 def gpu_busy_path():
@@ -119,19 +137,43 @@ def gpu_busy_path():
     return None
 
 
+def _current_sclk_mhz(path):
+    """The starred line of pp_dpm_sclk, e.g. '1: 2321Mhz *'."""
+    for line in open(path):
+        if "*" in line:
+            match = re.search(r"(\d+)\s*Mhz", line, re.IGNORECASE)
+            if match:
+                return int(match.group(1))
+    return None
+
+
 class GpuSampler(threading.Thread):
-    def __init__(self, path):
+    """gpu_busy_percent + current core clock at 2 Hz — busy% alone lies
+    when power management moves the clock underneath it."""
+
+    def __init__(self, busy_path):
         super().__init__(daemon=True)
-        self.path = path
+        self.busy_path = busy_path
+        sclk = os.path.join(os.path.dirname(busy_path), "pp_dpm_sclk")
+        self.sclk_path = sclk if os.path.exists(sclk) else None
         self.samples = []
+        self.sclk_samples = []
         self.stop_flag = threading.Event()
 
     def run(self):
         while not self.stop_flag.wait(0.5):
             try:
-                self.samples.append(int(open(self.path).read().strip()))
+                self.samples.append(
+                    int(open(self.busy_path).read().strip()))
             except (OSError, ValueError):
                 pass
+            if self.sclk_path:
+                try:
+                    mhz = _current_sclk_mhz(self.sclk_path)
+                    if mhz is not None:
+                        self.sclk_samples.append(mhz)
+                except OSError:
+                    pass
 
     def finish(self, skip_first):
         self.stop_flag.set()
@@ -139,7 +181,14 @@ class GpuSampler(threading.Thread):
         kept = self.samples[skip_first:]
         if not kept:
             return None
-        return {"mean": round(sum(kept) / len(kept), 1), "max": max(kept)}
+        result = {"mean": round(sum(kept) / len(kept), 1),
+                  "max": max(kept)}
+        clocks = self.sclk_samples[skip_first:]
+        if clocks:
+            result["sclk_mhz_mean"] = round(sum(clocks) / len(clocks))
+            result["sclk_mhz_min"] = min(clocks)
+            result["sclk_mhz_max"] = max(clocks)
+        return result
 
 
 def make_home(name, overrides):
@@ -199,7 +248,23 @@ def collect_environment():
     }
 
 
-def live_run(name, overrides, tone_path, busy_path):
+def cut_file_signal(name):
+    """Deterministic ffmpeg cut of a real music workload into scratch."""
+    source, start, seconds, rate, loops = FILE_SIGNALS[name]
+    path = os.path.join(SCRATCH, f"signal-{name}.wav")
+    if os.path.exists(path):
+        return path
+    if not os.path.exists(source):
+        return None
+    cut = run(["ffmpeg", "-y", "-loglevel", "error",
+               "-stream_loop", str(loops - 1),
+               "-ss", str(start), "-i", source, "-t", str(seconds),
+               "-ac", "2", "-ar", str(rate), "-c:a", "pcm_s16le", path])
+    return path if cut.returncode == 0 else None
+
+
+def live_run(name, signal_name, overrides, tone_path, busy_path,
+             signal_hashes, extra_env=None):
     home = make_home(name, overrides)
     result_path = os.path.join(SCRATCH, f"result-{name}.json")
     environment = dict(os.environ)
@@ -210,6 +275,7 @@ def live_run(name, overrides, tone_path, busy_path):
         "BENCH_WARMUP_SECONDS": str(WARMUP_SECONDS),
         "BENCH_MEASURE_SECONDS": str(MEASURE_SECONDS),
     })
+    environment.update(extra_env or {})
     player = subprocess.Popen(
         ["paplay", f"--device={SINK_NAME}", tone_path],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -236,6 +302,8 @@ def live_run(name, overrides, tone_path, busy_path):
     except (OSError, ValueError):
         result = {"failure": f"no result file; stderr: {stderr_tail}"}
     result["gpu_busy_percent"] = gpu
+    result["signal"] = {"name": signal_name,
+                        "sha256": signal_hashes[signal_name]}
     if stderr_tail and result.get("failure"):
         result["stderr"] = stderr_tail
     status = ("FAILED: " + str(result.get("failure"))
@@ -246,8 +314,8 @@ def live_run(name, overrides, tone_path, busy_path):
     return result
 
 
-def offline_run(rate, tone_path):
-    home = make_home(f"offline-{rate}", {
+def offline_run(key, rate, tone_path):
+    home = make_home(f"offline-{key}", {
         "renderer": "gl", "display_mode": "xy",
         "scope_sample_rate": rate})
     environment = dict(os.environ)
@@ -275,7 +343,7 @@ def offline_run(rate, tone_path):
     }
     if failed:
         result = {"rate": rate, "failure": tail}
-    print(f"  offline {rate}: "
+    print(f"  offline {key}: "
           f"{result.get('fps_equivalent', 'FAILED')} fps-equivalent",
           flush=True)
     return result
@@ -288,12 +356,23 @@ def main():
         return 1
     os.makedirs(SCRATCH, exist_ok=True)
     os.makedirs(os.path.dirname(RESULTS_PATH), exist_ok=True)
-    tone_path = os.path.join(SCRATCH, "tone.wav")
-    offline_tone = os.path.join(SCRATCH, "tone-offline.wav")
-    if not os.path.exists(tone_path):
-        print("generating tones…", flush=True)
-        write_tone(tone_path, TONE_SECONDS)
-        write_tone(offline_tone, OFFLINE_TONE_SECONDS)
+    print("preparing signals…", flush=True)
+    live_wavs, offline_wavs, signal_hashes = {}, {}, {}
+    for name in signals.SIGNAL_NAMES:
+        live_wavs[name] = signals.ensure_wav(name, TONE_SECONDS, SCRATCH)
+        offline_wavs[name] = signals.ensure_wav(
+            name, OFFLINE_TONE_SECONDS, SCRATCH)
+        signal_hashes[name] = hashlib.sha256(
+            open(live_wavs[name], "rb").read()).hexdigest()
+    for name in FILE_SIGNALS:
+        path = cut_file_signal(name)
+        if path is None:
+            print(f"  {name}: source missing/cut failed — its runs "
+                  f"will be skipped", file=sys.stderr)
+            continue
+        live_wavs[name] = path
+        signal_hashes[name] = hashlib.sha256(
+            open(path, "rb").read()).hexdigest()
 
     loaded = run(["pactl", "load-module", "module-null-sink",
                   f"sink_name={SINK_NAME}",
@@ -317,17 +396,27 @@ def main():
     try:
         print("live runs (each ≈ %ds):" % (WARMUP_SECONDS
                                            + MEASURE_SECONDS), flush=True)
-        for name, overrides in LIVE_CONFIGS:
+        for config in LIVE_CONFIGS:
+            name, signal_name, overrides = config[:3]
+            extra_env = config[3] if len(config) > 3 else None
             if ONLY_PREFIX and not name.startswith(ONLY_PREFIX):
                 continue
-            results["live"][name] = live_run(name, overrides, tone_path,
-                                             busy_path)
+            if SKIP_EXISTING and name in results["live"]:
+                continue
+            if signal_name not in live_wavs:
+                continue                      # missing music source
+            results["live"][name] = live_run(
+                name, signal_name, overrides, live_wavs[signal_name],
+                busy_path, signal_hashes, extra_env)
             time.sleep(2)
         if not SKIP_OFFLINE:
             print("offline runs:", flush=True)
-            for rate in OFFLINE_RATES:
-                results["offline"][str(rate)] = offline_run(rate,
-                                                            offline_tone)
+            for key, signal_name, rate in OFFLINE_RUNS:
+                if ONLY_PREFIX and not key.startswith(ONLY_PREFIX):
+                    continue
+                results["offline"][key] = offline_run(
+                    key, rate, offline_wavs[signal_name])
+                results["offline"][key]["signal"] = signal_name
     finally:
         unload = run(["pactl", "unload-module", module_id])
         if unload.returncode != 0:
