@@ -1,0 +1,4 @@
+[toolchain]
+# pinned to the toolchain the v4 rewrite started on (Ben's machine,
+# July 2026); bump deliberately, not accidentally
+channel = "1.96.0"

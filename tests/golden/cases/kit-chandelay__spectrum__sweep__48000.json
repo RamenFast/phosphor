@@ -1,0 +1,64 @@
+{
+ "beam_energy": 8.0,
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512
+ ],
+ "engine": "numpy",
+ "frame_glow_keep": 0.82,
+ "gain": 1.3,
+ "height": 600,
+ "input": {
+  "file": "sweep-48000.f32",
+  "floats": 14400,
+  "sha256": "a1cc6385fca414f131d27351a8d691b245837f48f8dd4046b721b77d5ebb6837",
+  "signal": "sweep"
+ },
+ "kit": {
+  "source": "KIT_CASES:chandelay",
+  "stages": [
+   [
+    "chandelay",
+    [
+     7.0,
+     1.0,
+     0.0,
+     0.0
+    ]
+   ]
+  ]
+ },
+ "mode": "spectrum",
+ "name": "kit-chandelay__spectrum__sweep__48000",
+ "oversample": 1,
+ "recorded_calls": [
+  0,
+  1,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8
+ ],
+ "sample_rate": 48000,
+ "segment_counts_recorded": [
+  0,
+  43,
+  42,
+  42,
+  41,
+  41,
+  39,
+  39
+ ],
+ "segments_sha256": "3091d9c68882a9c7f091fe299b9712e655670432a8d0bcb574070ca48c9fb7d0",
+ "width": 800
+}

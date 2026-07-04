@@ -1,0 +1,29 @@
+[package]
+name = "phosphor-app"
+description = "The phosphor binary: subcommand-first CLI; render + bench land in wave 1, the egui shell in wave 2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "phosphor"
+path = "src/main.rs"
+
+[dependencies]
+phosphor-proto.workspace = true
+phosphor-dsp.workspace = true
+phosphor-beam.workspace = true
+phosphor-render-cpu = { path = "../phosphor-render-cpu" }
+phosphor-render-gpu = { path = "../phosphor-render-gpu" }
+serde_json.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+# wave-1 spike surface (examples/); promoted to real deps in wave 2
+wgpu.workspace = true
+winit.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+egui-winit.workspace = true
+pollster.workspace = true

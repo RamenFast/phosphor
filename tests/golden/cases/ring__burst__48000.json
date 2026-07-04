@@ -1,0 +1,51 @@
+{
+ "beam_energy": 8.0,
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000
+ ],
+ "engine": "numpy",
+ "frame_glow_keep": 0.82,
+ "gain": 1.3,
+ "height": 600,
+ "input": {
+  "file": "burst-48000.f32",
+  "floats": 33600,
+  "sha256": "7174f58f4a50fa8a817661a92ed7e7cc6707f7232dee6d5689ff1f307afa6760",
+  "signal": "burst"
+ },
+ "mode": "ring",
+ "name": "ring__burst__48000",
+ "oversample": 1,
+ "recorded_calls": [
+  0,
+  18,
+  19
+ ],
+ "sample_rate": 48000,
+ "segment_counts_recorded": [
+  1598,
+  1598,
+  1598
+ ],
+ "segments_sha256": "dfebbfb490a1d143d37a76506a8b3974006c4ba9395da60f0b65310f2dd7e41a",
+ "width": 800
+}

@@ -1,0 +1,57 @@
+{
+ "beam_energy": 8.0,
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000
+ ],
+ "engine": "numpy",
+ "frame_glow_keep": 0.82,
+ "gain": 1.3,
+ "height": 600,
+ "input": {
+  "file": "chord-48000.f32",
+  "floats": 33600,
+  "sha256": "f466c30be0e84f15eda36827ab348559f718490b248cad99fd3983abb4608c77",
+  "signal": "chord"
+ },
+ "mode": "xy",
+ "name": "xy__chord__48000",
+ "oversample": 1,
+ "recorded_calls": [
+  0,
+  1,
+  16,
+  17,
+  18,
+  19
+ ],
+ "sample_rate": 48000,
+ "segment_counts_recorded": [
+  799,
+  512,
+  512,
+  1024,
+  256,
+  1500
+ ],
+ "segments_sha256": "fcedfd9c91d52ba940d6393cfe3556997edf3ca5bd78a194e05626138da6b8ff",
+ "width": 800
+}

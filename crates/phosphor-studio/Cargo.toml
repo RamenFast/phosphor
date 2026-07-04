@@ -1,0 +1,10 @@
+[package]
+name = "phosphor-studio"
+description = "scene compiler + timeline tier: build, beat grid, morphs, wireframe3d, Hershey vector font, camera automation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+phosphor-proto.workspace = true

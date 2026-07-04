@@ -1,0 +1,61 @@
+{
+ "beam_energy": 8.0,
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000
+ ],
+ "engine": "numpy",
+ "frame_glow_keep": 0.82,
+ "gain": 1.3,
+ "height": 600,
+ "input": {
+  "file": "sweep-48000.f32",
+  "floats": 33600,
+  "sha256": "30285a488ddf92b556dc6a7ad8eb24bfd402dd66f3f72dbddae5308c4b5e3d3e",
+  "signal": "sweep"
+ },
+ "mode": "spectrum",
+ "name": "spectrum__sweep__48000",
+ "oversample": 1,
+ "recorded_calls": [
+  0,
+  1,
+  14,
+  15,
+  16,
+  17,
+  18,
+  19
+ ],
+ "sample_rate": 48000,
+ "segment_counts_recorded": [
+  0,
+  31,
+  33,
+  33,
+  33,
+  34,
+  34,
+  34
+ ],
+ "segments_sha256": "609e384192d4ace56709ea392a82de47f61b8f1d5843e3cc92ff3e791a9f5634",
+ "width": 800
+}

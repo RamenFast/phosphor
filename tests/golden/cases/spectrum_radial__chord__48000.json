@@ -1,0 +1,61 @@
+{
+ "beam_energy": 8.0,
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000
+ ],
+ "engine": "numpy",
+ "frame_glow_keep": 0.82,
+ "gain": 1.3,
+ "height": 600,
+ "input": {
+  "file": "chord-48000.f32",
+  "floats": 33600,
+  "sha256": "f466c30be0e84f15eda36827ab348559f718490b248cad99fd3983abb4608c77",
+  "signal": "chord"
+ },
+ "mode": "spectrum_radial",
+ "name": "spectrum_radial__chord__48000",
+ "oversample": 1,
+ "recorded_calls": [
+  0,
+  1,
+  14,
+  15,
+  16,
+  17,
+  18,
+  19
+ ],
+ "sample_rate": 48000,
+ "segment_counts_recorded": [
+  0,
+  29,
+  29,
+  29,
+  29,
+  30,
+  30,
+  30
+ ],
+ "segments_sha256": "4c2bd3d70e49696dc6a6d767865ad198f945c0cf89bbd15b334b59cba090aafc",
+ "width": 800
+}

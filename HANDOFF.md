@@ -1,31 +1,43 @@
 # Handoff — next session starts here
 
-## Next session: v4 begins — the full-Rust rewrite (July 4, 2026)
+## WAVE 1 IS DONE (July 4, 2026, one night). Wave 2 is next: the shell.
 
-**Ben approved the v4 plan. The map is [V4PLAN.md](V4PLAN.md) — read it
-first.** Short version: sub-100 fps on a 165 Hz monitor with an idle
-RX 6750 XT because Python drives every frame; v4 is a Cargo workspace
-(egui + wgpu shell, SIMD+rayon CPU rasterizer, native PipeWire, one DSP
-engine — the Python↔Rust parity contract dies). Targets: ≥2× fps on CPU
-and GPU individually, GPU sharpness ≥ CPU, zero Python, no fallbacks.
-Formats (.phos / .phoskit / scenes) and the CLI surface are contracts.
-In-place migration: v3 stays runnable until the parity checklist passes,
-then one commit deletes it.
+**The map remains [V4PLAN.md](V4PLAN.md); the receipts are
+[BENCH.md](BENCH.md) and [SPIKES.md](SPIKES.md).** Wave 1 shipped on
+branch `v4-wave1` (merged, tagged): baseline + SHA-pinned stress bench
+(incl. Ben's scope-music masters as workloads), 12 MB golden fixtures
+(replay byte-exact), the cargo workspace, **phosphor-dsp** (all 11
+modes + kits + sinc; native-v3 fixtures bit-exact, Python-ref worst
+0.001 px), **phosphor-beam** (one Gaussian beam law — v3's "GPU softer
+than CPU" was two different physics, never a filter bug; do NOT let
+anyone "fix" the linear-light composite backwards), both renderers
+(cross-snapshot ≤1.13 u8 of 2.5; sharpness GPU ≥ CPU measured), real
+`phosphor render` (the turtle survived: wav → v4 binary → mp4,
+mid-amble verified) and `phosphor bench` — the permanent gate, exit 1
+on regression, ALL GATES GREEN: offline 2.16×/3.7×, CPU-noise 8.5×,
+GPU 11.5× v3's vsync ceiling. Spike receipts: ~950–1010 fps Mailbox
+present under Muffin (debug build!), PreMultiplied alpha works (glass
+lives), egui 0.33 ↔ egui-wgpu 0.33 ↔ **wgpu 27** ↔ winit 0.30 (the glue
+defines the set).
 
-**Start with Wave 1, step 1 — BEFORE writing any Rust:**
-1. Measure v3 baseline (fps + ms/frame, GPU and CPU, max settings) →
-   `BENCH.md`. Gotchas from below apply: probe apps MUST set
-   `Gio.ApplicationFlags.NON_UNIQUE`, use a scratch `HOME`, tones longer
-   than the test, `_frame_work_seconds` only resets while Show FPS is on.
-2. Golden fixtures from the pristine Python engine → `tests/golden/`
-   (all 11 modes × fixtures, kit chains, .phos round-trips). Use
-   `PHOSPHOR_NO_NATIVE=1` so the reference is the original Python math.
+**Wave 2 (V4PLAN steps 8–9): the egui shell to daily-drivable.**
+pipewire-rs capture/playback + vacuum port (invariants below are law;
+hybrid pactl escape hatch allowed for module load/unload only),
+per-app capture, multi-app mixing, gapless, cover art, then the full
+egui app to v3 parity (transport, playlist DnD, kit editor, mini/glass,
+3D orbit, MPRIS via zbus, settings migration, themes as data).
+Reuse: `render::build_pipeline` in phosphor-app is deliberately
+shell-consumable; live GPU = same passes against a surface view (per-
+frame readback is offline-only); build `PreparedComposite` per frame;
+`CompositeLuts` is the CPU hot path. v3 stays installed and untouched
+until the parity checklist passes (deletion is wave 4's final act).
 
 Everything below this section is v3 history and hard-won constraints —
-still true, still load-bearing (the constraints port verbatim; the
-AFTERGLOW spec further down is now Wave 4's map, absorbed into V4PLAN).
+still true, still load-bearing (vacuum/kit/precompute constraints are
+wave-2/4 law; the AFTERGLOW spec further down is Wave 4's map).
 mmx plan ran out — music gen for AFTERGLOW is Lyria 3 via OpenRouter
-(Ben has credits; $0.08/song).
+(Ben has credits; $0.08/song). Demo/music references live at
+`~/Music/WAV versions/` (53 scope-music masters + test patterns).
 
 ---
 

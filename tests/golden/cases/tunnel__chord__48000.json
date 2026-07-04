@@ -1,0 +1,57 @@
+{
+ "beam_energy": 8.0,
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000
+ ],
+ "engine": "numpy",
+ "frame_glow_keep": 0.82,
+ "gain": 1.3,
+ "height": 600,
+ "input": {
+  "file": "chord-48000.f32",
+  "floats": 33600,
+  "sha256": "f466c30be0e84f15eda36827ab348559f718490b248cad99fd3983abb4608c77",
+  "signal": "chord"
+ },
+ "mode": "tunnel",
+ "name": "tunnel__chord__48000",
+ "oversample": 1,
+ "recorded_calls": [
+  0,
+  1,
+  16,
+  17,
+  18,
+  19
+ ],
+ "sample_rate": 48000,
+ "segment_counts_recorded": [
+  0,
+  240,
+  240,
+  240,
+  240,
+  240
+ ],
+ "segments_sha256": "ac7018a9425c98384e4bd478643db17b689ec64eaba89c246710b0f57c1724e4",
+ "width": 800
+}

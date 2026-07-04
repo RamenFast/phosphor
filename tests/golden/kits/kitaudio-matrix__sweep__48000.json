@@ -1,0 +1,40 @@
+{
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512
+ ],
+ "input": {
+  "file": "sweep-48000.f32",
+  "floats": 14400,
+  "sha256": "a1cc6385fca414f131d27351a8d691b245837f48f8dd4046b721b77d5ebb6837",
+  "signal": "sweep"
+ },
+ "kit": {
+  "source": "KIT_CASES:matrix",
+  "stages": [
+   [
+    "matrix",
+    [
+     0.9,
+     0.3,
+     -0.2,
+     1.1
+    ]
+   ]
+  ]
+ },
+ "name": "kitaudio-matrix__sweep__48000",
+ "output": {
+  "file": "kitaudio-matrix__sweep__48000.out.f32",
+  "floats": 13368,
+  "sha256": "803d199d11492345c4b9e741f8f067f197d0d061d727166c06f921bf6d66c21c"
+ },
+ "sample_rate": 48000
+}

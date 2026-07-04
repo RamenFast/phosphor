@@ -1,0 +1,12 @@
+[package]
+name = "phosphor-render-cpu"
+description = "CPU rasterizer: rayon tiles + 8-wide SIMD (AVX2/FMA runtime dispatch) - same beam model, parity by construction"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+phosphor-beam = { path = "../phosphor-beam" }
+rayon.workspace = true
+wide.workspace = true

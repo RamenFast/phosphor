@@ -1,0 +1,57 @@
+{
+ "beam_energy": 8.0,
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000
+ ],
+ "engine": "numpy",
+ "frame_glow_keep": 0.82,
+ "gain": 1.3,
+ "height": 600,
+ "input": {
+  "file": "sweep-48000.f32",
+  "floats": 33600,
+  "sha256": "30285a488ddf92b556dc6a7ad8eb24bfd402dd66f3f72dbddae5308c4b5e3d3e",
+  "signal": "sweep"
+ },
+ "mode": "xy_swirl",
+ "name": "xy_swirl__sweep__48000",
+ "oversample": 1,
+ "recorded_calls": [
+  0,
+  1,
+  16,
+  17,
+  18,
+  19
+ ],
+ "sample_rate": 48000,
+ "segment_counts_recorded": [
+  799,
+  512,
+  512,
+  1024,
+  256,
+  1500
+ ],
+ "segments_sha256": "58e7da8f1e7cad0b9b0fb908d0c1bc1a9e8e1874a2c5230e6e14c5ba9700114b",
+ "width": 800
+}

@@ -1,0 +1,16 @@
+[package]
+name = "phosphor-render-gpu"
+description = "wgpu renderer: decay/beam/composite WGSL passes, offscreen mode for headless render and bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+phosphor-beam = { path = "../phosphor-beam" }
+wgpu.workspace = true
+pollster.workspace = true
+
+[dev-dependencies]
+phosphor-render-cpu = { path = "../phosphor-render-cpu" }
+phosphor-dsp = { path = "../phosphor-dsp" }

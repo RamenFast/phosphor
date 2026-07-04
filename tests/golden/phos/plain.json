@@ -1,0 +1,39 @@
+{
+ "decode_contract": "f32 = s16le / 32767.0",
+ "file": "plain.phos",
+ "file_sha256": "d5bcd5e3fb8c84c3e61eccb55e6b23f18e6c7b6e306a994a75539879c19b4c6b",
+ "first_decoded_f32": [
+  0.0,
+  0.0,
+  0.034546952694654465,
+  0.017273476347327232,
+  0.06897183507680893,
+  0.034546952694654465,
+  0.1031525656580925,
+  0.05175939202308655,
+  0.13699759542942047,
+  0.06897183507680893,
+  0.17041535675525665,
+  0.08609271794557571,
+  0.20325326919555664,
+  0.1031525656580925,
+  0.23538926243782043,
+  0.12012085318565369
+ ],
+ "frames": 7200,
+ "header_bytes": 256,
+ "header_parsed": {
+  "credit": "TURTLE VECTOR",
+  "frames": 7200,
+  "rate": 48000,
+  "source": "golden-sine.flac",
+  "title": "golden postcard"
+ },
+ "payload_sha256": "c0362498d963e78a16e41731bd619e4b48da2e83572e9c00cd3c07427727267f",
+ "rate": 48000,
+ "requested": {
+  "credit": "TURTLE VECTOR",
+  "source": "golden-sine.flac",
+  "title": "golden postcard"
+ }
+}

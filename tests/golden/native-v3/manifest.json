@@ -1,0 +1,42 @@
+{
+ "captured_utc": "2026-07-04T08:21:15+00:00",
+ "cases": [
+  "xy__sweep__48000",
+  "xy__sweep__96000",
+  "xy__sine__48000",
+  "xy__sine__96000",
+  "xy45__sweep__48000",
+  "xy45__sweep__96000",
+  "xy45__sine__48000",
+  "xy45__sine__96000",
+  "xy_dots__sweep__48000",
+  "xy_dots__sweep__96000",
+  "xy_dots__sine__48000",
+  "xy_dots__sine__96000",
+  "waveform__sweep__48000",
+  "waveform__sweep__96000",
+  "waveform__sine__48000",
+  "waveform__sine__96000",
+  "spectrum__sweep__48000",
+  "spectrum__sweep__96000",
+  "spectrum__sine__48000",
+  "spectrum__sine__96000",
+  "spectrum_radial__sweep__48000",
+  "spectrum_radial__sweep__96000",
+  "spectrum_radial__sine__48000",
+  "spectrum_radial__sine__96000",
+  "xy__sweep__96000__os2",
+  "xy__sweep__96000__os4"
+ ],
+ "engine": "rust-v3 (core/ cdylib, API v2)",
+ "git_head": "5d3e18a0fde957250b98b2cd16e9518b904df1b2",
+ "numpy": "1.26.4",
+ "platform": "Linux-6.17.0-35-generic-x86_64-with-glibc2.39",
+ "python": "3.12.3",
+ "tolerance_contract": {
+  "coordinate_px": 0.05,
+  "intensity": 0.005,
+  "note": "fixtures are exact bytes from this engine; a ported engine (v4 rust) compares against them with the v3 parity tolerances below (tests/test_native_parity.py precedent). The replay test on THIS engine is exact.",
+  "segment_counts": "must match exactly"
+ }
+}

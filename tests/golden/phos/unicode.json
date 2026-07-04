@@ -1,0 +1,39 @@
+{
+ "decode_contract": "f32 = s16le / 32767.0",
+ "file": "unicode.phos",
+ "file_sha256": "d0312f6b6c2de6f7dbb4e787769dfb65427af666b58786c3c9bf9110c8d8db59",
+ "first_decoded_f32": [
+  0.0,
+  0.40272223949432373,
+  0.015106662176549435,
+  0.41605883836746216,
+  0.03024384379386902,
+  0.4292428493499756,
+  0.04531998559832573,
+  0.4422742426395416,
+  0.06042664870619774,
+  0.45518356561660767,
+  0.07547227293252945,
+  0.4679097831249237,
+  0.09051790088415146,
+  0.48048341274261475,
+  0.10553300380706787,
+  0.4929044544696808
+ ],
+ "frames": 9600,
+ "header_bytes": 256,
+ "header_parsed": {
+  "credit": "b\u00e9n\u00e9diction \u2728",
+  "frames": 9600,
+  "rate": 96000,
+  "source": "g\u00fcnther\u2014mix.flac",
+  "title": "T\u00fcrtle \u26a1 \ud83d\udc22 postcard"
+ },
+ "payload_sha256": "9fc7790b91a66773f6e5b902bda93ea64151c11abbee278797f1928ea54c8cdc",
+ "rate": 96000,
+ "requested": {
+  "credit": "b\u00e9n\u00e9diction \u2728",
+  "source": "g\u00fcnther\u2014mix.flac",
+  "title": "T\u00fcrtle \u26a1 \ud83d\udc22 postcard"
+ }
+}

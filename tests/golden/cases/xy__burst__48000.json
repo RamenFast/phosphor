@@ -1,0 +1,57 @@
+{
+ "beam_energy": 8.0,
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000
+ ],
+ "engine": "numpy",
+ "frame_glow_keep": 0.82,
+ "gain": 1.3,
+ "height": 600,
+ "input": {
+  "file": "burst-48000.f32",
+  "floats": 33600,
+  "sha256": "7174f58f4a50fa8a817661a92ed7e7cc6707f7232dee6d5689ff1f307afa6760",
+  "signal": "burst"
+ },
+ "mode": "xy",
+ "name": "xy__burst__48000",
+ "oversample": 1,
+ "recorded_calls": [
+  0,
+  1,
+  16,
+  17,
+  18,
+  19
+ ],
+ "sample_rate": 48000,
+ "segment_counts_recorded": [
+  799,
+  512,
+  512,
+  1024,
+  256,
+  1500
+ ],
+ "segments_sha256": "764c88ee70e7495386eea8c45e6b1e64e85585e57466de3438958ea354ea7b4c",
+ "width": 800
+}
