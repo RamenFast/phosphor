@@ -1484,6 +1484,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2304,6 +2306,7 @@ dependencies = [
  "egui-phosphor",
  "egui-wgpu",
  "egui-winit",
+ "image",
  "phosphor-audio",
  "phosphor-beam",
  "phosphor-dsp",

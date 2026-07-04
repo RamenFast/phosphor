@@ -56,6 +56,22 @@ pub const MINI_SIZE_PRESETS: [(&str, i64); 4] = [
     ("Small", 200), ("Medium", 280), ("Large", 380), ("Extra large", 520),
 ];
 
+/// Live-editable kit — the editor window's working copy. Rows are
+/// generated from `phosphor_proto::phoskit::OPERATIONS` ("extend
+/// tables, not UIs"); every edit re-applies through KitChanged.
+pub struct KitEditorState {
+    pub name: String,
+    pub author: String,
+    pub stages: Vec<phosphor_proto::phoskit::Stage>,
+}
+
+/// The "Export signal postcard…" dialog's working fields.
+pub struct PostcardState {
+    pub title: String,
+    pub credit: String,
+    pub source: std::path::PathBuf,
+}
+
 impl Shell {
     /// The main toolbar row (§4.3): [⏻ Live][status…][⏺][📷][mode][⟳][target][icon]
     pub(crate) fn ui_toolbar(&mut self, ui: &mut egui::Ui) {
@@ -395,7 +411,9 @@ impl Shell {
 
     fn ui_settings_appearance(&mut self, ui: &mut egui::Ui) {
         section(ui, "APPEARANCE", self.active_palette.muted);
-        egui::ComboBox::from_label("Theme")
+        // the scope's PHOSPHOR color (P7 Green, Amber…) — labeled
+        // "Beam" to distinguish from the UI "Theme" combo below
+        egui::ComboBox::from_label("Beam")
             .selected_text(self.settings.theme_name.clone())
             .show_ui(ui, |ui| {
                 for name in THEME_NAMES {
@@ -408,7 +426,9 @@ impl Shell {
                         self.actions.push(UiAction::SaveSettings);
                     }
                 }
-            });
+            })
+            .response
+            .on_hover_text("The scope's phosphor color");
         if self.settings.theme_name == "Custom" {
             let mut beam = self.settings.custom_beam_color;
             if ui.horizontal(|ui| {
@@ -512,6 +532,13 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
         {
             self.actions.push(UiAction::KitChanged);
         }
+        if ui.button("Kit editor…")
+            .on_hover_text("Build or tweak a chain live and save it \
+                            as a .phoskit postcard")
+            .clicked()
+        {
+            self.actions.push(UiAction::OpenKitEditor);
+        }
     }
 
     fn ui_settings_performance(&mut self, ui: &mut egui::Ui) {
@@ -586,6 +613,220 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                 text_color);
         }
         response.on_hover_text(tooltip).clicked()
+    }
+
+    /// The kit editor window: rows generated from the OPERATIONS table.
+    /// Every param edit re-applies live; Save writes a .phoskit and
+    /// keeps v3's quirk (a non-blank author overwrites postcard_credit).
+    pub(crate) fn ui_kit_editor(&mut self, ctx: &egui::Context) {
+        use phosphor_proto::phoskit;
+        let Some(mut editor) = self.kit_editor.take() else { return };
+        let mut text_ids = std::mem::take(&mut self.text_focus_ids);
+        let mut open = true;
+        let mut changed = false;
+        let mut save = false;
+        egui::Window::new("Kit editor")
+            .collapsible(false)
+            .resizable(true)
+            .default_width(360.0)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Name");
+                    let response = ui.text_edit_singleline(&mut editor.name);
+                    if response.has_focus() {
+                        text_ids.insert(response.id);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("By");
+                    let response =
+                        ui.text_edit_singleline(&mut editor.author);
+                    if response.has_focus() {
+                        text_ids.insert(response.id);
+                    }
+                });
+                ui.separator();
+
+                let mut remove: Option<usize> = None;
+                for index in 0..editor.stages.len() {
+                    ui.push_id(index, |ui| {
+                        let current_op = editor.stages[index].0.clone();
+                        ui.horizontal(|ui| {
+                            egui::ComboBox::from_id_salt("op")
+                                .selected_text(&current_op)
+                                .show_ui(ui, |ui| {
+                                    for (name, _) in phoskit::OPERATIONS {
+                                        if ui.selectable_label(
+                                            current_op == name, name)
+                                            .clicked()
+                                            && current_op != name
+                                        {
+                                            editor.stages[index] = (
+                                                name.to_string(),
+                                                phoskit::default_params(name));
+                                            changed = true;
+                                        }
+                                    }
+                                });
+                            if ui.button(icon::TRASH).clicked() {
+                                remove = Some(index);
+                            }
+                        });
+                        // one labeled drag per real param of this op
+                        let op = editor.stages[index].0.clone();
+                        if let Some((_, table)) = phoskit::OPERATIONS.iter()
+                            .find(|(name, _)| *name == op)
+                        {
+                            ui.label(egui::RichText::new(
+                                phoskit::op_description(&op))
+                                .small().color(self.active_palette.muted));
+                            for (slot, (key, _, low, high)) in
+                                table.iter().enumerate()
+                            {
+                                let value =
+                                    &mut editor.stages[index].1[slot];
+                                if ui.add(egui::Slider::new(
+                                    value, *low..=*high).text(*key))
+                                    .changed()
+                                {
+                                    changed = true;
+                                }
+                            }
+                        }
+                        ui.separator();
+                    });
+                }
+                if let Some(index) = remove {
+                    editor.stages.remove(index);
+                    changed = true;
+                }
+
+                ui.horizontal(|ui| {
+                    if ui.button(format!("{} add stage", icon::PLUS))
+                        .clicked()
+                        && editor.stages.len() < 16
+                    {
+                        editor.stages.push((
+                            "rotate".into(),
+                            phoskit::default_params("rotate")));
+                        changed = true;
+                    }
+                    if ui.button(format!("{} save", icon::FLOPPY_DISK))
+                        .clicked()
+                        && !editor.stages.is_empty()
+                    {
+                        save = true;
+                    }
+                });
+            });
+
+        self.text_focus_ids.extend(text_ids);
+        if changed {
+            // live apply: write a working kit + point settings at it
+            self.apply_editor_kit(&editor);
+        }
+        if save {
+            self.save_editor_kit(&editor);
+            open = false;
+        }
+        if open {
+            self.kit_editor = Some(editor);
+        }
+    }
+
+    fn editor_working_path() -> std::path::PathBuf {
+        let home = std::env::var_os("HOME").unwrap_or_default();
+        std::path::PathBuf::from(home)
+            .join(".local/share/phosphor/kits/_editor.phoskit")
+    }
+
+    fn apply_editor_kit(&mut self, editor: &KitEditorState) {
+        let path = Self::editor_working_path();
+        if phosphor_proto::phoskit::save(
+            &path, &editor.name, &editor.author, &editor.stages).is_ok()
+        {
+            self.settings.kit_path = Some(path.to_string_lossy().to_string());
+            self.settings.kit_enabled = true;
+            self.actions.push(UiAction::KitChanged);
+        }
+    }
+
+    fn save_editor_kit(&mut self, editor: &KitEditorState) {
+        let home = std::env::var_os("HOME").unwrap_or_default();
+        let file = format!("{}.phoskit",
+            editor.name.trim().replace(['/', ' '], "-").to_lowercase());
+        let path = std::path::PathBuf::from(home)
+            .join(".local/share/phosphor/kits").join(file);
+        match phosphor_proto::phoskit::save(
+            &path, &editor.name, &editor.author, &editor.stages)
+        {
+            Ok(()) => {
+                // v3 quirk KEPT: a non-blank author overwrites the
+                // global postcard credit.
+                if !editor.author.trim().is_empty() {
+                    self.settings.postcard_credit = editor.author.clone();
+                }
+                self.settings.kit_path =
+                    Some(path.to_string_lossy().to_string());
+                self.settings.kit_enabled = true;
+                self.actions.push(UiAction::KitChanged);
+                self.actions.push(UiAction::SaveSettings);
+                self.toast_now(format!("saved {}",
+                    path.file_name().unwrap().to_string_lossy()));
+            }
+            Err(error) => self.toast_now(error),
+        }
+    }
+
+    /// The "Export signal postcard…" dialog (§5.1 item 9b): title +
+    /// credit, then decode the playing file → .phos with a fit-trimmed
+    /// header (proto's pack_header, golden-tested).
+    pub(crate) fn ui_postcard_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.postcard_dialog.take() else { return };
+        let mut text_ids = std::mem::take(&mut self.text_focus_ids);
+        let mut open = true;
+        let mut export = false;
+        egui::Window::new("Export signal postcard")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new(
+                    dialog.source.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default())
+                    .small().color(self.active_palette.muted));
+                ui.horizontal(|ui| {
+                    ui.label("Title");
+                    let response = ui.text_edit_singleline(&mut dialog.title);
+                    if response.has_focus() {
+                        text_ids.insert(response.id);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Trace by");
+                    let response =
+                        ui.text_edit_singleline(&mut dialog.credit);
+                    if response.has_focus() {
+                        text_ids.insert(response.id);
+                    }
+                });
+                ui.separator();
+                if ui.button(format!("{} export .phos", icon::EXPORT))
+                    .clicked()
+                {
+                    export = true;
+                }
+            });
+        self.text_focus_ids.extend(text_ids);
+        if export {
+            self.export_postcard(&dialog);
+            open = false;
+        }
+        if open {
+            self.postcard_dialog = Some(dialog);
+        }
     }
 
     /// The context menu (§5.1 tree; items land as their passes do).
@@ -674,6 +915,17 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                             ui.close();
                         }
                     });
+                }
+                // Export signal postcard — non-.phos playing (§5.1-9b)
+                let is_phos = self.player.playing.as_ref()
+                    .is_some_and(|p| p.extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|e| e.eq_ignore_ascii_case("phos")));
+                if !is_phos
+                    && ui.button("Export signal postcard…").clicked()
+                {
+                    self.actions.push(UiAction::OpenPostcard);
+                    ui.close();
                 }
             }
             if !self.is_mini {

@@ -260,6 +260,17 @@ impl Shell {
     pub(crate) fn ui_transport(&mut self, ui: &mut egui::Ui) {
         let Some(playing) = self.player.playing.clone() else { return };
         ui.horizontal(|ui| {
+            // cover-art thumbnail (hairline-framed), when the playing
+            // track carries embedded art
+            if let Some((source, texture)) = &self.cover_texture
+                && *source == playing
+            {
+                let rect = ui.image(egui::load::SizedTexture::new(
+                    texture.id(), egui::vec2(22.0, 22.0))).rect;
+                ui.painter().rect_stroke(rect, 0.0,
+                    egui::Stroke::new(1.0, self.active_palette.line),
+                    egui::StrokeKind::Inside);
+            }
             if ui.button(icon::SKIP_BACK).on_hover_text("Previous track in folder")
                 .clicked()
             {

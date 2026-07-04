@@ -126,6 +126,8 @@ pub(crate) enum UiAction {
     /// ephemeral ⌀ — never saved; distinct from the file-vacuum).
     VacuumApp(bool),
     KitChanged,
+    OpenKitEditor,
+    OpenPostcard,
     Quit,
 }
 
@@ -145,6 +147,12 @@ pub struct Shell {
     pub(crate) active_palette: crate::theme::Palette,
     /// short-lived on-scope toast (snapshot saved, vacuum notes…)
     pub(crate) toast: Option<(String, Instant)>,
+    /// the kit editor window (None = closed)
+    pub(crate) kit_editor: Option<crate::chrome::KitEditorState>,
+    /// the postcard-export dialog (None = closed)
+    pub(crate) postcard_dialog: Option<crate::chrome::PostcardState>,
+    /// decoded cover-art texture for the playing track + its source path
+    pub(crate) cover_texture: Option<(std::path::PathBuf, egui::TextureHandle)>,
     pub(crate) player: crate::player::PlayerState,
     /// paths picked in the threaded native dialog
     file_dialog: Option<mpsc::Receiver<Option<std::path::PathBuf>>>,
@@ -236,6 +244,9 @@ impl Shell {
             settings_panel_open: false,
             active_palette: crate::theme::palette("blossom"),
             toast: None,
+            kit_editor: None,
+            postcard_dialog: None,
+            cover_texture: None,
             player: Default::default(),
             file_dialog: None,
             konami_progress: 0,
@@ -292,6 +303,13 @@ impl Shell {
         // the 4-panel scope icon (embedded, decoded once)
         if let Some(icon) = load_window_icon() {
             attributes = attributes.with_window_icon(Some(icon));
+        }
+        // restore the remembered window position (v3 law)
+        if let (Some(x), Some(y)) =
+            (self.settings.window_x, self.settings.window_y)
+        {
+            attributes = attributes.with_position(
+                winit::dpi::PhysicalPosition::new(x as i32, y as i32));
         }
         let window = std::sync::Arc::new(
             event_loop.create_window(attributes).expect("window"));
@@ -600,6 +618,35 @@ impl Shell {
                                 self.settings.mini_size as u32));
                     }
                 }
+                UiAction::OpenKitEditor => {
+                    // seed from the current kit if one is loaded, else
+                    // a single rotate stage
+                    let stages = self.settings.kit_path.as_deref()
+                        .and_then(|p| phosphor_proto::phoskit::load(
+                            std::path::Path::new(p)).ok())
+                        .map(|kit| (kit.name, kit.author, kit.stages))
+                        .unwrap_or_else(|| (
+                            "my kit".into(),
+                            self.settings.postcard_credit.clone(),
+                            vec![("rotate".into(),
+                                  phosphor_proto::phoskit::default_params(
+                                      "rotate"))]));
+                    self.kit_editor = Some(crate::chrome::KitEditorState {
+                        name: stages.0, author: stages.1, stages: stages.2,
+                    });
+                }
+                UiAction::OpenPostcard => {
+                    if let Some(path) = self.player.playing.clone() {
+                        self.postcard_dialog =
+                            Some(crate::chrome::PostcardState {
+                                title: path.file_stem()
+                                    .map(|s| s.to_string_lossy().to_string())
+                                    .unwrap_or_default(),
+                                credit: self.settings.postcard_credit.clone(),
+                                source: path,
+                            });
+                    }
+                }
                 UiAction::Quit => {
                     self.quit_requested = true;
                 }
@@ -763,6 +810,47 @@ impl Shell {
             let _ = mpris.notify.send(
                 crate::mpris::MprisNotify::Seeked((seconds * 1e6) as i64));
         }
+    }
+
+    /// Decode the engine's extracted cover art into an egui texture
+    /// (png/jpeg only, thumbnailed) — the transport shows it framed.
+    fn load_cover_art(&mut self, path: &std::path::Path) {
+        self.cover_texture = None;
+        let Some(art) = self.engine.current_cover_art() else { return };
+        let Some(graphics) = &self.graphics else { return };
+        let Ok(decoded) = image::load_from_memory(&art.data) else { return };
+        let thumb = decoded.thumbnail(96, 96).to_rgba8();
+        let size = [thumb.width() as usize, thumb.height() as usize];
+        let image = egui::ColorImage::from_rgba_unmultiplied(
+            size, thumb.as_raw());
+        let texture = graphics.egui_ctx.load_texture(
+            "cover", image, egui::TextureOptions::LINEAR);
+        self.cover_texture = Some((path.to_path_buf(), texture));
+    }
+
+    /// Show a transient on-scope toast now.
+    pub(crate) fn toast_now(&mut self, message: impl Into<String>) {
+        self.toast = Some((message.into(), Instant::now()));
+        self.chrome_dirty = true;
+    }
+
+    /// Export the playing file as a .phos postcard on a worker thread.
+    pub(crate) fn export_postcard(&mut self,
+                                  dialog: &crate::chrome::PostcardState) {
+        // credit persists (v3: the "Trace by" field writes the setting)
+        self.settings.postcard_credit = dialog.credit.clone();
+        self.actions.push(UiAction::SaveSettings);
+        let source = dialog.source.clone();
+        let title = dialog.title.clone();
+        let credit = dialog.credit.clone();
+        let (sender, receiver) = mpsc::channel();
+        self.export_results = Some(receiver);
+        self.exporting = true;
+        self.toast_now("exporting postcard…");
+        std::thread::spawn(move || {
+            let _ = sender.send(crate::exports::export_postcard(
+                &source, &title, &credit));
+        });
     }
 
     pub(crate) fn begin_visitor(&mut self) {
@@ -1101,6 +1189,7 @@ impl Shell {
                     }
                     self.queue_gapless_next();
                     self.mpris_track_changed();
+                    self.load_cover_art(&path);
                     self.chrome_dirty = true;
                 }
             }
@@ -1319,6 +1408,11 @@ impl Shell {
                 });
                 self.ui_settings_panel(ctx);
                 self.ui_playlist_panel(ctx);
+            }
+            // dialogs float above chrome, hidden only in fullscreen
+            if !self.is_fullscreen {
+                self.ui_kit_editor(ctx);
+                self.ui_postcard_dialog(ctx);
             }
             // (the bottom status bar is gone — track state lives in the
             //  transport row, fps is a scope overlay, transient notes
@@ -1718,11 +1812,20 @@ impl ApplicationHandler for Shell {
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.ctrl_down = modifiers.state().control_key();
             }
-            WindowEvent::Moved(_) => {
+            WindowEvent::Moved(position) => {
                 if self.is_mini {
                     // magnetism: settle 180 ms after the LAST move
                     self.mini_settle = Some(
                         Instant::now() + Duration::from_millis(180));
+                } else if !self.is_fullscreen {
+                    // persist the normal-window position (v3 law: not
+                    // while tiled/maximized/mini) — restored at launch
+                    let maximized = self.graphics.as_ref()
+                        .is_some_and(|g| g.window.is_maximized());
+                    if !maximized {
+                        self.settings.window_x = Some(position.x as i64);
+                        self.settings.window_y = Some(position.y as i64);
+                    }
                 }
             }
             WindowEvent::DroppedFile(path) => {

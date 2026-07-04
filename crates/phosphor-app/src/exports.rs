@@ -175,6 +175,63 @@ pub fn save_clip(history: Vec<f32>, settings: Settings, rate: u32)
     Ok(out_path)
 }
 
+/// Export a signal postcard (§13/§5.1-9b): decode the source to s16le
+/// stereo at a compact audible rate, prepend the fit-trimmed 256-byte
+/// header (title/credit/source/rate/frames — proto's pack_header,
+/// golden-tested), write `.phos`. ffmpeg is the decode pipe (the same
+/// contracted role it has in render/clip).
+pub const POSTCARD_RATE: u32 = 48_000;
+
+pub fn export_postcard(source: &Path, title: &str, credit: &str)
+                       -> Result<PathBuf, String> {
+    use phosphor_proto::phos::{self, Field};
+
+    // decode → interleaved s16le stereo @ POSTCARD_RATE
+    let output = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(source)
+        .args(["-f", "s16le", "-ac", "2",
+               "-ar", &POSTCARD_RATE.to_string(), "-"])
+        .output()
+        .map_err(|e| format!("ffmpeg: {e}"))?;
+    if !output.status.success() {
+        return Err("could not decode the track".into());
+    }
+    let body = output.stdout;
+    let frames = (body.len() / 4) as i64; // 2 ch × s16
+    if frames == 0 {
+        return Err("nothing to encode".into());
+    }
+
+    let source_name = source.file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let mut fields: Vec<(String, Field)> = vec![
+        ("rate".into(), Field::Int(POSTCARD_RATE as i64)),
+        ("frames".into(), Field::Int(frames)),
+        ("source".into(), Field::Text(source_name.clone())),
+    ];
+    if !title.trim().is_empty() {
+        fields.push(("title".into(), Field::Text(title.trim().to_string())));
+    }
+    if !credit.trim().is_empty() {
+        fields.push(("credit".into(),
+                     Field::Text(credit.trim().to_string())));
+    }
+    let header = phos::pack_header(&fields).map_err(|e| e.0)?;
+
+    let stem = title.trim().replace(['/', ' '], "-").to_lowercase();
+    let stem = if stem.is_empty() { "postcard".to_string() } else { stem };
+    let directory = pictures_directory();
+    std::fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
+    let path = directory.join(format!("{stem}-{}.phos", timestamp()));
+    let mut file = std::fs::File::create(&path)
+        .map_err(|e| e.to_string())?;
+    file.write_all(&header).map_err(|e| e.to_string())?;
+    file.write_all(&body).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
 // ---------------------------------------------------------------------------
 // The visitor (§16.1 — you know the code). Ported verbatim: nine
 // ellipse outlines, paddle flap, off-left → off-right in 7 s.

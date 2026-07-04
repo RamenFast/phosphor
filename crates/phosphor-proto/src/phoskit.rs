@@ -112,6 +112,77 @@ pub fn load(path: &Path) -> Result<Kit, String> {
     Ok(Kit { name, author, stages: canonical_stages(&object["stages"])? })
 }
 
+/// One-line description per op, keyed by name — for the kit editor's
+/// row help. Lives beside OPERATIONS so the two never drift.
+pub fn op_description(name: &str) -> &'static str {
+    match name {
+        "rotate" => "Spin the stereo field at a steady rate.",
+        "midside" => "Widen or narrow the stereo image (mid/side).",
+        "ringmod" => "Amplitude-modulate both channels together.",
+        "wobble" => "Wobble the rotation angle sinusoidally.",
+        "matrix" => "Free 2×2 mix of left and right.",
+        "chandelay" => "Delay one channel — smears into depth.",
+        _ => "",
+    }
+}
+
+/// Default packed params for a freshly-added stage of this op.
+pub fn default_params(op: &str) -> [f64; PARAMETERS_PER_STAGE] {
+    let mut packed = [0.0; PARAMETERS_PER_STAGE];
+    if let Some((_, table)) = OPERATIONS.iter().find(|(name, _)| *name == op) {
+        for (slot, (_, default, _, _)) in table.iter().enumerate() {
+            packed[slot] = *default;
+        }
+    }
+    packed
+}
+
+/// Serialize a kit back to .phoskit JSON (v3-compatible: `phoskit`
+/// version, `name`, `author`, `stages` with only each op's real keys).
+pub fn to_json(name: &str, author: &str, stages: &[Stage])
+               -> serde_json::Value {
+    let stage_values: Vec<serde_json::Value> = stages.iter()
+        .map(|(op, packed)| {
+            let mut object = serde_json::Map::new();
+            object.insert("op".into(),
+                          serde_json::Value::String(op.clone()));
+            if let Some((_, table)) =
+                OPERATIONS.iter().find(|(candidate, _)| candidate == op)
+            {
+                for (slot, (key, _, _, _)) in table.iter().enumerate() {
+                    if let Some(number) =
+                        serde_json::Number::from_f64(packed[slot])
+                    {
+                        object.insert((*key).to_string(),
+                                      serde_json::Value::Number(number));
+                    }
+                }
+            }
+            serde_json::Value::Object(object)
+        })
+        .collect();
+    serde_json::json!({
+        "phoskit": FORMAT_VERSION,
+        "name": name,
+        "author": author,
+        "stages": stage_values,
+    })
+}
+
+/// Write a kit to disk (pretty JSON, dirs created).
+pub fn save(path: &Path, name: &str, author: &str, stages: &[Stage])
+            -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("{}: {error}", parent.display()))?;
+    }
+    let text = serde_json::to_string_pretty(
+        &to_json(name, author, stages))
+        .map_err(|error| error.to_string())?;
+    std::fs::write(path, text)
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,6 +190,26 @@ mod tests {
 
     fn repo() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    #[test]
+    fn save_round_trips_through_load() {
+        let dir = std::env::temp_dir().join("phosphor-kit-save-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("editor-made.phoskit");
+        let stages: Vec<Stage> = vec![
+            ("rotate".into(), [0.5, 0.2, 0.0, 0.0]),
+            ("chandelay".into(), [6.0, 1.0, 0.0, 0.0]),
+        ];
+        save(&path, "Editor Test", "ben", &stages).unwrap();
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.name, "Editor Test");
+        assert_eq!(loaded.author, "ben");
+        assert_eq!(loaded.stages.len(), 2);
+        assert_eq!(loaded.stages[0].0, "rotate");
+        // clamped to OPERATIONS ranges on reload (rotate hz max 4.0)
+        assert_eq!(loaded.stages[1].0, "chandelay");
+        assert_eq!(loaded.stages[1].1[0], 6.0);
     }
 
     #[test]
