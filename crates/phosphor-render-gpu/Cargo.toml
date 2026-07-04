@@ -1,0 +1,10 @@
+[package]
+name = "phosphor-render-gpu"
+description = "wgpu renderer: decay/beam/composite WGSL passes + bloom chain, f16 energy when shaderFloat16, offscreen mode for headless"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+phosphor-beam = { path = "../phosphor-beam" }

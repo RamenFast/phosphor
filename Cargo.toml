@@ -1,0 +1,52 @@
+# Phosphor v4 workspace — one engine, no fallbacks (see V4PLAN.md).
+# core/ is deliberately EXCLUDED: it is v3's cdylib with its own release
+# profile, and v3 must stay runnable (and packagable) untouched until the
+# parity checklist passes and one commit deletes the Python tree.
+
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+exclude = ["core"]
+
+[workspace.package]
+version = "4.0.0-dev"
+edition = "2024"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/2bmb/phosphor"
+
+# Central version table; member crates opt in with `dep.workspace = true`
+# as their wave lands. Do not sprinkle stray versions in member manifests.
+[workspace.dependencies]
+phosphor-proto = { path = "crates/phosphor-proto" }
+phosphor-dsp = { path = "crates/phosphor-dsp" }
+phosphor-beam = { path = "crates/phosphor-beam" }
+phosphor-render-gpu = { path = "crates/phosphor-render-gpu" }
+phosphor-render-cpu = { path = "crates/phosphor-render-cpu" }
+phosphor-audio = { path = "crates/phosphor-audio" }
+phosphor-studio = { path = "crates/phosphor-studio" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rustfft = "6"
+rayon = "1"
+wide = "0.7"
+wgpu = "28"
+winit = "0.30"
+egui = "0.33"
+egui-wgpu = "0.33"
+egui-winit = "0.33"
+pipewire = "0.9"
+symphonia = { version = "0.5", features = ["all"] }
+zbus = "5"
+proptest = "1"
+
+[profile.release]
+# thin LTO while the wave is under construction (build-time sanity);
+# revisit fat LTO + codegen-units=1 (core/'s discipline) at the perf
+# polish pass — bench gates always run --release either way.
+lto = "thin"
+
+[profile.bench-gate]
+# the profile the 2× gate is measured under: core/'s full discipline
+inherits = "release"
+lto = "fat"
+codegen-units = 1

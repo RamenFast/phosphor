@@ -1,0 +1,9 @@
+[package]
+name = "phosphor-beam"
+description = "THE beam model (sigma, energy deposit, tonemap), themes as data, 3D orbit camera - both renderers consume this"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

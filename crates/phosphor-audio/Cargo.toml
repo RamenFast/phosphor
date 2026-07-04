@@ -1,0 +1,9 @@
+[package]
+name = "phosphor-audio"
+description = "pipewire-rs capture (monitor/app/mic) + playback, symphonia decode, vacuum routing, multi-app mixer, gapless, cover art"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
