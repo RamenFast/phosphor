@@ -46,7 +46,10 @@ const CPU_RESOLUTION_CHOICES: [(f32, &str); 3] = [
     (0.5, "Fast · 50%"),
 ];
 
-const MAX_FPS_PRESETS: [i64; 10] = [0, 30, 60, 90, 120, 144, 165, 240, 360, 480];
+// -1 = Uncapped (new in v4); 0 = Monitor (v3 meaning); a v3 loading
+// -1 clamps it to 0 -> Monitor, so the file stays cross-compatible.
+const MAX_FPS_PRESETS: [i64; 11] =
+    [0, -1, 30, 60, 90, 120, 144, 165, 240, 360, 480];
 
 /// UI styles as DATA (V4PLAN: egui owns the chrome completely — the
 /// 8 v3 style ids keep their names; "system" is dark, like v3's
@@ -195,30 +198,35 @@ impl Shell {
         ui.horizontal(|ui| {
             let auto_gain = self.settings.auto_gain;
             let mut gain = self.settings.gain;
-            if slider_with_percent(ui, "Gain", &mut gain, 0.1, 6.0,
-                                   "Deflection scale (also mouse scroll)",
-                                   !auto_gain)
-            {
+            let mut text_ids = std::mem::take(&mut self.text_focus_ids);
+            if slider_with_percent(ui, SliderSpec {
+                name: "Gain", minimum: 0.1, maximum: 6.0,
+                tooltip: "Deflection scale (also mouse scroll)",
+                enabled: !auto_gain,
+            }, &mut gain, &mut text_ids) {
                 self.settings.gain = gain;
                 self.actions.push(UiAction::SignalTuning);
             }
             let mut glow = self.settings.persistence;
-            if slider_with_percent(ui, "Glow", &mut glow, 0.0, 0.98,
-                                   "Phosphor persistence — how long trails linger",
-                                   true)
-            {
+            if slider_with_percent(ui, SliderSpec {
+                name: "Glow", minimum: 0.0, maximum: 0.98,
+                tooltip: "Phosphor persistence — how long trails linger",
+                enabled: true,
+            }, &mut glow, &mut text_ids) {
                 self.settings.persistence = glow;
                 self.actions.push(UiAction::RenderTuning);
             }
             let mut beam = self.settings.beam_energy;
-            if slider_with_percent(ui, "Beam", &mut beam, 1.0, 30.0,
-                                   "Beam brightness budget — higher keeps \
-                                    fast strokes visible",
-                                   true)
-            {
+            if slider_with_percent(ui, SliderSpec {
+                name: "Beam", minimum: 1.0, maximum: 30.0,
+                tooltip: "Beam brightness budget — higher keeps fast \
+                          strokes visible",
+                enabled: true,
+            }, &mut beam, &mut text_ids) {
                 self.settings.beam_energy = beam;
                 self.actions.push(UiAction::SignalTuning);
             }
+            self.text_focus_ids = text_ids;
         });
     }
 
@@ -345,7 +353,7 @@ impl Shell {
                 "Scope feed sample rate — higher rates trace the true \
                  curves\nbetween samples, recovering fine scope-art detail");
         let mut focus = self.settings.beam_focus;
-        if ui.add(egui::Slider::new(&mut focus, 0.6..=3.0)
+        if ui.add(egui::Slider::new(&mut focus, 0.3..=3.0)
                   .step_by(0.1).text("Focus"))
             .on_hover_text("Beam focus — narrower keeps dense scenes \
                             from washing out")
@@ -523,19 +531,19 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
 
     fn ui_settings_performance(&mut self, ui: &mut egui::Ui) {
         section(ui, "PERFORMANCE");
-        let fps_label = if self.settings.max_fps == 0 {
-            "Monitor".to_string()
-        } else {
-            self.settings.max_fps.to_string()
+        let fps_label = match self.settings.max_fps {
+            0 => "Monitor".to_string(),
+            fps if fps < 0 => "Uncapped".to_string(),
+            fps => fps.to_string(),
         };
         egui::ComboBox::from_label("Max FPS")
             .selected_text(fps_label)
             .show_ui(ui, |ui| {
                 for preset in MAX_FPS_PRESETS {
-                    let label = if preset == 0 {
-                        "Monitor".to_string()
-                    } else {
-                        preset.to_string()
+                    let label = match preset {
+                        0 => "Monitor".to_string(),
+                        p if p < 0 => "Uncapped".to_string(),
+                        p => p.to_string(),
                     };
                     if ui.selectable_label(
                         self.settings.max_fps == preset, label).clicked()
@@ -825,9 +833,20 @@ fn section(ui: &mut egui::Ui, title: &str) {
 }
 
 /// v3's add_slider: [Label][Scale][percent spin][%] with two-way sync.
-fn slider_with_percent(ui: &mut egui::Ui, name: &str, value: &mut f32,
-                       minimum: f32, maximum: f32, tooltip: &str,
-                       enabled: bool) -> bool {
+/// The spin is text-capable: while it holds focus its id goes into the
+/// shell's text registry so typing digits never triggers shortcuts.
+struct SliderSpec<'a> {
+    name: &'a str,
+    minimum: f32,
+    maximum: f32,
+    tooltip: &'a str,
+    enabled: bool,
+}
+
+fn slider_with_percent(ui: &mut egui::Ui, spec: SliderSpec, value: &mut f32,
+                       text_ids: &mut std::collections::HashSet<egui::Id>)
+                       -> bool {
+    let SliderSpec { name, minimum, maximum, tooltip, enabled } = spec;
     let mut changed = false;
     ui.add_enabled_ui(enabled, |ui| {
         ui.label(name);
@@ -841,6 +860,9 @@ fn slider_with_percent(ui: &mut egui::Ui, name: &str, value: &mut f32,
         let spin = ui.add(
             egui::DragValue::new(&mut percent)
                 .range(0.0..=100.0).speed(1.0).suffix("%"));
+        if spin.has_focus() {
+            text_ids.insert(spin.id);
+        }
         if spin.on_hover_text(format!("{name} as percent — type a value"))
             .changed()
         {

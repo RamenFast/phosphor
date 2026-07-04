@@ -54,6 +54,10 @@ pub struct GpuRenderer {
     pub grid_enabled: bool,
     pub grid_spacing_fraction: f32,
     pub scope_alpha: f32,
+    /// Surface view is sRGB: the hardware encodes, the shader must
+    /// NOT apply its manual gamma (double-encode washes the beam —
+    /// wave-2.5 receipt). Offline stays false → bytes unchanged.
+    pub hardware_encodes: bool,
 }
 
 fn create_energy_pair(device: &wgpu::Device, format: wgpu::TextureFormat,
@@ -116,8 +120,16 @@ impl GpuRenderer {
                            surface_format: wgpu::TextureFormat)
                            -> Result<GpuRenderer, String> {
         let energy_format = Self::probe_energy_format(adapter);
-        Self::build(device, queue, energy_format, width, height,
-                    supersample, surface_format)
+        let mut renderer = Self::build(device, queue, energy_format,
+                                       width, height, supersample,
+                                       surface_format)?;
+        renderer.hardware_encodes = surface_format.is_srgb();
+        eprintln!(
+            "phosphor: scope {}x{} ss{} energy {:?} surface {:?} \
+hw_encode={}",
+            width, height, renderer.supersample, energy_format,
+            surface_format, renderer.hardware_encodes);
+        Ok(renderer)
     }
 
     fn probe_energy_format(adapter: &wgpu::Adapter) -> wgpu::TextureFormat {
@@ -345,7 +357,7 @@ impl GpuRenderer {
             });
         let decay_uniforms = uniform_buffer("decay uniforms", 16);
         let beam_uniforms = uniform_buffer("beam uniforms", 32);
-        let composite_uniforms = uniform_buffer("composite uniforms", 96);
+        let composite_uniforms = uniform_buffer("composite uniforms", 112);
 
         let beam_bind_group = device.create_bind_group(
             &wgpu::BindGroupDescriptor {
@@ -397,6 +409,7 @@ impl GpuRenderer {
             grid_enabled: true,
             grid_spacing_fraction: 0.1125,
             scope_alpha: 1.0,
+            hardware_encodes: false,
         })
     }
 
@@ -523,7 +536,7 @@ impl GpuRenderer {
     /// offscreen path (bytes identical to wave 1, goldens hold).
     fn prepare_composite(&mut self, origin: (f32, f32)) -> wgpu::BindGroup {
         let theme = self.theme;
-        let composite_data: [f32; 24] = [
+        let composite_data: [f32; 28] = [
             theme.beam_color[0], theme.beam_color[1],
             theme.beam_color[2], 0.0,
             theme.flash_color[0], theme.flash_color[1],
@@ -539,6 +552,8 @@ impl GpuRenderer {
             // the WGSL field is i32; smuggle the bit pattern through
             f32::from_bits(self.supersample),
             self.scope_alpha, origin.0, origin.1,
+            if self.hardware_encodes { 1.0 } else { 0.0 },
+            0.0, 0.0, 0.0,
         ];
         self.queue.write_buffer(&self.composite_uniforms, 0,
                                 float_bytes(&composite_data));

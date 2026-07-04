@@ -164,6 +164,13 @@ pub struct Shell {
     pub(crate) app_vacuum: Option<String>,
     ctrl_down: bool,
     quit_requested: bool,
+    /// ids of genuinely text-capable widgets that held focus this
+    /// frame — the ONLY focus that may eat keyboard shortcuts
+    pub(crate) text_focus_ids: std::collections::HashSet<egui::Id>,
+    /// pending square-enforcement side after a mini corner resize
+    mini_resquare: Option<i64>,
+    cursor_position: (f64, f64),
+    mini_last_click: Option<Instant>,
     /// the Konami visitor swim (verbatim v3 turtle)
     visitor_started: Option<Instant>,
     exporting: bool,
@@ -239,6 +246,10 @@ impl Shell {
             app_vacuum: None,
             ctrl_down: false,
             quit_requested: false,
+            text_focus_ids: std::collections::HashSet::new(),
+            mini_resquare: None,
+            cursor_position: (0.0, 0.0),
+            mini_last_click: None,
             visitor_started: None,
             exporting: false,
             export_results: None,
@@ -309,9 +320,18 @@ impl Shell {
             .unwrap_or(wgpu::CompositeAlphaMode::Opaque);
 
         let size = window.inner_size();
+        // Prefer a NON-sRGB surface: the composite shader encodes its
+        // own gamma; formats[0] on RADV is typically Bgra8UnormSrgb
+        // and double-encoding washed the live beam (wave-2.5 root #3).
+        let surface_format = capabilities
+            .formats
+            .iter()
+            .copied()
+            .find(|format| !format.is_srgb())
+            .unwrap_or(capabilities.formats[0]);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: capabilities.formats[0],
+            format: surface_format,
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode,
@@ -962,10 +982,13 @@ impl Shell {
         }
     }
 
-    /// The frame cadence: user cap, else the monitor's refresh
-    /// (v3's "0 = uncapped/monitor"). 0.0 = genuinely uncapped.
+    /// The frame cadence: -1 = genuinely uncapped (new in v4), 0 =
+    /// the monitor's refresh (v3's meaning), else the user's cap.
+    /// Returns 0.0 for "no deadline pacing".
     fn cap_hz(&self) -> f64 {
-        if self.settings.max_fps > 0 {
+        if self.settings.max_fps < 0 {
+            0.0
+        } else if self.settings.max_fps > 0 {
             self.settings.max_fps as f64
         } else {
             self.monitor_hz
@@ -1184,15 +1207,23 @@ impl Shell {
         let scope_width = scope_physical.width().max(1.0) as u32;
         let scope_height = scope_physical.height().max(1.0) as u32;
 
+        // CPU path traces at its reduced resolution (v3 law); GPU at full.
+        let (trace_w, trace_h) = if graphics.scope_cpu.is_some() {
+            let fraction = self.settings.cairo_resolution.clamp(0.25, 1.0);
+            (((scope_width as f32 * fraction) as u32).max(64),
+             ((scope_height as f32 * fraction) as u32).max(64))
+        } else {
+            (scope_width, scope_height)
+        };
         if advancing {
             let mut segments: Vec<[f32; 5]> = self.computer.compute(
-                samples, scope_width as f32, scope_height as f32)
+                samples, trace_w as f32, trace_h as f32)
                 .to_vec();
             // the visitor swims OVER whatever the audio draws
             if let Some(started) = self.visitor_started {
                 segments.extend(crate::exports::visitor_segments(
                     started.elapsed().as_secs_f64(),
-                    scope_width as f32, scope_height as f32));
+                    trace_w as f32, trace_h as f32));
             }
             let segments = &segments[..];
             if let Some(gpu) = graphics.scope_gpu.as_mut() {
@@ -1202,10 +1233,19 @@ impl Shell {
                 gpu.advance(segments);
             }
             if let Some(cpu) = graphics.scope_cpu.as_mut() {
+                // v3's CPU resolution law: render at scope x fraction,
+                // the egui image upscales (0.75/0.5 presets — this was
+                // silently ignored in wave 2, all CPU frames full-res)
+                let fraction =
+                    self.settings.cairo_resolution.clamp(0.25, 1.0);
+                let target_w = ((scope_width as f32 * fraction) as usize)
+                    .max(64);
+                let target_h = ((scope_height as f32 * fraction) as usize)
+                    .max(64);
                 let (w, h) = (cpu.renderer.width(), cpu.renderer.height());
-                if w != scope_width as usize || h != scope_height as usize {
+                if w != target_w || h != target_h {
                     let mut renderer = CpuRenderer::new(
-                        scope_width as usize, scope_height as usize, 1);
+                        target_w, target_h, 1);
                     renderer.beam_focus = cpu.renderer.beam_focus;
                     renderer.persistence = cpu.renderer.persistence;
                     renderer.theme = cpu.renderer.theme;
@@ -1242,10 +1282,11 @@ impl Shell {
         let mut scope_rect_out = self.scope_rect;
         let egui_ctx = graphics.egui_ctx.clone();
         self.player.tick_overlay();
-        let is_mini = self.is_mini;
+        self.text_focus_ids.clear(); // chrome re-registers each frame
+        let hide_chrome = self.is_mini || self.is_fullscreen;
         let full_output = egui_ctx.run(raw_input, |ctx| {
             self.apply_ui_style(ctx);
-            if !is_mini {
+            if !hide_chrome {
                 egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
                     self.ui_toolbar(ui);
                     self.ui_sliders(ui);
@@ -1256,7 +1297,7 @@ impl Shell {
             }
             let fps = self.last_fps;
             let show_fps = self.settings.show_fps;
-            if !is_mini {
+            if !hide_chrome {
                 egui::TopBottomPanel::bottom("statusbar").show(ctx, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(self.status_line.as_str());
@@ -1328,6 +1369,33 @@ impl Shell {
             });
         });
         self.scope_rect = scope_rect_out;
+
+        // Focus hygiene: only registered text widgets may HOLD focus —
+        // egui buttons keep focus after a click, and gating shortcuts
+        // on that killed them all (the wave-2.5 root fix).
+        egui_ctx.memory_mut(|memory| {
+            if let Some(id) = memory.focused()
+                && !self.text_focus_ids.contains(&id)
+            {
+                memory.surrender_focus(id);
+            }
+        });
+        // Honor egui's requested follow-up paints (press/release
+        // visuals, hover fades) — without this, chrome only repainted
+        // on new input while the scope was quiet-asleep ("laggy").
+        let repaint_delay = full_output
+            .viewport_output
+            .values()
+            .map(|viewport| viewport.repaint_delay)
+            .min()
+            .unwrap_or(Duration::MAX);
+        if repaint_delay < Duration::from_secs(1) {
+            self.chrome_dirty = true;
+            let due = Instant::now() + repaint_delay;
+            self.next_frame_due =
+                Some(self.next_frame_due.map_or(due, |d| d.min(due)));
+        }
+
         let clipped = graphics.egui_ctx.tessellate(
             full_output.shapes, full_output.pixels_per_point);
         let screen = egui_wgpu::ScreenDescriptor {
@@ -1448,7 +1516,56 @@ impl ApplicationHandler for Shell {
                     graphics.config.height = size.height.max(1);
                     graphics.surface.configure(&graphics.device,
                                                &graphics.config);
+                    // chrome MUST repaint even while quiet-asleep, or
+                    // freshly exposed regions present as black bands
+                    self.chrome_dirty = true;
                     graphics.window.request_redraw();
+                }
+                // mini stays square: a WM corner-resize can skew it —
+                // re-square once the drag settles (shares the
+                // magnetism settle timer)
+                if self.is_mini {
+                    let side = size.width.max(size.height)
+                        .clamp(140, 1000) as i64;
+                    if size.width != size.height {
+                        self.mini_resquare = Some(side);
+                    }
+                    self.settings.mini_size = side;
+                    self.mini_settle = Some(
+                        Instant::now() + Duration::from_millis(180));
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_position = (position.x, position.y);
+            }
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left, ..
+            } if self.is_mini => {
+                // Mini owns left-press: corner 26 px = WM resize, a
+                // quick second click = restore, anywhere else = WM
+                // move (v3: drag moves the mini; drag never orbits).
+                if let Some(graphics) = &self.graphics {
+                    let now = Instant::now();
+                    let double = self.mini_last_click
+                        .is_some_and(|t| now.duration_since(t)
+                                     < Duration::from_millis(400));
+                    self.mini_last_click = Some(now);
+                    if double {
+                        self.actions.push(UiAction::MiniToggle);
+                        graphics.window.request_redraw();
+                    } else {
+                        let size = graphics.window.inner_size();
+                        let (x, y) = self.cursor_position;
+                        let in_corner = x > (size.width as f64 - 26.0)
+                            && y > (size.height as f64 - 26.0);
+                        let _ = if in_corner {
+                            graphics.window.drag_resize_window(
+                                winit::window::ResizeDirection::SouthEast)
+                        } else {
+                            graphics.window.drag_window()
+                        };
+                    }
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -1457,10 +1574,14 @@ impl ApplicationHandler for Shell {
                 // (buttons included), so gate ONLY on an egui widget
                 // holding focus AND expecting text — otherwise our
                 // table wins first, like GTK's window-level handler.
+                // The gate is OUR text registry: egui 0.33's
+                // wants_keyboard_input() is literally
+                // focused().is_some(), and clicked buttons KEEP focus
+                // — gating on it killed every shortcut after the
+                // first click (Ben's "Show FPS doesn't work at all").
                 let editing = self.graphics.as_ref()
-                    .map(|g| g.egui_ctx.memory(|m| m.focused().is_some())
-                         && g.egui_ctx.wants_keyboard_input())
-                    .unwrap_or(false);
+                    .and_then(|g| g.egui_ctx.memory(|m| m.focused()))
+                    .is_some_and(|id| self.text_focus_ids.contains(&id));
                 if !editing
                     && event.state == winit::event::ElementState::Pressed
                 {
@@ -1507,9 +1628,13 @@ impl ApplicationHandler for Shell {
                         self.push_camera();
                         self.mark_orbit_interaction();
                     } else {
-                        // wheel on the scope = gain (v3 §3.2 gain row)
-                        self.settings.gain = (self.settings.gain
-                            + notches as f32 * 0.15).clamp(0.1, 6.0);
+                        // wheel on the scope = gain — MULTIPLICATIVE
+                        // so steps feel even across 0.1..6.0 (linear
+                        // +0.15 was mushy low and jumpy high — Ben's
+                        // "inconsistent zoom" feedback)
+                        let factor = 1.08f32.powf(notches as f32);
+                        self.settings.gain =
+                            (self.settings.gain * factor).clamp(0.1, 6.0);
                         self.actions.push(UiAction::SignalTuning);
                     }
                     self.chrome_dirty = true;
@@ -1589,12 +1714,19 @@ impl ApplicationHandler for Shell {
         {
             self.mini_settle = None;
             if let Some(graphics) = self.graphics.take() {
+                // square first (a corner drag may have skewed it),
+                // then snap to the work-area edges
+                if let Some(side) = self.mini_resquare.take() {
+                    let _ = graphics.window.request_inner_size(
+                        winit::dpi::PhysicalSize::new(
+                            side as u32, side as u32));
+                }
                 self.snap_mini_to_edges(&graphics);
                 self.graphics = Some(graphics);
             }
         }
         let mut wake_at = self.mini_settle;
-        if self.render_loop_active
+        if (self.render_loop_active || self.chrome_dirty)
             && let Some(due) = self.next_frame_due
         {
             if Instant::now() >= due {
