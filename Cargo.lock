@@ -2307,6 +2307,7 @@ dependencies = [
  "sha2",
  "wgpu",
  "winit",
+ "zbus",
 ]
 
 [[package]]

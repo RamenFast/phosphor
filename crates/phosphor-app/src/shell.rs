@@ -167,6 +167,7 @@ pub struct Shell {
     visitor_started: Option<Instant>,
     exporting: bool,
     export_results: Option<mpsc::Receiver<Result<std::path::PathBuf, String>>>,
+    mpris: Option<crate::mpris::MprisHandle>,
 
     // quiet law state
     quiet_frame_count: u32,
@@ -240,6 +241,7 @@ impl Shell {
             visitor_started: None,
             exporting: false,
             export_results: None,
+            mpris: crate::mpris::spawn(),
             quiet_frame_count: 0,
             fade_out_frames_remaining: FADE_OUT_FRAMES,
             render_loop_active: true,
@@ -483,6 +485,8 @@ impl Shell {
                     let paused = !self.player.paused;
                     self.engine.set_playback_paused(paused);
                     self.player.paused = paused;
+                    self.set_mpris_status(
+                        if paused { "Paused" } else { "Playing" });
                     if !paused {
                         self.wake_render_loop();
                     }
@@ -586,6 +590,120 @@ impl Shell {
             }
         }
         self.service_seek_debounce();
+    }
+
+    /// Drain MPRIS commands and keep the shared state fresh.
+    fn service_mpris(&mut self) {
+        let Some(mpris) = &self.mpris else { return };
+        // live position + step capability
+        let playing = self.player.playing.is_some();
+        mpris.shared.position_micros.store(
+            (self.engine.playback_position_seconds() * 1e6) as i64,
+            std::sync::atomic::Ordering::Relaxed);
+        mpris.shared.can_step.store(
+            self.player.playlist.len() > 1,
+            std::sync::atomic::Ordering::Relaxed);
+        let mut commands = Vec::new();
+        while let Ok(command) = mpris.commands.try_recv() {
+            commands.push(command);
+        }
+        for command in commands {
+            use crate::mpris::MprisCommand;
+            match command {
+                MprisCommand::Next => {
+                    if playing { self.actions.push(UiAction::PlayerNext); }
+                }
+                MprisCommand::Previous => {
+                    if playing {
+                        self.actions.push(UiAction::PlayerPrevious);
+                    }
+                }
+                MprisCommand::PlayPause => {
+                    if playing {
+                        self.actions.push(UiAction::PlayerTogglePause);
+                    }
+                }
+                MprisCommand::Play => {
+                    if playing && self.player.paused {
+                        self.actions.push(UiAction::PlayerTogglePause);
+                    }
+                }
+                MprisCommand::Pause => {
+                    if playing && !self.player.paused {
+                        self.actions.push(UiAction::PlayerTogglePause);
+                    }
+                }
+                MprisCommand::Stop => {
+                    // v4 fix: Stop actually stops (v3 aliased Pause)
+                    self.engine.stop_playback();
+                    self.player.playing = None;
+                    self.player.duration = None;
+                    self.set_mpris_status("Stopped");
+                }
+                MprisCommand::SeekRelative(offset_micros) => {
+                    let target = (self.engine.playback_position_seconds()
+                                  + offset_micros as f64 / 1e6).max(0.0);
+                    self.player.seek_debounce =
+                        Some((target, Instant::now()
+                              - Duration::from_millis(250)));
+                }
+                MprisCommand::SetPosition(position_micros) => {
+                    let target = (position_micros as f64 / 1e6).max(0.0);
+                    self.player.seek_debounce =
+                        Some((target, Instant::now()
+                              - Duration::from_millis(250)));
+                }
+                MprisCommand::OpenUri(uri) => {
+                    let path = uri.strip_prefix("file://")
+                        .unwrap_or(&uri).to_string();
+                    let path = std::path::PathBuf::from(path);
+                    if crate::player::is_audio_path(&path) && path.exists() {
+                        self.actions.push(UiAction::PlayPath(path));
+                    }
+                }
+                MprisCommand::Raise => {
+                    if let Some(graphics) = &self.graphics {
+                        graphics.window.focus_window();
+                    }
+                }
+                MprisCommand::SetVolume(volume) => {
+                    self.settings.playback_volume = volume as f32;
+                    self.engine.set_volume(
+                        crate::player::cubic_volume(volume as f32));
+                }
+            }
+        }
+    }
+
+    pub(crate) fn set_mpris_status(&self, status: &'static str) {
+        if let Some(mpris) = &self.mpris {
+            *mpris.shared.status.lock().unwrap() = status;
+            let _ = mpris.notify.send(
+                crate::mpris::MprisNotify::StatusChanged);
+        }
+    }
+
+    pub(crate) fn mpris_track_changed(&self) {
+        let Some(mpris) = &self.mpris else { return };
+        let metadata = self.engine.current_track_metadata()
+            .unwrap_or_default();
+        *mpris.shared.track.lock().unwrap() = crate::mpris::MprisTrack {
+            path: self.player.playing.clone(),
+            title: metadata.title,
+            artist: metadata.artist,
+            album: metadata.album,
+            duration_micros: metadata.duration.map(|d| (d * 1e6) as i64),
+        };
+        *mpris.shared.status.lock().unwrap() =
+            if self.player.playing.is_some() { "Playing" } else { "Stopped" };
+        let _ = mpris.notify.send(crate::mpris::MprisNotify::TrackChanged);
+    }
+
+    pub(crate) fn mpris_seeked(&self, seconds: f64) {
+        if let Some(mpris) = &self.mpris {
+            let _ = mpris.notify.send(
+                crate::mpris::MprisNotify::Seeked((seconds * 1e6) as i64));
+        }
     }
 
     pub(crate) fn begin_visitor(&mut self) {
@@ -903,6 +1021,7 @@ impl Shell {
                             &title, metadata.artist.as_deref());
                     }
                     self.queue_gapless_next();
+                    self.mpris_track_changed();
                     self.chrome_dirty = true;
                 }
             }
@@ -911,6 +1030,9 @@ impl Shell {
             self.refresh_target_cache();
             self.chrome_dirty = true;
         }
+
+        // ---- MPRIS: media keys arrive as Player method calls ----
+        self.service_mpris();
 
         // ---- export results ----
         if let Some(receiver) = &self.export_results
@@ -966,6 +1088,10 @@ impl Shell {
             return false;
         };
         let keep_going = self.frame(&mut graphics, &samples, advancing);
+        // actions drain at TICK level: while quiet-asleep the frame
+        // early-outs, but MPRIS media keys must still act (found live:
+        // Next while paused sat queued forever)
+        self.drain_actions(&mut graphics);
         self.graphics = Some(graphics);
 
         // ---- fps receipt (per TICK, like v3's counter: it keeps
@@ -1165,7 +1291,6 @@ impl Shell {
             });
         });
         self.scope_rect = scope_rect_out;
-        self.drain_actions(graphics);
         let clipped = graphics.egui_ctx.tessellate(
             full_output.shapes, full_output.pixels_per_point);
         let screen = egui_wgpu::ScreenDescriptor {

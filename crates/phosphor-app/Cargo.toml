@@ -28,3 +28,4 @@ egui-winit.workspace = true
 pollster.workspace = true
 rfd.workspace = true
 png.workspace = true
+zbus.workspace = true

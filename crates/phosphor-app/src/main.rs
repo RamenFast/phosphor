@@ -17,6 +17,7 @@ mod bench;
 mod chrome;
 mod exports;
 mod keyboard;
+mod mpris;
 mod player;
 mod render;
 mod shell;
