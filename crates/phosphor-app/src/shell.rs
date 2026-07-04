@@ -279,7 +279,7 @@ impl Shell {
     fn init_graphics(&mut self, event_loop: &ActiveEventLoop) {
         #[allow(unused_imports)]
         use winit::platform::x11::WindowAttributesExtX11;
-        let attributes = Window::default_attributes()
+        let mut attributes = Window::default_attributes()
             .with_title("Phosphor")
             // WM_CLASS "phosphor" — the .desktop StartupWMClass match
             // (v3 did this via GLib.set_prgname)
@@ -289,6 +289,10 @@ impl Shell {
                 self.settings.window_width.max(320) as f64,
                 self.settings.window_height.max(240) as f64,
             ));
+        // the 4-panel scope icon (embedded, decoded once)
+        if let Some(icon) = load_window_icon() {
+            attributes = attributes.with_window_icon(Some(icon));
+        }
         let window = std::sync::Arc::new(
             event_loop.create_window(attributes).expect("window"));
 
@@ -347,6 +351,17 @@ impl Shell {
         surface.configure(&device, &config);
 
         let egui_ctx = egui::Context::default();
+        // Phosphor icon font (the crate is literally named for the
+        // app) — replaces emoji so icons render at one consistent
+        // weight/size in every theme. Regular only: active/toggled
+        // state is encoded by the carved SURFACE + accent, never by a
+        // shape swap (the design system's rule #2).
+        {
+            let mut fonts = egui::FontDefinitions::default();
+            egui_phosphor::add_to_fonts(
+                &mut fonts, egui_phosphor::Variant::Regular);
+            egui_ctx.set_fonts(fonts);
+        }
         let egui_state = egui_winit::State::new(
             egui_ctx.clone(), egui::ViewportId::ROOT, &window, None,
             None, None);
@@ -1804,6 +1819,22 @@ impl ApplicationHandler for Shell {
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
+}
+
+/// Decode the embedded 4-panel scope icon for the window title bar /
+/// taskbar. None on any decode error (an icon is never load-bearing).
+fn load_window_icon() -> Option<winit::window::Icon> {
+    let bytes = include_bytes!("../assets/icon-64.png");
+    let decoder = png::Decoder::new(std::io::Cursor::new(&bytes[..]));
+    let mut reader = decoder.read_info().ok()?;
+    let mut buffer = vec![0u8; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buffer).ok()?;
+    // the SVG rasterizes to RGBA8; guard the assumption
+    if info.color_type != png::ColorType::Rgba {
+        return None;
+    }
+    buffer.truncate(info.buffer_size());
+    winit::window::Icon::from_rgba(buffer, info.width, info.height).ok()
 }
 
 /// Scale a chrome color's alpha for the fading toast.

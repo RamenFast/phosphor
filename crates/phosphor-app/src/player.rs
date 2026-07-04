@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::shell::{Shell, UiAction};
+use egui_phosphor::regular as icon;
 
 /// v3 AUDIO_FILE_EXTENSIONS, verbatim (13 entries).
 pub const AUDIO_FILE_EXTENSIONS: [&str; 13] = [
@@ -259,18 +260,18 @@ impl Shell {
     pub(crate) fn ui_transport(&mut self, ui: &mut egui::Ui) {
         let Some(playing) = self.player.playing.clone() else { return };
         ui.horizontal(|ui| {
-            if ui.button("⏮").on_hover_text("Previous track in folder")
+            if ui.button(icon::SKIP_BACK).on_hover_text("Previous track in folder")
                 .clicked()
             {
                 self.actions.push(UiAction::PlayerPrevious);
             }
-            let play_label = if self.player.paused { "▶" } else { "⏸" };
+            let play_label = if self.player.paused { icon::PLAY } else { icon::PAUSE };
             if ui.button(play_label)
                 .on_hover_text("Play/pause the loaded file").clicked()
             {
                 self.actions.push(UiAction::PlayerTogglePause);
             }
-            if ui.button("⏭").on_hover_text("Next track in folder")
+            if ui.button(icon::SKIP_FORWARD).on_hover_text("Next track in folder")
                 .clicked()
             {
                 self.actions.push(UiAction::PlayerNext);
@@ -285,29 +286,27 @@ impl Shell {
                 self.settings.playback_volume = volume;
                 self.engine.set_volume(cubic_volume(volume));
             }
-            let mut vacuum = self.settings.vacuum_enabled;
-            if ui.toggle_value(&mut vacuum, "⌀")
-                .on_hover_text(
-                    "Vacuum mode — the track plays as light only: \
-                     nothing reaches\nthe speakers, the beam sees \
-                     everything. (Sound can't cross\na vacuum; a CRT \
-                     is a vacuum tube.)")
-                .clicked()
+            // Vacuum is a signature control → carved/dimensional.
+            if self.carved_toggle(ui, "\u{2300}",
+                self.settings.vacuum_enabled,
+                "Vacuum mode — the track plays as light only: nothing \
+                 reaches\nthe speakers, the beam sees everything. \
+                 (Sound can't cross\na vacuum; a CRT is a vacuum tube.)")
             {
-                self.settings.vacuum_enabled = vacuum;
+                self.settings.vacuum_enabled = !self.settings.vacuum_enabled;
                 self.actions.push(UiAction::PlayerVacuumToggled);
                 self.actions.push(UiAction::SaveSettings);
             }
             let mut shuffle = self.settings.shuffle;
-            if ui.toggle_value(&mut shuffle, "🔀").clicked() {
+            if ui.toggle_value(&mut shuffle, icon::SHUFFLE).clicked() {
                 self.settings.shuffle = shuffle;
                 self.actions.push(UiAction::SaveSettings);
                 self.actions.push(UiAction::GaplessRequeue);
             }
             let repeat_label = match self.settings.repeat_mode.as_str() {
-                "all" => "🔁",
-                "one" => "🔂",
-                _ => "→",
+                "all" => icon::REPEAT,
+                "one" => icon::REPEAT_ONCE,
+                _ => icon::ARROW_RIGHT,
             };
             if ui.button(repeat_label)
                 .on_hover_text("Repeat: off → all → one").clicked()
@@ -322,7 +321,7 @@ impl Shell {
                 self.actions.push(UiAction::GaplessRequeue);
             }
             let mut panel = self.player.panel_open;
-            if ui.toggle_value(&mut panel, "☰")
+            if ui.toggle_value(&mut panel, icon::LIST)
                 .on_hover_text("Playlist (L)").clicked()
             {
                 self.player.panel_open = panel;

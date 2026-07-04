@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Phosphor v4 icon: four scope views, one per quadrant, each the
+       signature shape of a display mode. Deep CRT black, P7-green beam.
+       Sharp corners (the house rule); a hairline divider grid. -->
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="50%" r="60%">
+      <stop offset="0%" stop-color="#8dffb0" stop-opacity="0.95"/>
+      <stop offset="55%" stop-color="#33e07a" stop-opacity="0.65"/>
+      <stop offset="100%" stop-color="#0d3a1f" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="1.4"/>
+    </filter>
+  </defs>
+
+  <rect width="256" height="256" fill="#050807"/>
+  <!-- quadrant divider hairlines -->
+  <g stroke="#1f7a46" stroke-opacity="0.5" stroke-width="1">
+    <line x1="128" y1="8" x2="128" y2="248"/>
+    <line x1="8" y1="128" x2="248" y2="128"/>
+  </g>
+  <rect x="8" y="8" width="240" height="240" fill="none"
+        stroke="#2fae63" stroke-opacity="0.35" stroke-width="1.5"/>
+
+  <g fill="none" stroke="#63ffa8" stroke-width="3.2"
+     stroke-linecap="round" stroke-linejoin="round" filter="url(#soft)">
+    <!-- top-left: XY knot (a lissajous 3:2) -->
+    <path d="M 30 64 C 44 40, 74 40, 78 64 C 82 88, 52 100, 40 82
+             C 28 64, 54 46, 68 62 C 82 78, 60 92, 46 78"/>
+    <!-- top-right: Takens torus (a projected donut knot) -->
+    <path d="M 168 40 C 210 40, 224 64, 200 82 C 176 100, 150 78, 168 60
+             C 186 42, 218 58, 206 76"/>
+    <ellipse cx="192" cy="64" rx="30" ry="16" stroke-opacity="0.5"/>
+    <!-- bottom-left: waveform -->
+    <path d="M 20 192 L 34 192 L 40 168 L 50 214 L 60 176 L 70 206
+             L 80 184 L 92 192 L 108 192"/>
+    <!-- bottom-right: radial spectrum (rays from a center) -->
+    <g stroke-width="2.6">
+      <line x1="192" y1="192" x2="192" y2="156"/>
+      <line x1="192" y1="192" x2="222" y2="174"/>
+      <line x1="192" y1="192" x2="224" y2="204"/>
+      <line x1="192" y1="192" x2="206" y2="224"/>
+      <line x1="192" y1="192" x2="176" y2="222"/>
+      <line x1="192" y1="192" x2="160" y2="200"/>
+      <line x1="192" y1="192" x2="164" y2="170"/>
+    </g>
+    <circle cx="192" cy="192" r="4" fill="#8dffb0" stroke="none"/>
+  </g>
+</svg>

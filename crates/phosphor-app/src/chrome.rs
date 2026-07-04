@@ -6,6 +6,7 @@
 //! else waits for the clean-shutdown catch-all.
 
 use crate::shell::{Shell, UiAction};
+use egui_phosphor::regular as icon;
 
 /// v3 DISPLAY_MODES, id → label, exact order.
 pub const DISPLAY_MODES: [(&str, &str); 11] = [
@@ -71,14 +72,14 @@ impl Shell {
                     UiAction::CaptureOn
                 });
             }
-            if ui.button("📂").on_hover_text("Play audio file (O)")
+            if ui.button(icon::FOLDER_OPEN).on_hover_text("Play audio file (O)")
                 .clicked()
             {
                 self.actions.push(UiAction::OpenFile);
             }
             if self.settings.show_pin_button {
                 let mut pinned = self.settings.pinned;
-                if ui.toggle_value(&mut pinned, "📌")
+                if ui.toggle_value(&mut pinned, icon::PUSH_PIN)
                     .on_hover_text("Pin above other windows (P)")
                     .clicked()
                 {
@@ -89,10 +90,10 @@ impl Shell {
             // pack_end order, right → left
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let kind_icon = match self.settings.target_id.as_deref() {
-                    Some(id) if id.starts_with("app:") => "🎵",
-                    Some(id) if id.ends_with(".monitor") => "🔊",
-                    Some(_) => "🎙",
-                    None => "🔊",
+                    Some(id) if id.starts_with("app:") => icon::MUSIC_NOTE,
+                    Some(id) if id.ends_with(".monitor") => icon::SPEAKER_HIGH,
+                    Some(_) => icon::MICROPHONE,
+                    None => icon::SPEAKER_HIGH,
                 };
                 ui.label(kind_icon);
 
@@ -130,7 +131,7 @@ impl Shell {
                         "What to scope: APP = one playing application, \
                          OUT = everything on that output, IN = microphones");
 
-                if ui.button("⟳")
+                if ui.button(icon::ARROW_CLOCKWISE)
                     .on_hover_text("Re-scan devices and playing apps")
                     .clicked()
                 {
@@ -156,19 +157,19 @@ impl Shell {
                         }
                     });
 
-                if ui.button("📷")
+                if ui.button(icon::CAMERA)
                     .on_hover_text("Snapshot to ~/Pictures/Phosphor (S)")
                     .clicked()
                 {
                     self.actions.push(UiAction::SaveSnapshot);
                 }
-                if ui.button("⏺")
+                if ui.button(icon::RECORD)
                     .on_hover_text("Save the last 10 s as mp4 with sound (C)")
                     .clicked()
                 {
                     self.actions.push(UiAction::SaveClip);
                 }
-                ui.toggle_value(&mut self.settings_panel_open, "⚙")
+                ui.toggle_value(&mut self.settings_panel_open, icon::GEAR)
                     .on_hover_text("Settings");
 
                 // status text expands in the middle (ellipsized by clip)
