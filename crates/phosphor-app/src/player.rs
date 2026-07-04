@@ -403,6 +403,7 @@ impl Shell {
             self.engine.set_playback_paused(true);
         }
         self.queue_gapless_next();
+        self.mpris_seeked(target); // v4 fix: Seeked really emits
         self.wake_render_loop();
     }
 }

@@ -5,8 +5,6 @@
 //! marked "yes" call save() at the moment they change, everything
 //! else waits for the clean-shutdown catch-all.
 
-use phosphor_audio::TargetKind;
-
 use crate::shell::{Shell, UiAction};
 
 /// v3 DISPLAY_MODES, id → label, exact order.
@@ -54,6 +52,7 @@ const MAX_FPS_PRESETS: [i64; 10] = [0, 30, 60, 90, 120, 144, 165, 240, 360, 480]
 /// 8 v3 style ids keep their names; "system" is dark, like v3's
 /// pass-through resolves on Ben's desktop).
 /// (id, panel_fill, window_fill, accent, text, translucent_panels)
+#[allow(clippy::type_complexity)]
 pub const UI_STYLES: [(&str, [u8; 3], [u8; 3], [u8; 3], [u8; 3], bool); 8] = [
     ("system",     [30, 30, 34],    [24, 24, 27],  [110, 170, 255], [222, 222, 222], false),
     ("dark",       [30, 30, 34],    [24, 24, 27],  [110, 170, 255], [222, 222, 222], false),
@@ -181,10 +180,8 @@ impl Shell {
                 {
                     self.actions.push(UiAction::SaveClip);
                 }
-                if ui.toggle_value(&mut self.settings_panel_open, "⚙")
-                    .on_hover_text("Settings")
-                    .clicked()
-                {}
+                ui.toggle_value(&mut self.settings_panel_open, "⚙")
+                    .on_hover_text("Settings");
 
                 // status text expands in the middle (ellipsized by clip)
                 let status = self.status_line.clone();
@@ -458,9 +455,7 @@ impl Shell {
                     }
                 }
             });
-        if ui.checkbox(&mut self.settings.show_pin_button, "Pin button")
-            .changed()
-        {}
+        ui.checkbox(&mut self.settings.show_pin_button, "Pin button");
         if ui.checkbox(&mut self.settings.show_now_playing, "Track info")
             .on_hover_text(
                 "Fade the artist/title into the corner when the song \
@@ -820,9 +815,6 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                     self.target_cache.first().map(|t| t.combo_id())
                 });
         }
-        let _ = self.target_cache.iter()
-            .map(|t| t.kind == TargetKind::App)
-            .count();
     }
 }
 
