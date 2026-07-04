@@ -25,7 +25,9 @@ phosphor-render-cpu = { path = "crates/phosphor-render-cpu" }
 phosphor-audio = { path = "crates/phosphor-audio" }
 phosphor-studio = { path = "crates/phosphor-studio" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order: .phos headers must repack in their original key order
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.10"
 rustfft = "6"
 rayon = "1"
 wide = "0.7"
