@@ -502,7 +502,9 @@ impl GpuRenderer {
     }
 
     /// Composite to the offscreen target and read RGBA8 back (tight rows).
-    pub fn composite_and_read(&mut self) -> Vec<u8> {
+    /// Record the composite pass into a fresh encoder (shared by the
+    /// readback path and the bench's submit-only path).
+    fn encode_composite(&mut self) -> wgpu::CommandEncoder {
         let theme = self.theme;
         let composite_data: [f32; 24] = [
             theme.beam_color[0], theme.beam_color[1],
@@ -542,16 +544,6 @@ impl GpuRenderer {
                 ],
             });
 
-        let bytes_per_row = (self.width * 4).next_multiple_of(256);
-        let readback = self.device.create_buffer(
-            &wgpu::BufferDescriptor {
-                label: Some("readback"),
-                size: bytes_per_row as u64 * self.height as u64,
-                usage: wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            });
-
         let mut encoder = self.device.create_command_encoder(
             &Default::default());
         {
@@ -575,6 +567,37 @@ impl GpuRenderer {
             pass.set_bind_group(0, &bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
+        encoder
+    }
+
+    /// Composite to the offscreen target and submit WITHOUT readback —
+    /// the bench's throughput path (read back once at the end for a
+    /// checksum, never per frame).
+    pub fn composite_submit(&mut self) {
+        let encoder = self.encode_composite();
+        self.queue.submit([encoder.finish()]);
+    }
+
+    /// Block until all submitted work completes (bench pacing: bounded
+    /// pipelining so throughput numbers measure the GPU, not a queue).
+    pub fn wait_idle(&self) {
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+    }
+
+    pub fn composite_and_read(&mut self) -> Vec<u8> {
+        let bytes_per_row = (self.width * 4).next_multiple_of(256);
+        let readback = self.device.create_buffer(
+            &wgpu::BufferDescriptor {
+                label: Some("readback"),
+                size: bytes_per_row as u64 * self.height as u64,
+                usage: wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+        let mut encoder = self.encode_composite();
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: &self.output_texture,
