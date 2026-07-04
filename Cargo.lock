@@ -1770,6 +1770,10 @@ name = "phosphor-render-gpu"
 version = "4.0.0-dev"
 dependencies = [
  "phosphor-beam",
+ "phosphor-dsp",
+ "phosphor-render-cpu",
+ "pollster",
+ "wgpu",
 ]
 
 [[package]]

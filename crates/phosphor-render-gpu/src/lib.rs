@@ -1,15 +1,634 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! wgpu renderer: the three v3 passes (decay, beam, composite) as WGSL
-//! plus the bloom chain; f16 energy buffers when `shaderFloat16` (RADV
-//! reports true on Ben's 6750 XT); offscreen mode for headless render
-//! and `phosphor bench`.
+//! wgpu renderer: v3's decay → beam → composite pipeline, offscreen-first
+//! (a texture target and readback — the window path in wave 2 reuses the
+//! same passes against a surface view).
 //!
-//! Non-negotiables carried from v3 and the baseline:
-//! - Mailbox present + an owned frame loop. BENCH.md's core finding:
-//!   v3 GL sags to 90–104 fps at partial GPU load (amdgpu DPM suspect)
-//!   — v4 must hold ≥157 fps at EVERY load level, not just heavy ones.
-//! - Energy-buffer allocation failure: shed supersample, never draw
-//!   into a broken target — port v3's logic onto wgpu error scopes.
-//! - No fallback paths. An error surfaces; nothing silently degrades.
+//! Ports the v3 laws that matter:
+//! - rg16float ping-pong energy (checked against the adapter's format
+//!   features at init; rgba16float is the fallback, wastefully wide but
+//!   never wrong).
+//! - Energy-buffer allocation runs under wgpu error scopes; on failure
+//!   the renderer SHEDS SUPERSAMPLING and retries once, and never draws
+//!   into a broken target (v3's blank-scope-until-restart bug class).
+//! - The beam pass is one instanced quad per segment, additive blend;
+//!   worst case is 32,000 instances in a stalled frame (phosphor-dsp),
+//!   so the instance buffer grows geometrically and is written whole.
 
-pub mod passes {}
+use phosphor_beam::{beam_normalization, beam_sigma, glow_keep, Theme,
+                    BEAM_RADIUS_SIGMAS, FLASH_KEEP};
+
+const SEGMENT_STRIDE: u64 = 20; // p0.xy, p1.xy, intensity — five f32
+
+pub struct GpuRenderer {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    energy_format: wgpu::TextureFormat,
+
+    width: u32,
+    height: u32,
+    supersample: u32,
+    /// True when allocation pressure forced supersample back to 1.
+    pub shed_supersample: bool,
+
+    energy_views: [wgpu::TextureView; 2],
+    _energy_textures: [wgpu::Texture; 2],
+    current: usize,
+    output_texture: wgpu::Texture,
+    output_view: wgpu::TextureView,
+
+    decay_pipeline: wgpu::RenderPipeline,
+    beam_pipeline: wgpu::RenderPipeline,
+    composite_pipeline: wgpu::RenderPipeline,
+    decay_layout: wgpu::BindGroupLayout,
+    composite_layout: wgpu::BindGroupLayout,
+    decay_uniforms: wgpu::Buffer,
+    beam_uniforms: wgpu::Buffer,
+    composite_uniforms: wgpu::Buffer,
+    beam_bind_group: wgpu::BindGroup,
+    instance_buffer: wgpu::Buffer,
+    instance_capacity: u64,
+
+    pub beam_focus: f32,
+    pub persistence: f32,
+    pub theme: Theme,
+    pub grid_enabled: bool,
+    pub grid_spacing_fraction: f32,
+    pub scope_alpha: f32,
+}
+
+fn create_energy_pair(device: &wgpu::Device, format: wgpu::TextureFormat,
+                      width: u32, height: u32)
+                      -> Result<[wgpu::Texture; 2], String> {
+    device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let descriptor = wgpu::TextureDescriptor {
+        label: Some("phosphor energy"),
+        size: wgpu::Extent3d { width, height,
+                               depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+            | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    };
+    let pair = [device.create_texture(&descriptor),
+                device.create_texture(&descriptor)];
+    let validation = pollster::block_on(device.pop_error_scope());
+    let out_of_memory = pollster::block_on(device.pop_error_scope());
+    if let Some(error) = validation.or(out_of_memory) {
+        return Err(format!("energy allocation failed: {error}"));
+    }
+    Ok(pair)
+}
+
+impl GpuRenderer {
+    /// Headless renderer. `supersample` may be shed to 1 under
+    /// allocation pressure — check `shed_supersample`.
+    pub fn new_offscreen(width: u32, height: u32, supersample: u32)
+                         -> Result<GpuRenderer, String> {
+        let instance = wgpu::Instance::default();
+        let adapter = pollster::block_on(instance.request_adapter(
+            &wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: None,
+                ..Default::default()
+            })).map_err(|error| format!("no adapter: {error}"))?;
+        let (device, queue) = pollster::block_on(
+            adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            .map_err(|error| format!("no device: {error}"))?;
+
+        // rg16float is core-spec renderable+blendable, but verify — the
+        // fallback is rgba16float (wider, never wrong)
+        let features =
+            adapter.get_texture_format_features(
+                wgpu::TextureFormat::Rg16Float);
+        let energy_format = if features.allowed_usages.contains(
+            wgpu::TextureUsages::RENDER_ATTACHMENT) {
+            wgpu::TextureFormat::Rg16Float
+        } else {
+            wgpu::TextureFormat::Rgba16Float
+        };
+
+        Self::build(device, queue, energy_format, width, height,
+                    supersample)
+    }
+
+    fn build(device: wgpu::Device, queue: wgpu::Queue,
+             energy_format: wgpu::TextureFormat, width: u32, height: u32,
+             supersample: u32) -> Result<GpuRenderer, String> {
+        let supersample = supersample.max(1);
+        let mut effective_supersample = supersample;
+        let mut shed = false;
+        let energy_textures = match create_energy_pair(
+            &device, energy_format,
+            width * supersample, height * supersample) {
+            Ok(pair) => pair,
+            Err(first_error) => {
+                if supersample > 1 {
+                    // shed VRAM, keep the beam alive (v3 law)
+                    effective_supersample = 1;
+                    shed = true;
+                    create_energy_pair(&device, energy_format, width,
+                                       height)
+                        .map_err(|error| format!(
+                            "{first_error}; and after shedding: {error}"))?
+                } else {
+                    return Err(first_error);
+                }
+            }
+        };
+        let energy_views = [
+            energy_textures[0].create_view(&Default::default()),
+            energy_textures[1].create_view(&Default::default()),
+        ];
+
+        let output_texture =
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("phosphor composite"),
+                size: wgpu::Extent3d { width, height,
+                                       depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+        let output_view = output_texture.create_view(&Default::default());
+
+        let shader = device.create_shader_module(
+            wgpu::include_wgsl!("shaders.wgsl"));
+
+        let uniform_entry = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let texture_entry = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float {
+                    filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+
+        let decay_layout = device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("decay"),
+                entries: &[texture_entry(0), uniform_entry(1)],
+            });
+        let beam_layout = device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("beam"),
+                entries: &[uniform_entry(0)],
+            });
+        let composite_layout = device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("composite"),
+                entries: &[texture_entry(0), uniform_entry(1)],
+            });
+
+        let pipeline_layout = |layout: &wgpu::BindGroupLayout, label| {
+            device.create_pipeline_layout(
+                &wgpu::PipelineLayoutDescriptor {
+                    label: Some(label),
+                    bind_group_layouts: &[layout],
+                    push_constant_ranges: &[],
+                })
+        };
+
+        let decay_pipeline = device.create_render_pipeline(
+            &wgpu::RenderPipelineDescriptor {
+                label: Some("decay"),
+                layout: Some(&pipeline_layout(&decay_layout, "decay")),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("fullscreen_vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("decay_fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: energy_format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview: None,
+                cache: None,
+            });
+
+        let additive = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+        };
+        let beam_pipeline = device.create_render_pipeline(
+            &wgpu::RenderPipelineDescriptor {
+                label: Some("beam"),
+                layout: Some(&pipeline_layout(&beam_layout, "beam")),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("beam_vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[wgpu::VertexBufferLayout {
+                        array_stride: SEGMENT_STRIDE,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &[
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32x4,
+                                offset: 0,
+                                shader_location: 0,
+                            },
+                            wgpu::VertexAttribute {
+                                format: wgpu::VertexFormat::Float32,
+                                offset: 16,
+                                shader_location: 1,
+                            },
+                        ],
+                    }],
+                },
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("beam_fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: energy_format,
+                        blend: Some(additive),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview: None,
+                cache: None,
+            });
+
+        let composite_pipeline = device.create_render_pipeline(
+            &wgpu::RenderPipelineDescriptor {
+                label: Some("composite"),
+                layout: Some(&pipeline_layout(&composite_layout,
+                                              "composite")),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("fullscreen_vs"),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: Default::default(),
+                depth_stencil: None,
+                multisample: Default::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("composite_fs"),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview: None,
+                cache: None,
+            });
+
+        let uniform_buffer = |label, size| device.create_buffer(
+            &wgpu::BufferDescriptor {
+                label: Some(label),
+                size,
+                usage: wgpu::BufferUsages::UNIFORM
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+        let decay_uniforms = uniform_buffer("decay uniforms", 16);
+        let beam_uniforms = uniform_buffer("beam uniforms", 32);
+        let composite_uniforms = uniform_buffer("composite uniforms", 96);
+
+        let beam_bind_group = device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                label: Some("beam"),
+                layout: &beam_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: beam_uniforms.as_entire_binding(),
+                }],
+            });
+
+        let instance_capacity = 4096 * SEGMENT_STRIDE;
+        let instance_buffer = device.create_buffer(
+            &wgpu::BufferDescriptor {
+                label: Some("beam instances"),
+                size: instance_capacity,
+                usage: wgpu::BufferUsages::VERTEX
+                    | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+
+        Ok(GpuRenderer {
+            device,
+            queue,
+            energy_format,
+            width,
+            height,
+            supersample: effective_supersample,
+            shed_supersample: shed,
+            energy_views,
+            _energy_textures: energy_textures,
+            current: 0,
+            output_texture,
+            output_view,
+            decay_pipeline,
+            beam_pipeline,
+            composite_pipeline,
+            decay_layout,
+            composite_layout,
+            decay_uniforms,
+            beam_uniforms,
+            composite_uniforms,
+            beam_bind_group,
+            instance_buffer,
+            instance_capacity,
+            beam_focus: 1.6,
+            persistence: 0.7,
+            theme: Theme::preset("P7 Green").unwrap(),
+            grid_enabled: true,
+            grid_spacing_fraction: 0.1125,
+            scope_alpha: 1.0,
+        })
+    }
+
+    pub fn energy_format(&self) -> wgpu::TextureFormat {
+        self.energy_format
+    }
+
+    pub fn supersample(&self) -> u32 {
+        self.supersample
+    }
+
+    /// Decay + deposit this frame's segments (logical pixels).
+    pub fn advance(&mut self, segments: &[[f32; 5]]) {
+        let buffer_width = self.width * self.supersample;
+        let buffer_height = self.height * self.supersample;
+        let pixel_scale = self.supersample as f32;
+        let sigma = beam_sigma(self.beam_focus, pixel_scale);
+
+        self.queue.write_buffer(
+            &self.decay_uniforms, 0,
+            float_bytes(&[FLASH_KEEP, glow_keep(self.persistence),
+                          0.0, 0.0]));
+        self.queue.write_buffer(
+            &self.beam_uniforms, 0,
+            float_bytes(&[buffer_width as f32, buffer_height as f32,
+                          sigma * BEAM_RADIUS_SIGMAS, sigma,
+                          beam_normalization(self.beam_focus),
+                          pixel_scale, 0.0, 0.0]));
+
+        if !segments.is_empty() {
+            let needed = segments.len() as u64 * SEGMENT_STRIDE;
+            if needed > self.instance_capacity {
+                self.instance_capacity =
+                    needed.next_power_of_two();
+                self.instance_buffer = self.device.create_buffer(
+                    &wgpu::BufferDescriptor {
+                        label: Some("beam instances"),
+                        size: self.instance_capacity,
+                        usage: wgpu::BufferUsages::VERTEX
+                            | wgpu::BufferUsages::COPY_DST,
+                        mapped_at_creation: false,
+                    });
+            }
+            let flat: &[f32] = unsafe {
+                std::slice::from_raw_parts(
+                    segments.as_ptr().cast::<f32>(), segments.len() * 5)
+            };
+            self.queue.write_buffer(&self.instance_buffer, 0,
+                                    float_bytes(flat));
+        }
+
+        let source = self.current;
+        let target = 1 - source;
+        let decay_bind_group = self.device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                label: Some("decay"),
+                layout: &self.decay_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.energy_views[source]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self.decay_uniforms
+                            .as_entire_binding(),
+                    },
+                ],
+            });
+
+        let mut encoder = self.device.create_command_encoder(
+            &Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(
+                &wgpu::RenderPassDescriptor {
+                    label: Some("decay"),
+                    color_attachments: &[Some(
+                        wgpu::RenderPassColorAttachment {
+                            view: &self.energy_views[target],
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(
+                                    wgpu::Color::TRANSPARENT),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                    ..Default::default()
+                });
+            pass.set_pipeline(&self.decay_pipeline);
+            pass.set_bind_group(0, &decay_bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        if !segments.is_empty() {
+            let mut pass = encoder.begin_render_pass(
+                &wgpu::RenderPassDescriptor {
+                    label: Some("beam"),
+                    color_attachments: &[Some(
+                        wgpu::RenderPassColorAttachment {
+                            view: &self.energy_views[target],
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                    ..Default::default()
+                });
+            pass.set_pipeline(&self.beam_pipeline);
+            pass.set_bind_group(0, &self.beam_bind_group, &[]);
+            pass.set_vertex_buffer(
+                0, self.instance_buffer.slice(
+                    ..segments.len() as u64 * SEGMENT_STRIDE));
+            pass.draw(0..6, 0..segments.len() as u32);
+        }
+        self.queue.submit([encoder.finish()]);
+        self.current = target;
+    }
+
+    /// Composite to the offscreen target and read RGBA8 back (tight rows).
+    pub fn composite_and_read(&mut self) -> Vec<u8> {
+        let theme = self.theme;
+        let composite_data: [f32; 24] = [
+            theme.beam_color[0], theme.beam_color[1],
+            theme.beam_color[2], 0.0,
+            theme.flash_color[0], theme.flash_color[1],
+            theme.flash_color[2], 0.0,
+            theme.grid_color[0], theme.grid_color[1],
+            theme.grid_color[2], 0.0,
+            theme.background_color[0], theme.background_color[1],
+            theme.background_color[2], 0.0,
+            self.width as f32, self.height as f32,
+            self.grid_spacing_fraction
+                * self.width.min(self.height) as f32,
+            if self.grid_enabled { 1.0 } else { 0.0 },
+            // the WGSL field is i32; smuggle the bit pattern through
+            f32::from_bits(self.supersample),
+            self.scope_alpha, 0.0, 0.0,
+        ];
+        self.queue.write_buffer(&self.composite_uniforms, 0,
+                                float_bytes(&composite_data));
+
+        let bind_group = self.device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                label: Some("composite"),
+                layout: &self.composite_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(
+                            &self.energy_views[self.current]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: self.composite_uniforms
+                            .as_entire_binding(),
+                    },
+                ],
+            });
+
+        let bytes_per_row = (self.width * 4).next_multiple_of(256);
+        let readback = self.device.create_buffer(
+            &wgpu::BufferDescriptor {
+                label: Some("readback"),
+                size: bytes_per_row as u64 * self.height as u64,
+                usage: wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+
+        let mut encoder = self.device.create_command_encoder(
+            &Default::default());
+        {
+            let mut pass = encoder.begin_render_pass(
+                &wgpu::RenderPassDescriptor {
+                    label: Some("composite"),
+                    color_attachments: &[Some(
+                        wgpu::RenderPassColorAttachment {
+                            view: &self.output_view,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(
+                                    wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                    ..Default::default()
+                });
+            pass.set_pipeline(&self.composite_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &self.output_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(bytes_per_row),
+                    rows_per_image: None,
+                },
+            },
+            wgpu::Extent3d {
+                width: self.width,
+                height: self.height,
+                depth_or_array_layers: 1,
+            });
+        self.queue.submit([encoder.finish()]);
+
+        let slice = readback.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+        receiver.recv().expect("map channel").expect("map failed");
+        let mapped = slice.get_mapped_range();
+        let mut pixels =
+            Vec::with_capacity((self.width * self.height * 4) as usize);
+        for row in 0..self.height {
+            let start = (row * bytes_per_row) as usize;
+            pixels.extend_from_slice(
+                &mapped[start..start + (self.width * 4) as usize]);
+        }
+        drop(mapped);
+        readback.unmap();
+        pixels
+    }
+
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+}
+
+/// f32 slice → bytes without a bytemuck dependency.
+fn float_bytes(values: &[f32]) -> &[u8] {
+    unsafe {
+        std::slice::from_raw_parts(values.as_ptr().cast::<u8>(),
+                                   std::mem::size_of_val(values))
+    }
+}
