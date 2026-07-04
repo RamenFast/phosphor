@@ -1973,6 +1973,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "egui-winit",
+ "phosphor-audio",
  "phosphor-beam",
  "phosphor-dsp",
  "phosphor-proto",

@@ -360,6 +360,18 @@ impl AudioEngine {
         self.ring.lock().unwrap().take_stereo_samples()
     }
 
+    /// Cheap peek for the shell's idle loop: is there audio waiting?
+    pub fn pending_scope_samples(&self) -> usize {
+        let mix_pending: usize = self
+            .mix_members
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|m| m.lock().unwrap().len())
+            .sum();
+        self.ring.lock().unwrap().pending_len() + mix_pending
+    }
+
     /// Fold pending mix-member audio into the scope ring: sum with
     /// zero-padding to the longest member (a silent app contributes
     /// silence, a paused one just stops contributing). Inter-app skew

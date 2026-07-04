@@ -89,6 +89,14 @@ impl CpuRenderer {
 
     /// Decay both planes, then deposit this frame's segments (logical
     /// pixels; scaled by supersample here, mirroring v3's pixel_scale).
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
     pub fn advance(&mut self, segments: &[[f32; 5]]) {
         let flash_keep = f32x8::splat(FLASH_KEEP);
         let slow_keep = f32x8::splat(glow_keep(self.persistence));

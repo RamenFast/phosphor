@@ -189,11 +189,10 @@ fn stderr_tail(child: &mut Child) -> String {
         .chars().rev().collect()
 }
 
-/// Build the computer + renderer the way v3's offline pipeline did:
-/// mode/gain/kit from settings, persistence and theme on the renderer.
-pub fn build_pipeline(settings: &Settings, rate: u32, width: u32,
-                      height: u32, kind: RendererKind)
-                      -> Result<(Computer, FrameSink), (i32, String)> {
+/// Computer from settings: mode/gain/beam-energy/kit — shared by the
+/// offline pipeline and the live shell (one wiring, one truth).
+pub fn build_computer(settings: &Settings, rate: u32)
+                      -> Result<Computer, (i32, String)> {
     let mode = settings.display_mode.parse::<Mode>()
         .map_err(|error| (3, error))?;
     let mut computer = Computer::new();
@@ -214,7 +213,11 @@ pub fn build_pipeline(settings: &Settings, rate: u32, width: u32,
                 computer.set_kit(&stages);
             }
         }
+    Ok(computer)
+}
 
+/// Theme from settings (Custom / preset / AMOLED) — shell-shared too.
+pub fn build_theme(settings: &Settings) -> Theme {
     let mut theme = if settings.theme_name == "Custom" {
         Theme::custom(settings.custom_beam_color,
                       settings.custom_grid_color)
@@ -225,6 +228,16 @@ pub fn build_pipeline(settings: &Settings, rate: u32, width: u32,
     if settings.amoled_background {
         theme = theme.with_amoled();
     }
+    theme
+}
+
+/// Build the computer + renderer the way v3's offline pipeline did:
+/// mode/gain/kit from settings, persistence and theme on the renderer.
+pub fn build_pipeline(settings: &Settings, rate: u32, width: u32,
+                      height: u32, kind: RendererKind)
+                      -> Result<(Computer, FrameSink), (i32, String)> {
+    let computer = build_computer(settings, rate)?;
+    let theme = build_theme(settings);
     let grid_fraction =
         phosphor_beam::grid_spacing_fraction(settings.gain);
 

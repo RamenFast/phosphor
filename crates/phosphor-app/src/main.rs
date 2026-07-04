@@ -15,6 +15,7 @@ use std::process::ExitCode;
 
 mod bench;
 mod render;
+mod shell;
 mod signals;
 
 const PENDING: &[&str] = &["probe", "tap", "ctl", "feed", "kit",
@@ -41,12 +42,9 @@ fn main() -> ExitCode {
                        progress; see V4PLAN.md)");
             2
         }
-        _ => {
-            eprintln!("phosphor GUI: not built yet (v4 wave 2); v3 \
-                       remains the daily driver until the parity \
-                       checklist passes");
-            2
-        }
+        // GUI is the default command (flags like --mini/--visitor/
+        // --fps-log fall through to the shell's own parser)
+        _ => shell::run(&arguments),
     };
     ExitCode::from(code as u8)
 }
