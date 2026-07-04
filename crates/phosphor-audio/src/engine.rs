@@ -33,12 +33,26 @@ pub enum AudioEvent {
     StreamEnded,
     /// The default sink changed (v3 followed it for the ⭐ entry).
     DefaultSinkChanged,
+    /// File playback reached its true end on its own (never sent for
+    /// an explicit stop — v3's on_stream_ended contract).
+    PlaybackEnded,
+    /// A track began decoding (first play or a gapless splice);
+    /// metadata + cover art are ready to read.
+    TrackStarted { path: std::path::PathBuf },
 }
 
 enum Command {
     ConfigureRate(u32),
     StartCapture(ConnectSpec),
     StopCapture,
+    CreatePlayback {
+        rate: u32,
+        ring: Arc<crate::playback::AudibleRing>,
+        volume: f32,
+    },
+    DestroyPlayback,
+    SetPlaybackActive(bool),
+    SetVolume(f32),
     SweepVacuum(mpsc::Sender<usize>),
     Shutdown,
 }
@@ -54,6 +68,11 @@ pub struct AudioEngine {
     ring: Arc<Mutex<SampleRing>>,
     mirror: Arc<Mutex<GraphMirror>>,
     flags: Arc<SharedFlags>,
+    events: mpsc::Sender<AudioEvent>,
+    sample_rate: std::sync::atomic::AtomicU32,
+    playback: Mutex<Option<crate::playback::PlayerSession>>,
+    playback_paused: AtomicBool,
+    volume: Mutex<f32>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -76,6 +95,7 @@ impl AudioEngine {
             let ring = ring.clone();
             let mirror = mirror.clone();
             let flags = flags.clone();
+            let events = events.clone();
             std::thread::Builder::new()
                 .name("phosphor-audio-pw".into())
                 .spawn(move || {
@@ -98,6 +118,11 @@ impl AudioEngine {
                 ring,
                 mirror,
                 flags,
+                events,
+                sample_rate: std::sync::atomic::AtomicU32::new(sample_rate),
+                playback: Mutex::new(None),
+                playback_paused: AtomicBool::new(false),
+                volume: Mutex::new(1.0),
                 thread: Some(thread),
             }),
             Ok(Err(message)) => Err(message),
@@ -141,7 +166,143 @@ impl AudioEngine {
     /// Scope feed rate; takes effect on the next capture start (v3 law).
     pub fn configure_sample_rate(&self, sample_rate: u32) {
         self.ring.lock().unwrap().configure_sample_rate(sample_rate);
+        self.sample_rate
+            .store(sample_rate, std::sync::atomic::Ordering::Relaxed);
         let _ = self.commands.send(Command::ConfigureRate(sample_rate));
+    }
+
+    // ---- file playback ---------------------------------------------------
+
+    /// Play an audio file (or .phos postcard), feeding the scope the
+    /// same resampled stream the ear gets. `vacuum` plays as light
+    /// only. Any previous playback stops silently first (v3 law: an
+    /// explicit stop never reports "ended").
+    pub fn start_file(&self, path: &std::path::Path, seek_seconds: f64,
+                      loop_forever: bool, vacuum: bool) {
+        self.stop_playback();
+        let pipe_rate = self.sample_rate.load(std::sync::atomic::Ordering::Relaxed);
+        let audible = if vacuum {
+            None
+        } else {
+            Some(crate::playback::AudibleRing::new(pipe_rate))
+        };
+        if let Some(ring) = &audible {
+            let _ = self.commands.send(Command::CreatePlayback {
+                rate: pipe_rate,
+                ring: ring.clone(),
+                volume: *self.volume.lock().unwrap(),
+            });
+        }
+        let session = crate::playback::spawn_player(
+            crate::playback::PlayerConfig {
+                path: path.to_path_buf(),
+                seek_seconds,
+                loop_forever,
+                vacuum,
+                pipe_rate,
+            },
+            self.ring.clone(),
+            audible,
+            self.events.clone(),
+        );
+        *self.playback.lock().unwrap() = Some(session);
+        self.playback_paused.store(false, Ordering::Relaxed);
+    }
+
+    /// Stop playback explicitly — no PlaybackEnded event (v3 contract).
+    pub fn stop_playback(&self) {
+        let session = self.playback.lock().unwrap().take();
+        if let Some(mut session) = session {
+            if let Some(ring) = &session.audible {
+                ring.close();
+            }
+            let _ = session.control.send(crate::playback::PlayerCommand::Stop);
+            let _ = self.commands.send(Command::DestroyPlayback);
+            if let Some(thread) = session.thread.take() {
+                let _ = thread.join();
+            }
+            // pending cleared, history kept (a clip right after stop
+            // still works — v3 law)
+            self.ring.lock().unwrap().clear_pending();
+        }
+        self.playback_paused.store(false, Ordering::Relaxed);
+    }
+
+    pub fn is_playing_file(&self) -> bool {
+        self.playback.lock().unwrap().is_some()
+    }
+
+    /// Freeze/unfreeze file playback. Audible: the PW stream goes
+    /// inactive and backpressure freezes the decoder (v3: SIGSTOP).
+    /// Vacuum: the reader gate (v3: the vacuum gate event).
+    pub fn set_playback_paused(&self, paused: bool) {
+        if paused == self.playback_paused.load(Ordering::Relaxed) {
+            return;
+        }
+        let guard = self.playback.lock().unwrap();
+        let Some(session) = guard.as_ref() else { return };
+        if session.vacuum {
+            let command = if paused {
+                crate::playback::PlayerCommand::Pause
+            } else {
+                crate::playback::PlayerCommand::Resume
+            };
+            let _ = session.control.send(command);
+        } else {
+            let _ = self.commands.send(Command::SetPlaybackActive(!paused));
+        }
+        drop(guard);
+        self.playback_paused.store(paused, Ordering::Relaxed);
+    }
+
+    pub fn playback_paused(&self) -> bool {
+        self.playback_paused.load(Ordering::Relaxed)
+    }
+
+    /// How far into the current file playback we are, in seconds.
+    pub fn playback_position_seconds(&self) -> f64 {
+        self.playback
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| {
+                s.shared
+                    .position_micros
+                    .load(std::sync::atomic::Ordering::Relaxed) as f64
+                    / 1e6
+            })
+            .unwrap_or(0.0)
+    }
+
+    /// Queue the next track for a gapless splice at EOF (None clears).
+    pub fn set_next_track(&self, path: Option<std::path::PathBuf>) {
+        if let Some(session) = self.playback.lock().unwrap().as_ref() {
+            let _ = session
+                .control
+                .send(crate::playback::PlayerCommand::SetNext(path));
+        }
+    }
+
+    /// Playback volume (0.0–1.0), applied to the PW stream.
+    pub fn set_volume(&self, volume: f32) {
+        *self.volume.lock().unwrap() = volume;
+        let _ = self.commands.send(Command::SetVolume(volume));
+    }
+
+    pub fn current_track_metadata(&self) -> Option<crate::metadata::TrackMetadata> {
+        self.playback
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| s.shared.current_metadata.lock().unwrap().clone())
+    }
+
+    pub fn current_cover_art(&self) -> Option<crate::metadata::CoverArt> {
+        self.playback
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|s| s.shared.current_cover.lock().unwrap().clone())
     }
 
     pub fn take_stereo_samples(&self) -> Vec<f32> {
@@ -177,9 +338,15 @@ impl Drop for AudioEngine {
 /// Everything the loop thread owns, reachable from listener closures.
 struct LoopState {
     capture: Option<CaptureHolder>,
+    playback: Option<PlaybackHolder>,
     node_watches: HashMap<u32, NodeWatch>,
     metadata: Option<MetadataHold>,
     sample_rate: u32,
+}
+
+struct PlaybackHolder {
+    stream: pw::stream::StreamRc,
+    _listener: pw::stream::StreamListener<()>,
 }
 
 struct CaptureHolder {
@@ -233,6 +400,7 @@ fn run_loop(
 
     let state = Rc::new(std::cell::RefCell::new(LoopState {
         capture: None,
+        playback: None,
         node_watches: HashMap::new(),
         metadata: None,
         sample_rate,
@@ -327,6 +495,35 @@ fn run_loop(
             Command::StopCapture => {
                 stop_capture(&state, &flags);
                 ring.lock().unwrap().clear_pending();
+            }
+            Command::CreatePlayback { rate, ring, volume } => {
+                if let Some(old) = state.borrow_mut().playback.take() {
+                    let _ = old.stream.disconnect();
+                }
+                match build_playback_stream(&core, rate, ring, volume) {
+                    Ok(holder) => state.borrow_mut().playback = Some(holder),
+                    Err(error) => {
+                        eprintln!("phosphor-audio: playback stream failed: {error}");
+                    }
+                }
+            }
+            Command::DestroyPlayback => {
+                if let Some(holder) = state.borrow_mut().playback.take() {
+                    let _ = holder.stream.disconnect();
+                }
+            }
+            Command::SetPlaybackActive(active) => {
+                if let Some(holder) = state.borrow().playback.as_ref() {
+                    let _ = holder.stream.set_active(active);
+                }
+            }
+            Command::SetVolume(volume) => {
+                if let Some(holder) = state.borrow().playback.as_ref() {
+                    let _ = holder.stream.set_control(
+                        pw::spa::sys::SPA_PROP_volume,
+                        &[volume],
+                    );
+                }
             }
             Command::SweepVacuum(reply) => {
                 let stale: Vec<u32> = {
@@ -629,5 +826,110 @@ fn build_capture_stream(
         stream,
         _listener: listener,
         watched_global,
+    })
+}
+
+/// The audible output: a playback stream at the pipe rate pulling from
+/// the audible ring (PW converts to the device rate). Underruns emit
+/// silence — same as pacat starving.
+fn build_playback_stream(
+    core: &pw::core::CoreRc,
+    sample_rate: u32,
+    ring: Arc<crate::playback::AudibleRing>,
+    volume: f32,
+) -> Result<PlaybackHolder, pw::Error> {
+    use pw::properties::properties;
+
+    // node.latency pins our cycle to what one buffer holds — without
+    // it the graph may run a bigger cycle than a single 1024-frame
+    // buffer and consumption drops below realtime (measured: 0.35×,
+    // pw-top showed 16 cycles/s). pacat forced --latency-msec for the
+    // same reason (v3 law: 60 ms; we run tighter).
+    let latency_frames = 1024u32;
+    let props = properties! {
+        *pw::keys::MEDIA_TYPE => "Audio",
+        *pw::keys::MEDIA_CATEGORY => "Playback",
+        *pw::keys::MEDIA_ROLE => "Music",
+        *pw::keys::APP_NAME => "Phosphor",
+        *pw::keys::NODE_NAME => "phosphor-playback",
+        *pw::keys::NODE_LATENCY => format!("{latency_frames}/{sample_rate}").as_str(),
+    };
+    let stream = pw::stream::StreamRc::new(core.clone(), "phosphor-playback", props)?;
+
+    let listener = {
+        let mut scratch: Vec<f32> = Vec::new();
+        stream
+            .add_local_listener::<()>()
+            .process(move |stream, _data| {
+                while let Some(mut buffer) = stream.dequeue_buffer() {
+                    let requested_frames = buffer.requested() as usize;
+                    let datas = buffer.datas_mut();
+                    if datas.is_empty() {
+                        continue;
+                    }
+                    let data = &mut datas[0];
+                    let Some(slice) = data.data() else { continue };
+                    let slice_frames = slice.len() / 8;
+                    let frames = if requested_frames > 0 {
+                        requested_frames.min(slice_frames)
+                    } else {
+                        slice_frames
+                    };
+                    scratch.resize(frames * 2, 0.0);
+                    ring.pop_into(&mut scratch);
+                    for (quad, value) in
+                        slice.chunks_exact_mut(4).zip(scratch.iter())
+                    {
+                        quad.copy_from_slice(&value.to_le_bytes());
+                    }
+                    let chunk = data.chunk_mut();
+                    *chunk.offset_mut() = 0;
+                    *chunk.stride_mut() = 8;
+                    *chunk.size_mut() = (frames * 8) as u32;
+                }
+            })
+            .register()?
+    };
+
+    let mut audio_info = pw::spa::param::audio::AudioInfoRaw::new();
+    audio_info.set_format(pw::spa::param::audio::AudioFormat::F32LE);
+    audio_info.set_rate(sample_rate);
+    audio_info.set_channels(2);
+    let mut position = [0; pw::spa::param::audio::MAX_CHANNELS];
+    position[0] = pw::spa::sys::SPA_AUDIO_CHANNEL_FL;
+    position[1] = pw::spa::sys::SPA_AUDIO_CHANNEL_FR;
+    audio_info.set_position(position);
+    let object = pw::spa::pod::Object {
+        type_: pw::spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
+        id: pw::spa::param::ParamType::EnumFormat.as_raw(),
+        properties: audio_info.into(),
+    };
+    let values: Vec<u8> = pw::spa::pod::serialize::PodSerializer::serialize(
+        std::io::Cursor::new(Vec::new()),
+        &pw::spa::pod::Value::Object(object),
+    )
+    .map_err(|_| pw::Error::CreationFailed)?
+    .0
+    .into_inner();
+    let mut params = [pw::spa::pod::Pod::from_bytes(&values)
+        .ok_or(pw::Error::CreationFailed)?];
+
+    // RT_PROCESS: the callback runs on the graph's data thread — the
+    // non-RT main-loop hop measurably missed ~2/3 of cycles (0.35×
+    // consumption). The callback only memcpys out of the audible
+    // ring's mutex (µs holds), which is RT-safe in practice.
+    stream.connect(
+        pw::spa::utils::Direction::Output,
+        None,
+        pw::stream::StreamFlags::AUTOCONNECT
+            | pw::stream::StreamFlags::MAP_BUFFERS
+            | pw::stream::StreamFlags::RT_PROCESS,
+        &mut params,
+    )?;
+    let _ = stream.set_control(pw::spa::sys::SPA_PROP_volume, &[volume]);
+
+    Ok(PlaybackHolder {
+        stream,
+        _listener: listener,
     })
 }

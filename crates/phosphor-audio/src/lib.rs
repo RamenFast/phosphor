@@ -14,11 +14,14 @@
 //!   pactl subprocess for module load/unload ONLY.
 
 pub mod engine;
+pub mod metadata;
 pub mod mirror;
+pub mod playback;
 pub mod ring;
 pub mod targets;
 
 pub use engine::{AudioEngine, AudioEvent};
+pub use metadata::{probe_metadata, CoverArt, TrackMetadata};
 pub use ring::{SampleRing, CLIP_SECONDS, PENDING_BACKLOG_SECONDS};
 pub use targets::{CaptureTarget, ConnectSpec, TargetKind};
 
