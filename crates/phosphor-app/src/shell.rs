@@ -85,16 +85,36 @@ enum RendererChoice {
     Cpu,
 }
 
+/// Deferred UI intents: chrome pushes, frame() drains with graphics
+/// in hand (renderer rebuilds need the device).
+pub(crate) enum UiAction {
+    CaptureOn,
+    CaptureOff,
+    TargetPicked(String),
+    RefreshTargets,
+    ModeChanged,
+    SignalTuning,
+    RenderTuning,
+    RendererChanged,
+    ScopeRateChanged,
+    SaveSettings,
+    SaveSnapshot,
+    SaveClip,
+}
+
 pub struct Shell {
-    args: ShellArgs,
-    settings: Settings,
-    engine: AudioEngine,
+    pub(crate) args: ShellArgs,
+    pub(crate) settings: Settings,
+    pub(crate) engine: AudioEngine,
     audio_events: mpsc::Receiver<AudioEvent>,
-    computer: phosphor_dsp::Computer,
+    pub(crate) computer: phosphor_dsp::Computer,
     renderer_choice: RendererChoice,
 
     graphics: Option<Graphics>,
     scope_rect: egui::Rect,
+    pub(crate) actions: Vec<UiAction>,
+    pub(crate) target_cache: Vec<phosphor_audio::CaptureTarget>,
+    pub(crate) settings_panel_open: bool,
 
     // quiet law state
     quiet_frame_count: u32,
@@ -111,8 +131,8 @@ pub struct Shell {
     fps_frames: u32,
     fps_window_start: Instant,
     pub last_fps: f64,
-    capture_on: bool,
-    status_line: String,
+    pub(crate) capture_on: bool,
+    pub(crate) status_line: String,
 }
 
 impl Shell {
@@ -147,6 +167,9 @@ impl Shell {
             graphics: None,
             scope_rect: egui::Rect::from_min_size(
                 egui::pos2(0.0, 0.0), egui::vec2(980.0, 640.0)),
+            actions: Vec::new(),
+            target_cache: Vec::new(),
+            settings_panel_open: false,
             quiet_frame_count: 0,
             fade_out_frames_remaining: FADE_OUT_FRAMES,
             render_loop_active: true,
@@ -260,7 +283,134 @@ impl Shell {
 
         // v3 starts scoping on launch: saved target, else the default
         // monitor.
+        self.refresh_target_cache();
         self.start_capture_from_settings();
+    }
+
+    /// Drain chrome intents (frame() calls this with graphics free).
+    fn drain_actions(&mut self, graphics: &mut Graphics) {
+        let actions = std::mem::take(&mut self.actions);
+        for action in actions {
+            match action {
+                UiAction::CaptureOn => {
+                    self.start_capture_from_settings();
+                }
+                UiAction::CaptureOff => {
+                    self.engine.stop_capture();
+                    self.capture_on = false;
+                    self.status_line = "idle".into();
+                }
+                UiAction::TargetPicked(combo_id) => {
+                    // switching away restores the sound (v3 law)
+                    self.engine.vacuum_release();
+                    if self.engine.is_playing_file() {
+                        self.engine.stop_playback();
+                    }
+                    if self.capture_on || self.engine.is_playing_file() {
+                        if self.engine.start_capture(&combo_id) {
+                            self.capture_on = true;
+                            self.wake_render_loop();
+                            self.status_line =
+                                format!("scoping {combo_id}");
+                        } else {
+                            self.capture_on = false;
+                            self.status_line =
+                                format!("capture failed: {combo_id}");
+                        }
+                    }
+                }
+                UiAction::RefreshTargets => {
+                    self.refresh_target_cache();
+                }
+                UiAction::ModeChanged => {
+                    if let Ok(mode) = self.settings.display_mode
+                        .parse::<phosphor_dsp::Mode>()
+                    {
+                        self.computer.mode = mode;
+                    }
+                    self.settings.save(&default_path()).ok();
+                }
+                UiAction::SignalTuning => {
+                    self.computer.gain = self.settings.gain;
+                    self.computer.beam_energy = self.settings.beam_energy;
+                }
+                UiAction::RenderTuning => {
+                    self.apply_render_settings(graphics);
+                }
+                UiAction::RendererChanged => {
+                    self.rebuild_scope_renderers(graphics);
+                }
+                UiAction::ScopeRateChanged => {
+                    let rate = self.settings.scope_sample_rate;
+                    self.engine.configure_sample_rate(rate);
+                    self.computer.set_sample_rate(rate, 1);
+                    if self.capture_on {
+                        // v3: rate takes effect by restarting the stream
+                        self.start_capture_from_settings();
+                    }
+                }
+                UiAction::SaveSettings => {
+                    self.settings.save(&default_path()).ok();
+                }
+                UiAction::SaveSnapshot | UiAction::SaveClip => {
+                    self.status_line =
+                        "snapshot/clip land in chrome pass iv".into();
+                }
+            }
+        }
+    }
+
+    /// Renderer or quality changed: rebuild the scope sinks in place.
+    fn rebuild_scope_renderers(&mut self, graphics: &mut Graphics) {
+        self.renderer_choice = if self.settings.renderer == "cairo" {
+            RendererChoice::Cpu
+        } else {
+            RendererChoice::Gpu
+        };
+        let (width, height) = graphics
+            .scope_gpu
+            .as_ref()
+            .map(|g| g.size())
+            .or_else(|| graphics.scope_cpu.as_ref().map(|c| {
+                (c.renderer.width() as u32, c.renderer.height() as u32)
+            }))
+            .unwrap_or((graphics.config.width, graphics.config.height));
+        graphics.scope_gpu = None;
+        graphics.scope_cpu = None;
+        match self.renderer_choice {
+            RendererChoice::Gpu => {
+                let instance = wgpu::Instance::default();
+                let surface_format = graphics.config.format;
+                if let Ok(adapter) = pollster::block_on(
+                    instance.request_adapter(&wgpu::RequestAdapterOptions {
+                        power_preference:
+                            wgpu::PowerPreference::HighPerformance,
+                        compatible_surface: None,
+                        ..Default::default()
+                    }))
+                {
+                    match GpuRenderer::new_for_surface(
+                        &adapter, graphics.device.clone(),
+                        graphics.queue.clone(), width, height,
+                        self.settings.gl_supersample, surface_format)
+                    {
+                        Ok(renderer) => {
+                            graphics.scope_gpu = Some(renderer)
+                        }
+                        Err(error) => eprintln!(
+                            "phosphor: gpu renderer: {error}"),
+                    }
+                }
+            }
+            RendererChoice::Cpu => {
+                graphics.scope_cpu = Some(CpuScope {
+                    renderer: CpuRenderer::new(
+                        width as usize, height as usize, 1),
+                    texture: None,
+                });
+            }
+        }
+        self.apply_render_settings(graphics);
     }
 
     fn apply_render_settings(&self, graphics: &mut Graphics) {
@@ -347,6 +497,7 @@ impl Shell {
         }
 
         // ---- audio events ----
+        let mut targets_dirty = false;
         while let Ok(event) = self.audio_events.try_recv() {
             match event {
                 AudioEvent::StreamEnded => {
@@ -354,7 +505,9 @@ impl Shell {
                     self.status_line = "stream ended".into();
                 }
                 AudioEvent::TargetsChanged
-                | AudioEvent::DefaultSinkChanged => {}
+                | AudioEvent::DefaultSinkChanged => {
+                    targets_dirty = true;
+                }
                 AudioEvent::PlaybackEnded => {
                     self.status_line = "playback ended".into();
                 }
@@ -363,6 +516,10 @@ impl Shell {
                         format!("playing {}", path.display());
                 }
             }
+        }
+        if targets_dirty {
+            self.refresh_target_cache();
+            self.chrome_dirty = true;
         }
 
         // ---- samples + quiet law ----
@@ -487,21 +644,28 @@ impl Shell {
         // ---- egui chrome ----
         let raw_input = graphics.egui_state
             .take_egui_input(&graphics.window);
-        let status = self.status_line.clone();
-        let fps = self.last_fps;
         let cpu_texture_id =
             graphics.scope_cpu.as_ref()
                 .and_then(|c| c.texture.as_ref().map(|t| t.id()));
         let mut scope_rect_out = self.scope_rect;
-        let full_output = graphics.egui_ctx.run(raw_input, |ctx| {
-            egui::TopBottomPanel::bottom("transport").show(ctx, |ui| {
+        let egui_ctx = graphics.egui_ctx.clone();
+        let full_output = egui_ctx.run(raw_input, |ctx| {
+            egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+                self.ui_toolbar(ui);
+                self.ui_sliders(ui);
+            });
+            self.ui_settings_panel(ctx);
+            let fps = self.last_fps;
+            let show_fps = self.settings.show_fps;
+            egui::TopBottomPanel::bottom("statusbar").show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Phosphor v4");
-                    ui.separator();
-                    ui.label(status.as_str());
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| { ui.label(format!("{fps:.0} fps")); });
+                    ui.label(self.status_line.as_str());
+                    if show_fps {
+                        ui.with_layout(
+                            egui::Layout::right_to_left(
+                                egui::Align::Center),
+                            |ui| { ui.label(format!("{fps:.0} fps")); });
+                    }
                 });
             });
             let central = egui::CentralPanel::default()
@@ -518,6 +682,7 @@ impl Shell {
             });
         });
         self.scope_rect = scope_rect_out;
+        self.drain_actions(graphics);
         let clipped = graphics.egui_ctx.tessellate(
             full_output.shapes, full_output.pixels_per_point);
         let screen = egui_wgpu::ScreenDescriptor {
@@ -612,7 +777,12 @@ impl ApplicationHandler for Shell {
             }
         }
         match event {
-            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::CloseRequested => {
+                // clean shutdown: the catch-all save (v3 §18 law —
+                // most keys only reach disk here)
+                self.settings.save(&default_path()).ok();
+                event_loop.exit();
+            }
             WindowEvent::Resized(size) => {
                 if let Some(graphics) = self.graphics.as_mut() {
                     graphics.config.width = size.width.max(1);
