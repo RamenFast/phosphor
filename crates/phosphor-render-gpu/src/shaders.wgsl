@@ -127,7 +127,10 @@ struct CompositeUniforms {
     grid_enabled: f32,
     supersample: i32,
     scope_alpha: f32,         // 1 = opaque; lower = glass over desktop
-    _pad: vec2f,
+    // top-left of the scope viewport in framebuffer pixels — 0,0 for
+    // the offscreen path (bytes unchanged, goldens hold), the scope
+    // rect's origin when compositing into a window surface
+    origin: vec2f,
 }
 
 @group(0) @binding(0) var composite_energy: texture_2d<f32>;
@@ -147,13 +150,15 @@ fn srgb_to_linear(encoded: vec3f) -> vec3f {
 
 @fragment
 fn composite_fs(@builtin(position) position: vec4f) -> @location(0) vec4f {
+    // local scope pixels: identical to position.xy offscreen (origin 0)
+    let local = position.xy - composite.origin;
     var energy = vec2f(0.0);
     if composite.supersample <= 1 {
-        energy = textureLoad(composite_energy, vec2i(position.xy), 0).rg;
+        energy = textureLoad(composite_energy, vec2i(local), 0).rg;
     } else {
         // exact box average of the supersampled energy; bilinear would
         // blend 2x2 of the 3x3 kernel and shimmer on fine detail
-        let base = vec2i(position.xy) * composite.supersample;
+        let base = vec2i(local) * composite.supersample;
         var sum = vec2f(0.0);
         for (var y = 0; y < composite.supersample; y++) {
             for (var x = 0; x < composite.supersample; x++) {
@@ -171,7 +176,7 @@ fn composite_fs(@builtin(position) position: vec4f) -> @location(0) vec4f {
     var color = srgb_to_linear(composite.background_color.rgb);
     if composite.grid_enabled > 0.5 {
         // centered so divisions track the beam's amplitude scale (zoom)
-        let from_center = position.xy - composite.viewport * 0.5;
+        let from_center = local - composite.viewport * 0.5;
         let minor = max(grid_line(from_center.x, composite.grid_spacing),
                         grid_line(from_center.y, composite.grid_spacing));
         let axis = max(1.0 - smoothstep(0.5, 1.2, abs(from_center.x)),
@@ -185,8 +190,8 @@ fn composite_fs(@builtin(position) position: vec4f) -> @location(0) vec4f {
     color = pow(color, vec3f(1.0 / 2.2));
 
     // hash dither breaks 8-bit banding in the dark falloff, gated below
-    // ~1 LSB so AMOLED black stays exactly black
-    let noise = fract(sin(dot(position.xy, vec2f(12.9898, 78.233)))
+    // ~1 LSB so AMOLED black stays exactly black (local: offline-exact)
+    let noise = fract(sin(dot(local, vec2f(12.9898, 78.233)))
                       * 43758.5453);
     let brightness = max(color.r, max(color.g, color.b));
     let dither_gate = smoothstep(0.0, 0.004, brightness);
@@ -194,6 +199,9 @@ fn composite_fs(@builtin(position) position: vec4f) -> @location(0) vec4f {
     let alpha = clamp(composite.scope_alpha
                       + (1.0 - composite.scope_alpha) * brightness * 2.0,
                       0.0, 1.0);
-    return vec4f(color + vec3f((noise - 0.5) / 255.0) * dither_gate,
-                 alpha);
+    // PREMULTIPLIED output: the live surface composites PreMultiplied
+    // (spike receipt); at alpha==1 (offline, opaque) this is identity,
+    // so wave-1 goldens hold bit-for-bit.
+    let final_rgb = color + vec3f((noise - 0.5) / 255.0) * dither_gate;
+    return vec4f(final_rgb * alpha, alpha);
 }

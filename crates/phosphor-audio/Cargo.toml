@@ -7,3 +7,8 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+pipewire = { workspace = true }
+serde_json = { workspace = true }
+symphonia = { workspace = true }
+rubato = { workspace = true }
+phosphor-proto = { workspace = true }

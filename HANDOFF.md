@@ -1,36 +1,61 @@
 # Handoff — next session starts here
 
-## WAVE 1 IS DONE (July 4, 2026, one night). Wave 2 is next: the shell.
+## WAVES 1+2 ARE DONE (July 4, 2026 — both in one day). Wave 3 is next: agents & the panel.
 
-**The map remains [V4PLAN.md](V4PLAN.md); the receipts are
-[BENCH.md](BENCH.md) and [SPIKES.md](SPIKES.md).** Wave 1 shipped on
-branch `v4-wave1` (merged, tagged): baseline + SHA-pinned stress bench
-(incl. Ben's scope-music masters as workloads), 12 MB golden fixtures
-(replay byte-exact), the cargo workspace, **phosphor-dsp** (all 11
-modes + kits + sinc; native-v3 fixtures bit-exact, Python-ref worst
-0.001 px), **phosphor-beam** (one Gaussian beam law — v3's "GPU softer
-than CPU" was two different physics, never a filter bug; do NOT let
-anyone "fix" the linear-light composite backwards), both renderers
-(cross-snapshot ≤1.13 u8 of 2.5; sharpness GPU ≥ CPU measured), real
-`phosphor render` (the turtle survived: wav → v4 binary → mp4,
-mid-amble verified) and `phosphor bench` — the permanent gate, exit 1
-on regression, ALL GATES GREEN: offline 2.16×/3.7×, CPU-noise 8.5×,
-GPU 11.5× v3's vsync ceiling. Spike receipts: ~950–1010 fps Mailbox
-present under Muffin (debug build!), PreMultiplied alpha works (glass
-lives), egui 0.33 ↔ egui-wgpu 0.33 ↔ **wgpu 27** ↔ winit 0.30 (the glue
-defines the set).
+**The map remains [V4PLAN.md](V4PLAN.md); receipts: [BENCH.md](BENCH.md),
+[SPIKES.md](SPIKES.md), and now [PARITY.md](PARITY.md) (the wave-2 exit
+checklist — read its deferrals list before planning wave 3).**
 
-**Wave 2 (V4PLAN steps 8–9): the egui shell to daily-drivable.**
-pipewire-rs capture/playback + vacuum port (invariants below are law;
-hybrid pactl escape hatch allowed for module load/unload only),
-per-app capture, multi-app mixing, gapless, cover art, then the full
-egui app to v3 parity (transport, playlist DnD, kit editor, mini/glass,
-3D orbit, MPRIS via zbus, settings migration, themes as data).
-Reuse: `render::build_pipeline` in phosphor-app is deliberately
-shell-consumable; live GPU = same passes against a surface view (per-
-frame readback is offline-only); build `PreparedComposite` per frame;
-`CompositeLuts` is the CPU hot path. v3 stays installed and untouched
-until the parity checklist passes (deletion is wave 4's final act).
+**Wave 2 shipped on `v4-wave2` (merged, tagged): v4 is daily-drivable.**
+phosphor-audio is fully native: registry-mirror capture (v3 target ids
+verbatim — settings migrate untouched), app capture by object.serial,
+symphonia+rubato playback where ONE resampled stream feeds ear and beam
+(backpressure is the pacing; the PW playback stream NEEDS RT_PROCESS —
+the non-RT hop measurably ran 0.35×), TRUE gapless (v3 had none),
+cover-art extraction, multi-app mixing (fold at drain, ring laws hold),
+and the vacuum port with Gate A green 12/12 (tests/vacuum/gate.sh:
+route link-verified → kill -9 → module lingers, app silent in the void
+→ next-launch sweep rescues → graceful release restores the ORIGINAL
+sink). **THE HATCH IS INVOKED, decision recorded:** sink lifecycle via
+pactl load/unload ONLY — native node destroy KILLS pulse-shim streams
+on PW 1.0.5 ("Connection terminated"); routing/verify/restore stay
+native metadata+link-watch. Sweep order: modules first, then orphans.
+
+The shell: winit+wgpu+egui one surface; scope = render-gpu
+`composite_into` a viewport of the surface view (origin rides the two
+spare composite-uniform floats; offline writes 0,0 → wave-1 goldens
+hold BYTE-EXACT, 19/19 suites; shader output premultiplied — identity
+at alpha 1). Quiet law verbatim (1e-4/120/90; fps counts while quiet;
+asleep = ticks drain audio, zero GPU). max_fps=0 = monitor-paced via a
+ROLLING frame deadline (naive now+period sat at 152 < the ≥157 law;
+rolling locks 164.8 on the 164.8 Hz panel; uncapped 3,400 fps windowed
+= 21× v3). Full v3 key map + Konami (partial-reset rule) + escape
+cascade; mini (square/undecorated/above, 32 px magnetism 180 ms after
+last move via _NET_WORKAREA, Align, flat size presets); glass verified
+by root capture (desktop glows through under Muffin; per-style tints;
+aero coupling law); UI styles as one data table; MPRIS via zbus with
+busctl receipts (media keys work; v3 bugs deliberately fixed: stable
+trackids, Seeked emits, Stop stops, Volume writable); snapshot/clip
+re-render offline from history (xy_dots-wide quirk pinned); 3D orbit
+constants verbatim + idle drift; the visitor swims (9 ellipses, 7 s).
+Settings: FULL key set, foreign keys preserved on write-back (test).
+`phosphor bench` ALL PASS post-wave: 189.7/151.7/26.5/1873 vs gates
+171/79/6/326. Debugging law that paid twice: instrument, don't
+theorize (pw-top found the RT_PROCESS miss; a busctl receipt found
+actions starving while quiet-asleep — drains now happen at tick level).
+
+**Wave 3 (V4PLAN steps 10–14): agents & the panel.** Control socket
+(Unix NDJSON): `ctl`/`tap`/`feed` + `probe --at`; kit
+validate/inspect CLI + shipped JSON schemas (Ben's bedtime law: a 7B
+model repairs its kit in one round-trip); applet GJS rewrite (ZERO
+bundled engine — draws from `phosphor feed`); 4-panel icon; docs
+rewrite (MANUAL.md is 4+ releases stale; "pantomime" gets its home).
+Also fold in PARITY.md's deferrals: kit EDITOR dialog, cover-art
+display, postcard-export dialog, window position restore, corner-drag
+mini resize. v3 stays installed until wave 4's checklist deletes it.
+**Ben's daily-drive receipt for wave 2 is still owed** — capture,
+vacuum, media keys, glass, mini for a real evening; heart emoji = the
+acceptance test.
 
 Everything below this section is v3 history and hard-won constraints —
 still true, still load-bearing (vacuum/kit/precompute constraints are

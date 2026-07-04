@@ -38,8 +38,18 @@ winit = "0.30"
 egui = "0.33"
 egui-wgpu = "0.33"
 egui-winit = "0.33"
-pipewire = "0.9"
+# v0_3_65 = the crate's highest API gate; Ben's server is 1.0.5 so all
+# gates are satisfied (TARGET_OBJECT for app capture needs v0_3_44+)
+pipewire = { version = "0.9", features = ["v0_3_65"] }
 symphonia = { version = "0.5", features = ["all"] }
+# arbitrary-ratio SRC for playback: decode rate → scope pipe rate
+# (the audible path and the scope share ONE resampled stream, so the
+# picture stays sample-locked to the sound — v3's ffmpeg-rate law)
+rubato = "0.16"
+# native file-open dialog (v3 used GtkFileChooserNative; rfd talks to the portal)
+rfd = "0.15"
+# snapshot PNG writer (pure rust)
+png = "0.18"
 zbus = "5"
 proptest = "1"
 pollster = "0.4"

@@ -393,6 +393,7 @@ pub fn composite_pixel_fast(flash_energy: f32, glow_energy: f32,
 }
 
 #[inline]
+#[allow(clippy::too_many_arguments)]
 fn composite_pixel_impl<E: Fn(f32) -> f32, T: Fn(f32) -> f32>(
     flash_energy: f32, glow_energy: f32, x: f32, y: f32,
     prepared: &PreparedComposite, encode: E, tonemap: T,
@@ -487,7 +488,7 @@ mod tests {
         // grid spacing octave law
         assert!((grid_spacing_fraction(1.0) - 0.1125).abs() < 1e-6);
         let tiny = grid_spacing_fraction(0.001);
-        assert!(tiny >= 0.05 && tiny <= 0.30);
+        assert!((0.05..=0.30).contains(&tiny));
     }
 
     #[test]

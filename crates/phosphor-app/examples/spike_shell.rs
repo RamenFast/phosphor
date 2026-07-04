@@ -253,10 +253,10 @@ impl ApplicationHandler for Spike {
             }
             WindowEvent::RedrawRequested => {
                 self.redraw();
-                if let Some(limit) = self.seconds {
-                    if self.started.elapsed().as_secs() >= limit {
-                        event_loop.exit();
-                    }
+                if let Some(limit) = self.seconds
+                    && self.started.elapsed().as_secs() >= limit
+                {
+                    event_loop.exit();
                 }
             }
             _ => {}

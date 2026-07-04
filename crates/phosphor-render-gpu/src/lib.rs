@@ -101,23 +101,40 @@ impl GpuRenderer {
 
         // rg16float is core-spec renderable+blendable, but verify — the
         // fallback is rgba16float (wider, never wrong)
-        let features =
-            adapter.get_texture_format_features(
-                wgpu::TextureFormat::Rg16Float);
-        let energy_format = if features.allowed_usages.contains(
+        let energy_format = Self::probe_energy_format(&adapter);
+        Self::build(device, queue, energy_format, width, height,
+                    supersample, wgpu::TextureFormat::Rgba8Unorm)
+    }
+
+    /// The shell's live path: same passes, the caller's device (shared
+    /// with egui), compositing straight into the window surface via
+    /// [`GpuRenderer::composite_into`]. Per-frame readback stays
+    /// offline-only (V4PLAN law).
+    pub fn new_for_surface(adapter: &wgpu::Adapter, device: wgpu::Device,
+                           queue: wgpu::Queue, width: u32, height: u32,
+                           supersample: u32,
+                           surface_format: wgpu::TextureFormat)
+                           -> Result<GpuRenderer, String> {
+        let energy_format = Self::probe_energy_format(adapter);
+        Self::build(device, queue, energy_format, width, height,
+                    supersample, surface_format)
+    }
+
+    fn probe_energy_format(adapter: &wgpu::Adapter) -> wgpu::TextureFormat {
+        let features = adapter.get_texture_format_features(
+            wgpu::TextureFormat::Rg16Float);
+        if features.allowed_usages.contains(
             wgpu::TextureUsages::RENDER_ATTACHMENT) {
             wgpu::TextureFormat::Rg16Float
         } else {
             wgpu::TextureFormat::Rgba16Float
-        };
-
-        Self::build(device, queue, energy_format, width, height,
-                    supersample)
+        }
     }
 
     fn build(device: wgpu::Device, queue: wgpu::Queue,
              energy_format: wgpu::TextureFormat, width: u32, height: u32,
-             supersample: u32) -> Result<GpuRenderer, String> {
+             supersample: u32, composite_format: wgpu::TextureFormat)
+             -> Result<GpuRenderer, String> {
         let supersample = supersample.max(1);
         let mut effective_supersample = supersample;
         let mut shed = false;
@@ -152,7 +169,7 @@ impl GpuRenderer {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8Unorm,
+                format: composite_format,
                 usage: wgpu::TextureUsages::RENDER_ATTACHMENT
                     | wgpu::TextureUsages::COPY_SRC,
                 view_formats: &[],
@@ -309,7 +326,7 @@ impl GpuRenderer {
                     entry_point: Some("composite_fs"),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        format: composite_format,
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -501,10 +518,10 @@ impl GpuRenderer {
         self.current = target;
     }
 
-    /// Composite to the offscreen target and read RGBA8 back (tight rows).
-    /// Record the composite pass into a fresh encoder (shared by the
-    /// readback path and the bench's submit-only path).
-    fn encode_composite(&mut self) -> wgpu::CommandEncoder {
+    /// Uniforms + bind group for a composite pass. `origin` is the
+    /// scope viewport's top-left in framebuffer pixels — 0,0 for the
+    /// offscreen path (bytes identical to wave 1, goldens hold).
+    fn prepare_composite(&mut self, origin: (f32, f32)) -> wgpu::BindGroup {
         let theme = self.theme;
         let composite_data: [f32; 24] = [
             theme.beam_color[0], theme.beam_color[1],
@@ -521,12 +538,12 @@ impl GpuRenderer {
             if self.grid_enabled { 1.0 } else { 0.0 },
             // the WGSL field is i32; smuggle the bit pattern through
             f32::from_bits(self.supersample),
-            self.scope_alpha, 0.0, 0.0,
+            self.scope_alpha, origin.0, origin.1,
         ];
         self.queue.write_buffer(&self.composite_uniforms, 0,
                                 float_bytes(&composite_data));
 
-        let bind_group = self.device.create_bind_group(
+        self.device.create_bind_group(
             &wgpu::BindGroupDescriptor {
                 label: Some("composite"),
                 layout: &self.composite_layout,
@@ -542,8 +559,13 @@ impl GpuRenderer {
                             .as_entire_binding(),
                     },
                 ],
-            });
+            })
+    }
 
+    /// Record the composite pass into a fresh encoder (shared by the
+    /// readback path and the bench's submit-only path).
+    fn encode_composite(&mut self) -> wgpu::CommandEncoder {
+        let bind_group = self.prepare_composite((0.0, 0.0));
         let mut encoder = self.device.create_command_encoder(
             &Default::default());
         {
@@ -568,6 +590,81 @@ impl GpuRenderer {
             pass.draw(0..3, 0..1);
         }
         encoder
+    }
+
+    /// The live path: composite THIS frame's glow into a window
+    /// surface view, inside `viewport` (x, y, w, h in framebuffer
+    /// pixels). `clear` paints the whole attachment first (the scope
+    /// is the app's background; pass None to draw over existing
+    /// content). The energy buffer must be sized to the viewport —
+    /// call [`GpuRenderer::resize`] when the scope rect changes.
+    pub fn composite_into(&mut self, encoder: &mut wgpu::CommandEncoder,
+                          view: &wgpu::TextureView,
+                          viewport: (f32, f32, f32, f32),
+                          clear: Option<wgpu::Color>) {
+        let bind_group = self.prepare_composite((viewport.0, viewport.1));
+        let mut pass = encoder.begin_render_pass(
+            &wgpu::RenderPassDescriptor {
+                label: Some("composite live"),
+                color_attachments: &[Some(
+                    wgpu::RenderPassColorAttachment {
+                        view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: match clear {
+                                Some(color) => wgpu::LoadOp::Clear(color),
+                                None => wgpu::LoadOp::Load,
+                            },
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                ..Default::default()
+            });
+        pass.set_pipeline(&self.composite_pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.set_viewport(viewport.0, viewport.1, viewport.2, viewport.3,
+                          0.0, 1.0);
+        pass.set_scissor_rect(viewport.0 as u32, viewport.1 as u32,
+                              (viewport.2 as u32).max(1),
+                              (viewport.3 as u32).max(1));
+        pass.draw(0..3, 0..1);
+    }
+
+    /// Resize the energy buffers (scope rect changed). Keeps the shed
+    /// law: allocation failure drops supersampling before failing.
+    pub fn resize(&mut self, width: u32, height: u32) -> Result<(), String> {
+        if width == self.width && height == self.height {
+            return Ok(());
+        }
+        let width = width.max(1);
+        let height = height.max(1);
+        let energy_textures = match create_energy_pair(
+            &self.device, self.energy_format,
+            width * self.supersample, height * self.supersample) {
+            Ok(pair) => pair,
+            Err(first_error) => {
+                if self.supersample > 1 {
+                    self.supersample = 1;
+                    self.shed_supersample = true;
+                    create_energy_pair(&self.device, self.energy_format,
+                                       width, height)
+                        .map_err(|error| format!(
+                            "{first_error}; and after shedding: {error}"))?
+                } else {
+                    return Err(first_error);
+                }
+            }
+        };
+        self.energy_views = [
+            energy_textures[0].create_view(&Default::default()),
+            energy_textures[1].create_view(&Default::default()),
+        ];
+        self._energy_textures = energy_textures;
+        self.current = 0;
+        self.width = width;
+        self.height = height;
+        Ok(())
     }
 
     /// Composite to the offscreen target and submit WITHOUT readback —

@@ -14,16 +14,18 @@ path = "src/main.rs"
 phosphor-proto.workspace = true
 phosphor-dsp.workspace = true
 phosphor-beam.workspace = true
+phosphor-audio.workspace = true
 phosphor-render-cpu = { path = "../phosphor-render-cpu" }
 phosphor-render-gpu = { path = "../phosphor-render-gpu" }
 serde_json.workspace = true
 sha2.workspace = true
-
-[dev-dependencies]
-# wave-1 spike surface (examples/); promoted to real deps in wave 2
+# the shell (wave 2): promoted from the wave-1 spike surface
 wgpu.workspace = true
 winit.workspace = true
 egui.workspace = true
 egui-wgpu.workspace = true
 egui-winit.workspace = true
 pollster.workspace = true
+rfd.workspace = true
+png.workspace = true
+zbus.workspace = true
