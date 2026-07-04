@@ -1969,6 +1969,7 @@ name = "phosphor-audio"
 version = "4.0.0-dev"
 dependencies = [
  "pipewire",
+ "serde_json",
 ]
 
 [[package]]

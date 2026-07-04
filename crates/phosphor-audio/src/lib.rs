@@ -13,5 +13,15 @@
 //! - escape hatch if PW node routing misbehaves: hybrid mode keeps a
 //!   pactl subprocess for module load/unload ONLY.
 
-pub mod capture {}
-pub mod vacuum {}
+pub mod engine;
+pub mod mirror;
+pub mod ring;
+pub mod targets;
+
+pub use engine::{AudioEngine, AudioEvent};
+pub use ring::{SampleRing, CLIP_SECONDS, PENDING_BACKLOG_SECONDS};
+pub use targets::{CaptureTarget, ConnectSpec, TargetKind};
+
+/// The null sink apps play into during vacuum (v3's name, kept so the
+/// sweep also catches leftovers from a crashed v3).
+pub const VACUUM_SINK_NAME: &str = "phosphor_vacuum";
