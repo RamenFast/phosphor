@@ -1,5 +1,38 @@
 # Handoff — next session starts here
 
+## WAVES 1, 2, 2.5 ARE DONE (July 4, 2026). Wave 3 is next: agents & the panel.
+
+**Wave 2.5 — the Feel Wave — shipped (branch `v4-wave2.5`, merged+tagged)**
+after Ben's first hands-on. It cleared his whole feedback list. Three
+CONFIRMED root-cause bugs, each fixed with a receipt: (1) the key/focus
+trap — egui 0.33 `wants_keyboard_input()` is just `focused().is_some()`
+and clicked buttons keep focus, so every shortcut died after the first
+click; now a `text_focus_ids` registry gates keys and non-text focus is
+surrendered each frame (ALL text-capable widgets — percent spins AND
+the new dialog TextEdits — must register, or typing s/g/f in a field
+fires shortcuts; that bit once, fixed). (2) repaint starvation — egui's
+`viewport_output.repaint_delay` was ignored → laggy buttons + black
+resize bands; now honored through `next_frame_due`, and Resized sets
+`chrome_dirty`. (3) sRGB double-encode — the live surface took
+`formats[0]` (Bgra8UnormSrgb on RADV) and the composite shader ALSO
+gamma-encoded → washed beam ("CPU crisper than GPU"); now prefer a
+non-sRGB surface, else a `hw_encode` uniform flag skips the shader pow.
+Offline path untouched → 19/19 suites still byte-exact. Plus: the
+NEW design system in `crates/phosphor-app/src/theme.rs` (Ben's
+data-rep skill — sharp corners, hairline frames, mono data, carved
+dimensional primary controls via `carved_toggle`/`Palette::carve`);
+**six original themes**, blossom default, afterglow's accent samples
+the live beam color; status bar gone, fps→top-right overlay (all
+modes), track state consolidated to the transport, on-scope toasts;
+Phosphor icon font (egui-phosphor 0.11 = the egui-0.33 match; 0.12
+wanted 0.34) replacing emoji; a 4-panel app icon. Former deferrals
+LANDED: kit editor (rows from phoskit OPERATIONS), cover-art display
+(image crate), postcard export (ffmpeg decode → pack_header), window
+position restore. Multiplicative wheel gain, Uncapped fps preset, mini
+drag-move + corner-resize, **fullscreen = scope only** (2560×1440 zero
+chrome receipt), CPU-resolution honored live, focus floor 0.3. Aero
+coupling retired (glass manual). Bench still ALL PASS.
+
 ## WAVES 1+2 ARE DONE (July 4, 2026 — both in one day). Wave 3 is next: agents & the panel.
 
 **The map remains [V4PLAN.md](V4PLAN.md); receipts: [BENCH.md](BENCH.md),

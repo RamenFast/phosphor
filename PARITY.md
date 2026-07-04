@@ -57,18 +57,35 @@ timeline + recorded deferrals** (bottom section).
   Rationale: the engine holds 384 k live at 26.5 fps CPU-noise (worst
   case) and GPU 1873 fps-eq; realtime reconstruction never drops on
   this hardware. Revisit only if a real workload sags.
-- **Cover art display** (engine extracts; UI shows nothing yet) →
-  wave-3 panel work.
-- **.phos postcard EXPORT dialog** (`Export signal postcard…`) →
-  wave 3 (kit/postcard CLI family lands there anyway).
-- **window_x/y restore on launch** — position remembering wired for
-  mini only; main-window position restore → wave 3 polish.
-- **Corner-drag mini resize** (26 px region) — Ctrl+scroll + presets
-  shipped; drag-resize → wave 3 polish.
 - **Playlist panel DnD reorder** — v3 had no reorder either; drops
   replace the list verbatim (parity, not a gap).
+
+## Wave 2.5 — the Feel Wave (2026-07-04, cleared from Ben's first drive)
+
+His hands-on feedback, resolved. Three confirmed roots fixed:
+focus-trap (clicked buttons kept egui focus → every shortcut died);
+repaint starvation (egui repaint_delay ignored → laggy buttons, black
+resize bands); sRGB double-encode on the live GPU path (formats[0] was
+sRGB, shader also gamma'd → washed beam, "CPU crisper than GPU").
+Plus: multiplicative wheel gain, Uncapped fps preset, mini
+drag-move + corner-resize, fullscreen = scope only (receipt:
+2560×1440, zero chrome), CPU-resolution honored live, focus floor
+0.6→0.3. New design system (theme.rs) from Ben's data-rep skill:
+sharp corners, hairline frames, mono data, carved dimensional primary
+controls; **six original themes** (blossom default / light / dark /
+chromacore / basalt / afterglow-follows-beam); status bar killed,
+fps→top-right overlay, track state consolidated to the transport,
+on-scope toasts. Phosphor icon font replaces emoji; new 4-panel app
+icon. And the former deferrals LANDED: kit editor (rows from
+OPERATIONS), cover-art display, postcard export (receipt: valid
+header + playback), window position restore. Aero-coupling retired
+(glass now manual, any theme).
+
+**Deferrals now: {compose → studio panel (wave 4), applet (wave 3),
+timeline (wave 4)}.** Everything else from Ben's list is done.
 
 ## The one receipt that matters
 
 Ben daily-drives it for an evening: capture, vacuum, media keys,
-glass, mini. HANDOFF law: the heart emoji is the acceptance test.
+glass, mini, and now — do the themes have soul, is the chrome no
+longer laggy. HANDOFF law: the heart emoji is the acceptance test.
