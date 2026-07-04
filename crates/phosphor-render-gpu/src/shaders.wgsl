@@ -199,6 +199,9 @@ fn composite_fs(@builtin(position) position: vec4f) -> @location(0) vec4f {
     let alpha = clamp(composite.scope_alpha
                       + (1.0 - composite.scope_alpha) * brightness * 2.0,
                       0.0, 1.0);
-    return vec4f(color + vec3f((noise - 0.5) / 255.0) * dither_gate,
-                 alpha);
+    // PREMULTIPLIED output: the live surface composites PreMultiplied
+    // (spike receipt); at alpha==1 (offline, opaque) this is identity,
+    // so wave-1 goldens hold bit-for-bit.
+    let final_rgb = color + vec3f((noise - 0.5) / 255.0) * dither_gate;
+    return vec4f(final_rgb * alpha, alpha);
 }

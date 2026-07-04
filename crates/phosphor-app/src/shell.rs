@@ -116,6 +116,16 @@ pub(crate) enum UiAction {
     PlayerTogglePause,
     PlayerVacuumToggled,
     GaplessRequeue,
+    ComposeToggle,
+    MiniToggle,
+    PinToggle,
+    FullscreenToggle,
+    AlignMini(f32, f32),
+    MiniSizePreset(i64),
+    /// Route/release the CAPTURED app through the vacuum (the second,
+    /// ephemeral ⌀ — never saved; distinct from the file-vacuum).
+    VacuumApp(bool),
+    Quit,
 }
 
 pub struct Shell {
@@ -134,6 +144,25 @@ pub struct Shell {
     pub(crate) player: crate::player::PlayerState,
     /// paths picked in the threaded native dialog
     file_dialog: Option<mpsc::Receiver<Option<std::path::PathBuf>>>,
+
+    // pass iii state
+    pub(crate) konami_progress: usize,
+    pub(crate) camera_yaw: f64,
+    pub(crate) camera_pitch: f64,
+    pub(crate) camera_dolly: f64,
+    pub(crate) orbit_last_interaction: Instant,
+    pub(crate) composing: bool,
+    pub(crate) is_mini: bool,
+    pub(crate) is_fullscreen: bool,
+    /// (size, position) to restore when leaving mini
+    normal_geometry: Option<(winit::dpi::PhysicalSize<u32>,
+                             Option<winit::dpi::PhysicalPosition<i32>>)>,
+    /// mini magnetism: the 180 ms settle timer after the last move
+    mini_settle: Option<Instant>,
+    /// stable key of the app currently routed through the vacuum
+    pub(crate) app_vacuum: Option<String>,
+    ctrl_down: bool,
+    quit_requested: bool,
 
     // quiet law state
     quiet_frame_count: u32,
@@ -191,6 +220,19 @@ impl Shell {
             settings_panel_open: false,
             player: Default::default(),
             file_dialog: None,
+            konami_progress: 0,
+            camera_yaw: 0.0,
+            camera_pitch: 0.0,
+            camera_dolly: 0.0,
+            orbit_last_interaction: Instant::now(),
+            composing: false,
+            is_mini: false,
+            is_fullscreen: false,
+            normal_geometry: None,
+            mini_settle: None,
+            app_vacuum: None,
+            ctrl_down: false,
+            quit_requested: false,
             quiet_frame_count: 0,
             fade_out_frames_remaining: FADE_OUT_FRAMES,
             render_loop_active: true,
@@ -430,6 +472,75 @@ impl Shell {
                     }
                 }
                 UiAction::GaplessRequeue => self.queue_gapless_next(),
+                UiAction::ComposeToggle => {
+                    self.status_line =
+                        "compose mode lands in chrome pass iv".into();
+                }
+                UiAction::MiniToggle => {
+                    let enable = !self.is_mini;
+                    self.set_mini_mode(enable, graphics);
+                }
+                UiAction::PinToggle => {
+                    self.settings.pinned = !self.settings.pinned;
+                    self.apply_window_level(graphics);
+                }
+                UiAction::FullscreenToggle => {
+                    self.is_fullscreen = !self.is_fullscreen;
+                    graphics.window.set_fullscreen(
+                        if self.is_fullscreen {
+                            Some(winit::window::Fullscreen::Borderless(None))
+                        } else {
+                            None
+                        });
+                }
+                UiAction::AlignMini(fraction_x, fraction_y) => {
+                    self.align_mini(graphics, fraction_x, fraction_y);
+                }
+                UiAction::MiniSizePreset(size) => {
+                    self.settings.mini_size = size.clamp(140, 1000);
+                    if self.is_mini {
+                        let _ = graphics.window.request_inner_size(
+                            winit::dpi::PhysicalSize::new(
+                                self.settings.mini_size as u32,
+                                self.settings.mini_size as u32));
+                    }
+                }
+                UiAction::Quit => {
+                    self.quit_requested = true;
+                }
+                UiAction::VacuumApp(enable) => {
+                    if enable {
+                        let key = self.settings.target_id.clone()
+                            .and_then(|id| id.strip_prefix("app:")
+                                      .map(str::to_string));
+                        if let Some(key) = key {
+                            match self.engine.vacuum_route_app(&key) {
+                                Ok(monitor_id) => {
+                                    self.engine.start_capture(&monitor_id);
+                                    self.capture_on = true;
+                                    self.app_vacuum = Some(key);
+                                    self.wake_render_loop();
+                                    self.status_line =
+                                        "⌀ scoping the void".into();
+                                }
+                                Err(error) => {
+                                    self.status_line =
+                                        format!("vacuum: {error}");
+                                }
+                            }
+                        }
+                    } else if self.app_vacuum.take().is_some() {
+                        // restore is sacred: stream home, then back to
+                        // scoping the app itself
+                        self.engine.vacuum_release();
+                        if let Some(id) = self.settings.target_id.clone()
+                            && self.engine.start_capture(&id)
+                        {
+                            self.capture_on = true;
+                        }
+                        self.status_line = "vacuum released".into();
+                    }
+                }
             }
         }
 
@@ -443,6 +554,138 @@ impl Shell {
             }
         }
         self.service_seek_debounce();
+    }
+
+    pub(crate) fn begin_visitor(&mut self) {
+        // the Konami turtle — the visitor proper arrives in pass v
+        self.status_line = "🐢 …something stirs (pass v)".into();
+    }
+
+    pub(crate) fn push_camera(&mut self) {
+        self.computer.set_camera(Some(self.camera_yaw),
+                                 Some(self.camera_pitch),
+                                 Some(self.camera_dolly));
+    }
+
+    pub(crate) fn mark_orbit_interaction(&mut self) {
+        self.orbit_last_interaction = Instant::now();
+    }
+
+    fn apply_window_level(&self, graphics: &Graphics) {
+        use winit::window::WindowLevel;
+        let level = if self.settings.pinned || self.is_mini {
+            WindowLevel::AlwaysOnTop
+        } else {
+            WindowLevel::Normal
+        };
+        graphics.window.set_window_level(level);
+    }
+
+    /// v3 set_mini_mode: square, undecorated, kept above; leaving
+    /// restores geometry + decorations (§6.3).
+    fn set_mini_mode(&mut self, enable: bool, graphics: &mut Graphics) {
+        if enable == self.is_mini {
+            return;
+        }
+        self.is_mini = enable;
+        let window = &graphics.window;
+        if enable {
+            self.normal_geometry = Some((
+                window.inner_size(),
+                window.outer_position().ok(),
+            ));
+            window.set_decorations(false);
+            let size = self.settings.mini_size.clamp(140, 1000) as u32;
+            let _ = window.request_inner_size(
+                winit::dpi::PhysicalSize::new(size, size));
+            if let (Some(x), Some(y)) =
+                (self.settings.mini_x, self.settings.mini_y)
+            {
+                window.set_outer_position(
+                    winit::dpi::PhysicalPosition::new(x as i32, y as i32));
+            }
+        } else {
+            // remember where the mini lived (v3 persists on leave)
+            if let Ok(position) = window.outer_position() {
+                self.settings.mini_x = Some(position.x as i64);
+                self.settings.mini_y = Some(position.y as i64);
+            }
+            window.set_decorations(true);
+            if let Some((size, position)) = self.normal_geometry.take() {
+                let _ = window.request_inner_size(size);
+                if let Some(position) = position {
+                    window.set_outer_position(position);
+                }
+            }
+        }
+        self.apply_window_level(graphics);
+        self.chrome_dirty = true;
+    }
+
+    /// The monitor's work area (panels excluded) via _NET_WORKAREA —
+    /// v3 used GTK's; a one-shot xprop at snap time is the X11-native
+    /// equivalent without a new dependency.
+    fn workarea() -> Option<(i32, i32, i32, i32)> {
+        let output = std::process::Command::new("xprop")
+            .args(["-root", "_NET_WORKAREA"])
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        let numbers: Vec<i32> = text
+            .split('=')
+            .nth(1)?
+            .split(',')
+            .filter_map(|part| part.trim().parse().ok())
+            .collect();
+        if numbers.len() >= 4 {
+            Some((numbers[0], numbers[1], numbers[2], numbers[3]))
+        } else {
+            None
+        }
+    }
+
+    /// v3 _snap_mini_to_edges: within 32 px of a work-area edge →
+    /// flush to it; position persisted.
+    fn snap_mini_to_edges(&mut self, graphics: &Graphics) {
+        const SNAP: i32 = 32;
+        let Some((area_x, area_y, area_w, area_h)) = Self::workarea()
+        else { return };
+        let window = &graphics.window;
+        let Ok(position) = window.outer_position() else { return };
+        let size = window.outer_size();
+        let (mut x, mut y) = (position.x, position.y);
+        if (x - area_x).abs() <= SNAP {
+            x = area_x;
+        } else if ((area_x + area_w) - (x + size.width as i32)).abs() <= SNAP {
+            x = area_x + area_w - size.width as i32;
+        }
+        if (y - area_y).abs() <= SNAP {
+            y = area_y;
+        } else if ((area_y + area_h) - (y + size.height as i32)).abs() <= SNAP {
+            y = area_y + area_h - size.height as i32;
+        }
+        if (x, y) != (position.x, position.y) {
+            window.set_outer_position(
+                winit::dpi::PhysicalPosition::new(x, y));
+        }
+        self.settings.mini_x = Some(x as i64);
+        self.settings.mini_y = Some(y as i64);
+    }
+
+    /// v3 _align_mini: fraction of the work area, position persisted.
+    fn align_mini(&mut self, graphics: &Graphics, fraction_x: f32,
+                  fraction_y: f32) {
+        let Some((area_x, area_y, area_w, area_h)) = Self::workarea()
+        else { return };
+        let size = graphics.window.outer_size();
+        let x = area_x
+            + (fraction_x * (area_w - size.width as i32) as f32) as i32;
+        let y = area_y
+            + (fraction_y * (area_h - size.height as i32) as f32) as i32;
+        graphics.window.set_outer_position(
+            winit::dpi::PhysicalPosition::new(x, y));
+        self.settings.mini_x = Some(x as i64);
+        self.settings.mini_y = Some(y as i64);
     }
 
     /// Renderer or quality changed: rebuild the scope sinks in place.
@@ -762,31 +1005,44 @@ impl Shell {
         let mut scope_rect_out = self.scope_rect;
         let egui_ctx = graphics.egui_ctx.clone();
         self.player.tick_overlay();
+        let is_mini = self.is_mini;
         let full_output = egui_ctx.run(raw_input, |ctx| {
-            egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-                self.ui_toolbar(ui);
-                self.ui_sliders(ui);
-                self.ui_transport(ui);
-            });
-            self.ui_settings_panel(ctx);
-            self.ui_playlist_panel(ctx);
+            self.apply_ui_style(ctx);
+            if !is_mini {
+                egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+                    self.ui_toolbar(ui);
+                    self.ui_sliders(ui);
+                    self.ui_transport(ui);
+                });
+                self.ui_settings_panel(ctx);
+                self.ui_playlist_panel(ctx);
+            }
             let fps = self.last_fps;
             let show_fps = self.settings.show_fps;
-            egui::TopBottomPanel::bottom("statusbar").show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(self.status_line.as_str());
-                    if show_fps {
-                        ui.with_layout(
-                            egui::Layout::right_to_left(
-                                egui::Align::Center),
-                            |ui| { ui.label(format!("{fps:.0} fps")); });
-                    }
+            if !is_mini {
+                egui::TopBottomPanel::bottom("statusbar").show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(self.status_line.as_str());
+                        if show_fps {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(
+                                    egui::Align::Center),
+                                |ui| { ui.label(format!("{fps:.0} fps")); });
+                        }
+                    });
                 });
-            });
+            }
             let central = egui::CentralPanel::default()
                 .frame(egui::Frame::NONE);
             central.show(ctx, |ui| {
                 scope_rect_out = ui.max_rect();
+                let scope_response = ui.interact(
+                    scope_rect_out, ui.id().with("scope"),
+                    egui::Sense::click_and_drag());
+                self.ui_context_menu(&scope_response);
+                if scope_response.double_clicked() && self.is_mini {
+                    self.actions.push(UiAction::MiniToggle);
+                }
                 if let Some(texture_id) = cpu_texture_id {
                     ui.painter().image(
                         texture_id, scope_rect_out,
@@ -836,21 +1092,35 @@ impl Shell {
 
         // Scope first: clears the whole surface with the theme's
         // background, deposits the glow inside the scope rect.
+        // Glass: the pane's opacity is the per-style tint; the clear
+        // is premultiplied so the compositor sees the desktop through.
         let theme = build_theme(&self.settings);
+        let glass_alpha = if self.settings.scope_glass {
+            let style = &self.settings.ui_style;
+            (*self.settings.glass_tints.get(style)
+                .unwrap_or(&self.settings.glass_tint)) as f64
+        } else {
+            1.0
+        };
         let background = wgpu::Color {
-            r: (theme.background_color[0] as f64).powf(2.2),
-            g: (theme.background_color[1] as f64).powf(2.2),
-            b: (theme.background_color[2] as f64).powf(2.2),
-            a: 1.0,
+            r: (theme.background_color[0] as f64).powf(2.2) * glass_alpha,
+            g: (theme.background_color[1] as f64).powf(2.2) * glass_alpha,
+            b: (theme.background_color[2] as f64).powf(2.2) * glass_alpha,
+            a: glass_alpha,
         };
         if let Some(gpu) = graphics.scope_gpu.as_mut() {
-            gpu.composite_into(
-                &mut encoder, &view,
-                (scope_physical.min.x.max(0.0),
-                 scope_physical.min.y.max(0.0),
-                 scope_physical.width().max(1.0),
-                 scope_physical.height().max(1.0)),
-                Some(background));
+            gpu.scope_alpha = glass_alpha as f32;
+            // clamp to the ACQUIRED surface: on a shrink (mini) the
+            // egui rect is one frame stale and a scissor outside the
+            // render target is a validation error
+            let surface_w = graphics.config.width as f32;
+            let surface_h = graphics.config.height as f32;
+            let x = scope_physical.min.x.clamp(0.0, surface_w - 1.0);
+            let y = scope_physical.min.y.clamp(0.0, surface_h - 1.0);
+            let w = scope_physical.width().max(1.0).min(surface_w - x);
+            let h = scope_physical.height().max(1.0).min(surface_h - y);
+            gpu.composite_into(&mut encoder, &view, (x, y, w, h),
+                               Some(background));
         }
 
         // egui on top (Load — never clear over the scope)
@@ -932,6 +1202,72 @@ impl ApplicationHandler for Shell {
                     graphics.window.request_redraw();
                 }
             }
+            WindowEvent::KeyboardInput { event, .. } => {
+                // v3 law: the window handles keys unless a text entry
+                // is being edited. egui grabs widget focus liberally
+                // (buttons included), so gate ONLY on an egui widget
+                // holding focus AND expecting text — otherwise our
+                // table wins first, like GTK's window-level handler.
+                let editing = self.graphics.as_ref()
+                    .map(|g| g.egui_ctx.memory(|m| m.focused().is_some())
+                         && g.egui_ctx.wants_keyboard_input())
+                    .unwrap_or(false);
+                if !editing
+                    && event.state == winit::event::ElementState::Pressed
+                {
+                    match self.handle_key(&event.logical_key) {
+                        crate::keyboard::KeyOutcome::CloseRequested => {
+                            self.settings.save(&default_path()).ok();
+                            event_loop.exit();
+                        }
+                        _ => {
+                            self.chrome_dirty = true;
+                            if let Some(graphics) = &self.graphics {
+                                graphics.window.request_redraw();
+                            }
+                        }
+                    }
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let over_ui = self.graphics.as_ref()
+                    .map(|g| g.egui_ctx.wants_pointer_input())
+                    .unwrap_or(false);
+                if !over_ui {
+                    let notches = match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, y) =>
+                            y as f64,
+                        winit::event::MouseScrollDelta::PixelDelta(p) =>
+                            p.y / 40.0,
+                    };
+                    if self.is_mini && self.ctrl_down {
+                        // Ctrl+scroll resizes the mini view (v3 §6.4)
+                        let size = (self.settings.mini_size as f64
+                                    + notches * 20.0)
+                            .clamp(140.0, 1000.0) as i64;
+                        self.actions.push(UiAction::MiniSizePreset(size));
+                    } else {
+                        // wheel on the scope = gain (v3 §3.2 gain row)
+                        self.settings.gain = (self.settings.gain
+                            + notches as f32 * 0.15).clamp(0.1, 6.0);
+                        self.actions.push(UiAction::SignalTuning);
+                    }
+                    self.chrome_dirty = true;
+                    if let Some(graphics) = &self.graphics {
+                        graphics.window.request_redraw();
+                    }
+                }
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.ctrl_down = modifiers.state().control_key();
+            }
+            WindowEvent::Moved(_) => {
+                if self.is_mini {
+                    // magnetism: settle 180 ms after the LAST move
+                    self.mini_settle = Some(
+                        Instant::now() + Duration::from_millis(180));
+                }
+            }
             WindowEvent::DroppedFile(path) => {
                 // whole-window drop target (v3 §1.5): .phoskit files
                 // import (pass iv); audio files become the playlist
@@ -972,6 +1308,10 @@ impl ApplicationHandler for Shell {
                         graphics.window.request_redraw();
                     }
                 }
+                if self.quit_requested {
+                    self.settings.save(&default_path()).ok();
+                    event_loop.exit();
+                }
                 if let Some(limit) = self.args.exit_after
                     && self.started.elapsed().as_secs_f64() >= limit
                 {
@@ -983,6 +1323,17 @@ impl ApplicationHandler for Shell {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // mini magnetism settle (fires even while the loop idles)
+        if let Some(due) = self.mini_settle
+            && Instant::now() >= due
+        {
+            self.mini_settle = None;
+            if let Some(graphics) = self.graphics.take() {
+                self.snap_mini_to_edges(&graphics);
+                self.graphics = Some(graphics);
+            }
+        }
+        let mut wake_at = self.mini_settle;
         if self.render_loop_active
             && let Some(due) = self.next_frame_due
         {
@@ -992,13 +1343,16 @@ impl ApplicationHandler for Shell {
                     graphics.window.request_redraw();
                 }
                 event_loop.set_control_flow(ControlFlow::Poll);
-            } else {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(due));
+                return;
             }
-        } else {
+            wake_at = Some(wake_at.map_or(due, |w| w.min(due)));
+        }
+        match wake_at {
+            Some(due) => event_loop
+                .set_control_flow(ControlFlow::WaitUntil(due)),
             // faded out: pure event-driven idle (zero CPU) — capture
             // or playback start calls wake_render_loop
-            event_loop.set_control_flow(ControlFlow::Wait);
+            None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
 }

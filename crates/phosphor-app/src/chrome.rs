@@ -50,6 +50,25 @@ const CPU_RESOLUTION_CHOICES: [(f32, &str); 3] = [
 
 const MAX_FPS_PRESETS: [i64; 10] = [0, 30, 60, 90, 120, 144, 165, 240, 360, 480];
 
+/// UI styles as DATA (V4PLAN: egui owns the chrome completely — the
+/// 8 v3 style ids keep their names; "system" is dark, like v3's
+/// pass-through resolves on Ben's desktop).
+/// (id, panel_fill, window_fill, accent, text, translucent_panels)
+pub const UI_STYLES: [(&str, [u8; 3], [u8; 3], [u8; 3], [u8; 3], bool); 8] = [
+    ("system",     [30, 30, 34],    [24, 24, 27],  [110, 170, 255], [222, 222, 222], false),
+    ("dark",       [30, 30, 34],    [24, 24, 27],  [110, 170, 255], [222, 222, 222], false),
+    ("light",      [242, 242, 245], [250, 250, 250], [40, 110, 220], [30, 30, 30],   false),
+    ("black",      [0, 0, 0],       [0, 0, 0],     [90, 240, 130],  [200, 210, 200], false),
+    ("bloom",      [34, 26, 34],    [26, 20, 28],  [255, 120, 190], [235, 220, 232], false),
+    ("stone",      [44, 42, 40],    [36, 34, 32],  [200, 170, 120], [225, 220, 210], false),
+    ("stonebloom", [42, 36, 42],    [34, 28, 34],  [235, 150, 180], [230, 220, 226], false),
+    ("aero",       [40, 52, 66],    [30, 40, 54],  [140, 200, 255], [230, 240, 250], true),
+];
+
+pub const MINI_SIZE_PRESETS: [(&str, i64); 4] = [
+    ("Small", 200), ("Medium", 280), ("Large", 380), ("Extra large", 520),
+];
+
 impl Shell {
     /// The main toolbar row (§4.3): [⏻ Live][status…][⏺][📷][mode][⟳][target][icon]
     pub(crate) fn ui_toolbar(&mut self, ui: &mut egui::Ui) {
@@ -69,6 +88,15 @@ impl Shell {
                 .clicked()
             {
                 self.actions.push(UiAction::OpenFile);
+            }
+            if self.settings.show_pin_button {
+                let mut pinned = self.settings.pinned;
+                if ui.toggle_value(&mut pinned, "📌")
+                    .on_hover_text("Pin above other windows (P)")
+                    .clicked()
+                {
+                    self.actions.push(UiAction::PinToggle);
+                }
             }
 
             // pack_end order, right → left
@@ -407,6 +435,31 @@ impl Shell {
                 self.actions.push(UiAction::RenderTuning);
             }
         }
+        let current_style = self.settings.ui_style.clone();
+        egui::ComboBox::from_label("UI style")
+            .selected_text(current_style.clone())
+            .show_ui(ui, |ui| {
+                for (id, ..) in UI_STYLES {
+                    if ui.selectable_label(current_style == id, id)
+                        .clicked()
+                        && current_style != id
+                    {
+                        self.settings.ui_style = id.to_string();
+                        // Aero coupling (v3 §7): fires on EVERY style
+                        // change — aero forces glass ON, any other
+                        // style forces it OFF.
+                        let want_glass = id == "aero";
+                        if self.settings.scope_glass != want_glass {
+                            self.settings.scope_glass = want_glass;
+                        }
+                        self.actions.push(UiAction::RenderTuning);
+                        self.actions.push(UiAction::SaveSettings);
+                    }
+                }
+            });
+        if ui.checkbox(&mut self.settings.show_pin_button, "Pin button")
+            .changed()
+        {}
         if ui.checkbox(&mut self.settings.show_now_playing, "Track info")
             .on_hover_text(
                 "Fade the artist/title into the corner when the song \
@@ -447,6 +500,246 @@ impl Shell {
         if ui.checkbox(&mut self.settings.show_fps, "Show FPS")
             .changed()
         {}
+    }
+
+    /// Apply the UI style's egui visuals (data table above). Aero and
+    /// glass make the chrome slightly translucent over the desktop.
+    pub(crate) fn apply_ui_style(&mut self, ctx: &egui::Context) {
+        let style = UI_STYLES
+            .iter()
+            .find(|(id, ..)| *id == self.settings.ui_style)
+            .unwrap_or(&UI_STYLES[1]);
+        let (_, panel, window, accent, text, translucent) = *style;
+        let alpha = if translucent || self.settings.scope_glass {
+            220
+        } else {
+            255
+        };
+        let mut visuals = if style.0 == "light" {
+            egui::Visuals::light()
+        } else {
+            egui::Visuals::dark()
+        };
+        visuals.panel_fill = egui::Color32::from_rgba_unmultiplied(
+            panel[0], panel[1], panel[2], alpha);
+        visuals.window_fill = egui::Color32::from_rgb(
+            window[0], window[1], window[2]);
+        visuals.selection.bg_fill = egui::Color32::from_rgb(
+            accent[0], accent[1], accent[2]);
+        visuals.override_text_color = Some(egui::Color32::from_rgb(
+            text[0], text[1], text[2]));
+        ctx.set_visuals(visuals);
+    }
+
+    /// The context menu (§5.1 tree; items land as their passes do).
+    pub(crate) fn ui_context_menu(&mut self, response: &egui::Response) {
+        response.context_menu(|ui| {
+            let capture_label = if self.capture_on {
+                "Pause capture"
+            } else {
+                "Resume capture"
+            };
+            if ui.button(capture_label).clicked() {
+                self.actions.push(if self.capture_on {
+                    UiAction::CaptureOff
+                } else {
+                    UiAction::CaptureOn
+                });
+                ui.close();
+            }
+            let app_target = self.settings.target_id.as_deref()
+                .map(|id| id.starts_with("app:")).unwrap_or(false);
+            if self.player.playing.is_none()
+                && (app_target || self.app_vacuum.is_some())
+            {
+                let mut vacuum_on = self.app_vacuum.is_some();
+                if ui.checkbox(&mut vacuum_on,
+                               "Vacuum this app  ⌀  (light only)")
+                    .clicked()
+                {
+                    self.actions.push(UiAction::VacuumApp(vacuum_on));
+                    ui.close();
+                }
+            }
+            if ui.button("Play audio file…  (O)").clicked() {
+                self.actions.push(UiAction::OpenFile);
+                ui.close();
+            }
+            if self.player.playing.is_some() {
+                let pause_label = if self.player.paused {
+                    "Resume track"
+                } else {
+                    "Pause track"
+                };
+                if ui.button(pause_label).clicked() {
+                    self.actions.push(UiAction::PlayerTogglePause);
+                    ui.close();
+                }
+                let many = self.player.playlist.len() > 1;
+                if ui.add_enabled(many, egui::Button::new("Next track  ⏭"))
+                    .clicked()
+                {
+                    self.actions.push(UiAction::PlayerNext);
+                    ui.close();
+                }
+                if ui.add_enabled(many,
+                                  egui::Button::new("Previous track  ⏮"))
+                    .clicked()
+                {
+                    self.actions.push(UiAction::PlayerPrevious);
+                    ui.close();
+                }
+                if many {
+                    ui.menu_button("Tracks", |ui| {
+                        // windowed to 25 around current if > 30 (v3)
+                        let total = self.player.playlist.len();
+                        let current = self.player.playlist_index;
+                        let (start, end) = if total > 30 {
+                            let start = current.saturating_sub(12);
+                            (start, (start + 25).min(total))
+                        } else {
+                            (0, total)
+                        };
+                        let mut clicked = None;
+                        for index in start..end {
+                            let path = &self.player.playlist[index];
+                            let name = path.file_name()
+                                .map(|n| n.to_string_lossy().to_string())
+                                .unwrap_or_default();
+                            if ui.selectable_label(index == current, name)
+                                .clicked()
+                            {
+                                clicked = Some(path.clone());
+                            }
+                        }
+                        if let Some(path) = clicked {
+                            self.actions.push(UiAction::PlayPath(path));
+                            ui.close();
+                        }
+                    });
+                }
+            }
+            if !self.is_mini {
+                if ui.button("Compose · draw a shape  (D)").clicked() {
+                    self.actions.push(UiAction::ComposeToggle);
+                    ui.close();
+                }
+                let mut panel = self.player.panel_open;
+                if ui.checkbox(&mut panel, "Playlist panel  (L)").clicked() {
+                    self.player.panel_open = panel;
+                    self.settings.playlist_panel_open = panel;
+                    ui.close();
+                }
+            }
+            if ui.button("Snapshot  (S)").clicked() {
+                self.actions.push(UiAction::SaveSnapshot);
+                ui.close();
+            }
+            if ui.button("Save last 10 s  (C)").clicked() {
+                self.actions.push(UiAction::SaveClip);
+                ui.close();
+            }
+            ui.separator();
+            ui.menu_button("Display mode", |ui| {
+                for (id, label) in DISPLAY_MODES {
+                    if ui.selectable_label(
+                        self.settings.display_mode == id, label).clicked()
+                    {
+                        self.settings.display_mode = id.to_string();
+                        self.actions.push(UiAction::ModeChanged);
+                        ui.close();
+                    }
+                }
+            });
+            ui.menu_button("Theme", |ui| {
+                for name in THEME_NAMES {
+                    if ui.selectable_label(
+                        self.settings.theme_name == name, name).clicked()
+                    {
+                        self.settings.theme_name = name.to_string();
+                        self.actions.push(UiAction::RenderTuning);
+                        self.actions.push(UiAction::SaveSettings);
+                        ui.close();
+                    }
+                }
+            });
+            if ui.checkbox(&mut self.settings.grid_enabled, "Grid  (G)")
+                .clicked()
+            {
+                self.actions.push(UiAction::RenderTuning);
+                ui.close();
+            }
+            if ui.checkbox(&mut self.settings.show_fps, "Show FPS  (F)")
+                .clicked()
+            {
+                ui.close();
+            }
+            if ui.checkbox(&mut self.settings.auto_gain,
+                           "Auto gain — fit to screen").clicked() {
+                self.actions.push(UiAction::SignalTuning);
+                ui.close();
+            }
+            if ui.checkbox(&mut self.settings.scope_glass,
+                           "Glass scope — transparent background")
+                .clicked()
+            {
+                self.actions.push(UiAction::RenderTuning);
+                ui.close();
+            }
+            let mut pinned = self.settings.pinned;
+            if ui.checkbox(&mut pinned, "Pin above  (P)").clicked() {
+                self.actions.push(UiAction::PinToggle);
+                ui.close();
+            }
+            ui.separator();
+            if self.is_mini {
+                ui.menu_button("Align", |ui| {
+                    for (label, fx, fy) in [
+                        ("◰  Top left", 0.0, 0.0),
+                        ("◳  Top right", 1.0, 0.0),
+                        ("◱  Bottom left", 0.0, 1.0),
+                        ("◲  Bottom right", 1.0, 1.0),
+                        ("▣  Center", 0.5, 0.5),
+                    ] {
+                        if ui.button(label).clicked() {
+                            self.actions.push(
+                                UiAction::AlignMini(fx, fy));
+                            ui.close();
+                        }
+                    }
+                });
+                // four FLAT items, not nested (v3 port gotcha)
+                for (label, size) in MINI_SIZE_PRESETS {
+                    if ui.button(format!("Mini size: {label}")).clicked() {
+                        self.actions.push(UiAction::MiniSizePreset(size));
+                        ui.close();
+                    }
+                }
+                if ui.button("Restore window  (M)").clicked() {
+                    self.actions.push(UiAction::MiniToggle);
+                    ui.close();
+                }
+            } else {
+                if ui.button("Mini view  (M)").clicked() {
+                    self.actions.push(UiAction::MiniToggle);
+                    ui.close();
+                }
+                let fullscreen_label = if self.is_fullscreen {
+                    "Leave fullscreen  (F11)"
+                } else {
+                    "Fullscreen scope  (F11)"
+                };
+                if ui.button(fullscreen_label).clicked() {
+                    self.actions.push(UiAction::FullscreenToggle);
+                    ui.close();
+                }
+            }
+            ui.separator();
+            if ui.button("Quit  (Q)").clicked() {
+                self.actions.push(UiAction::Quit);
+                ui.close();
+            }
+        });
     }
 
     /// Refresh the toolbar's target list (§4.3 semantics: rebuild,
