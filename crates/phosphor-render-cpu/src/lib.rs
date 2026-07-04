@@ -17,8 +17,8 @@
 use rayon::prelude::*;
 use wide::f32x8;
 
-use phosphor_beam::{beam_normalization, beam_sigma,
-                    composite_pixel_prepared, glow_keep, CompositeParams,
+use phosphor_beam::{beam_normalization, beam_sigma, composite_pixel_fast,
+                    glow_keep, hash_dither, CompositeLuts, CompositeParams,
                     Theme, ENERGY_FLOOR, FLASH_KEEP};
 
 mod raster;
@@ -41,6 +41,7 @@ pub struct CpuRenderer {
     glow: Vec<f32>,
     rgba: Vec<u8>,
     dispatch: Dispatch,
+    composite_luts: CompositeLuts,
 
     pub beam_focus: f32,
     pub persistence: f32,
@@ -68,6 +69,7 @@ impl CpuRenderer {
             glow: vec![0.0; buffer_width * buffer_height],
             rgba: vec![0u8; width * height * 4],
             dispatch: detect(),
+            composite_luts: CompositeLuts::default(),
             beam_focus: 1.6,
             persistence: 0.7,
             theme: Theme::preset("P7 Green").unwrap(),
@@ -174,6 +176,7 @@ impl CpuRenderer {
         let width = self.width;
         let premultiplied = self.premultiplied;
         let inverse_area = 1.0 / (supersample * supersample) as f32;
+        let composite_luts = &self.composite_luts;
 
         self.rgba.par_chunks_mut(width * 4).enumerate()
             .for_each(|(y, row)| {
@@ -198,9 +201,11 @@ impl CpuRenderer {
                         flash_energy *= inverse_area;
                         glow_energy *= inverse_area;
                     }
-                    let pixel = composite_pixel_prepared(
+                    let pixel = composite_pixel_fast(
                         flash_energy, glow_energy,
-                        x as f32 + 0.5, y as f32 + 0.5, &prepared);
+                        x as f32 + 0.5, y as f32 + 0.5, &prepared,
+                        composite_luts,
+                        hash_dither(x as u32, y as u32));
                     let alpha = pixel[3];
                     let out = &mut row[x * 4..x * 4 + 4];
                     for channel in 0..3 {

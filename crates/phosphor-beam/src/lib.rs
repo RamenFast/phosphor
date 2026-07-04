@@ -186,6 +186,117 @@ pub fn grid_spacing_fraction(gain: f32) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
+// Gamma-encode LUT (the CPU composite's powf eraser)
+// ---------------------------------------------------------------------------
+
+/// Cells in the encode table; the +1 entry closes the last lerp span.
+pub const ENCODE_LUT_CELLS: usize = 2048;
+/// Linear-light ceiling the table covers: background + grid + beam +
+/// 0.6·flash can never reach it (each term ≤ 1, weights sum < 4).
+const ENCODE_LUT_MAX_LINEAR: f32 = 4.0;
+
+/// x^(1/2.2) served by table, indexed by sqrt(x) so the steep dark end
+/// of the curve — where glow falloff lives — gets its resolution. In
+/// sqrt domain the curve is u^(2/2.2) ≈ u^0.91, nearly linear, so 2048
+/// cells + lerp keep the worst deviation from powf below ~0.13 of an
+/// 8-bit step (asserted by test). encode(0) is exactly 0: AMOLED black
+/// stays black by construction, not by rounding.
+pub struct EncodeLut {
+    table: Vec<f32>,
+    scale: f32,
+}
+
+impl EncodeLut {
+    pub fn new() -> EncodeLut {
+        let max_u = ENCODE_LUT_MAX_LINEAR.sqrt();
+        let step = max_u / ENCODE_LUT_CELLS as f32;
+        let table = (0..=ENCODE_LUT_CELLS)
+            .map(|index| {
+                let u = index as f32 * step;
+                (u * u).powf(1.0 / GAMMA)
+            })
+            .collect();
+        EncodeLut { table, scale: ENCODE_LUT_CELLS as f32 / max_u }
+    }
+
+    #[inline]
+    pub fn encode(&self, linear: f32) -> f32 {
+        let scaled = (linear.max(0.0).sqrt() * self.scale)
+            .min(ENCODE_LUT_CELLS as f32);
+        let index = (scaled as usize).min(ENCODE_LUT_CELLS - 1);
+        let fraction = scaled - index as f32;
+        self.table[index]
+            + (self.table[index + 1] - self.table[index]) * fraction
+    }
+}
+
+impl Default for EncodeLut {
+    fn default() -> EncodeLut {
+        EncodeLut::new()
+    }
+}
+
+/// Tonemap `1 − e^(−0.7·E)` by table. The curve's slope is bounded by
+/// 0.7, so a uniform index is already sub-LSB at 2048 cells; beyond the
+/// domain the true curve is within 1.4e-5 of the table's final 1-ish
+/// entry. No sqrt trick needed.
+pub struct TonemapLut {
+    table: Vec<f32>,
+    scale: f32,
+}
+
+const TONEMAP_LUT_MAX_ENERGY: f32 = 16.0;
+
+impl TonemapLut {
+    pub fn new() -> TonemapLut {
+        let step = TONEMAP_LUT_MAX_ENERGY / ENCODE_LUT_CELLS as f32;
+        let table = (0..=ENCODE_LUT_CELLS)
+            .map(|index| 1.0 - (-TONEMAP_K * index as f32 * step).exp())
+            .collect();
+        TonemapLut {
+            table,
+            scale: ENCODE_LUT_CELLS as f32 / TONEMAP_LUT_MAX_ENERGY,
+        }
+    }
+
+    #[inline]
+    pub fn apply(&self, energy: f32) -> f32 {
+        let scaled = (energy.max(0.0) * self.scale)
+            .min(ENCODE_LUT_CELLS as f32);
+        let index = (scaled as usize).min(ENCODE_LUT_CELLS - 1);
+        let fraction = scaled - index as f32;
+        self.table[index]
+            + (self.table[index + 1] - self.table[index]) * fraction
+    }
+}
+
+impl Default for TonemapLut {
+    fn default() -> TonemapLut {
+        TonemapLut::new()
+    }
+}
+
+/// Both composite tables, built once per renderer.
+#[derive(Default)]
+pub struct CompositeLuts {
+    pub encode: EncodeLut,
+    pub tonemap: TonemapLut,
+}
+
+/// Integer-hash dither for the CPU frame loop: same sub-LSB job as the
+/// canonical GLSL sin hash, minus the sin. The two renderers' dither
+/// PATTERNS differ (each keeps its natural hash); both are gated below
+/// ~1 LSB, so the cross-snapshot tolerance never sees them.
+#[inline]
+pub fn hash_dither(x: u32, y: u32) -> f32 {
+    let mut h = x.wrapping_mul(0x9E37_79B1) ^ y.wrapping_mul(0x85EB_CA77);
+    h ^= h >> 16;
+    h = h.wrapping_mul(0x7FEB_352D);
+    h ^= h >> 15;
+    h as f32 * (1.0 / 4_294_967_296.0)
+}
+
+// ---------------------------------------------------------------------------
 // The composite pixel law (scalar reference)
 // ---------------------------------------------------------------------------
 
@@ -258,9 +369,37 @@ pub fn composite_pixel(flash_energy: f32, glow_energy: f32, x: f32, y: f32,
 pub fn composite_pixel_prepared(flash_energy: f32, glow_energy: f32,
                                 x: f32, y: f32,
                                 prepared: &PreparedComposite) -> [f32; 4] {
+    #[allow(clippy::excessive_precision)] // the canonical GLSL hash
+    let noise = ((x * 12.9898 + y * 78.233).sin() * 43758.5453).fract();
+    let noise = if noise < 0.0 { noise + 1.0 } else { noise };
+    composite_pixel_impl(flash_energy, glow_energy, x, y, prepared,
+                         |channel| channel.powf(1.0 / GAMMA),
+                         |energy| 1.0 - (-TONEMAP_K * energy).exp(),
+                         noise)
+}
+
+/// The law with every per-pixel transcendental served from tables (and
+/// the dither noise supplied by the caller — the CPU loop uses the
+/// integer `hash_dither`). Each table is bounded ≤ ~0.13 of an 8-bit
+/// step from its exact form (asserted by tests): invisible in output.
+pub fn composite_pixel_fast(flash_energy: f32, glow_energy: f32,
+                            x: f32, y: f32,
+                            prepared: &PreparedComposite,
+                            luts: &CompositeLuts, noise: f32) -> [f32; 4] {
+    composite_pixel_impl(flash_energy, glow_energy, x, y, prepared,
+                         |channel| luts.encode.encode(channel),
+                         |energy| luts.tonemap.apply(energy),
+                         noise)
+}
+
+#[inline]
+fn composite_pixel_impl<E: Fn(f32) -> f32, T: Fn(f32) -> f32>(
+    flash_energy: f32, glow_energy: f32, x: f32, y: f32,
+    prepared: &PreparedComposite, encode: E, tonemap: T,
+    noise: f32) -> [f32; 4] {
     let params = &prepared.params;
-    let flash = 1.0 - (-TONEMAP_K * flash_energy).exp();
-    let glow = 1.0 - (-TONEMAP_K * glow_energy).exp();
+    let flash = tonemap(flash_energy);
+    let glow = tonemap(glow_energy);
 
     let mut color = prepared.background_linear;
     if params.grid_enabled {
@@ -284,13 +423,10 @@ pub fn composite_pixel_prepared(flash_energy: f32, glow_energy: f32,
         *channel += beam_channel * glow
             + flash_channel * flash * FLASH_COMPOSITE_WEIGHT;
     }
-    let mut encoded = color.map(|channel| channel.powf(1.0 / GAMMA));
+    let mut encoded = color.map(&encode);
 
-    // hash dither breaks 8-bit banding rings in the dark glow falloff,
+    // dither breaks 8-bit banding rings in the dark glow falloff,
     // gated below ~1 LSB so AMOLED black stays exactly black
-    #[allow(clippy::excessive_precision)] // the canonical GLSL hash
-    let noise = ((x * 12.9898 + y * 78.233).sin() * 43758.5453).fract();
-    let noise = if noise < 0.0 { noise + 1.0 } else { noise };
     let brightness = encoded[0].max(encoded[1]).max(encoded[2]);
     let dither_gate = smoothstep(0.0, 0.004, brightness);
     for channel in encoded.iter_mut() {
@@ -352,6 +488,51 @@ mod tests {
         assert!((grid_spacing_fraction(1.0) - 0.1125).abs() < 1e-6);
         let tiny = grid_spacing_fraction(0.001);
         assert!(tiny >= 0.05 && tiny <= 0.30);
+    }
+
+    #[test]
+    fn tonemap_lut_and_hash_dither_hold_their_bounds() {
+        let lut = TonemapLut::new();
+        let mut worst = 0.0f32;
+        for i in 0..40_000 {
+            let energy = i as f32 * (20.0 / 40_000.0); // past the domain
+            let exact = 1.0 - (-TONEMAP_K * energy).exp();
+            worst = worst.max((lut.apply(energy) - exact).abs());
+        }
+        assert!(worst < 2e-5, "tonemap LUT drifted {worst}");
+        let mut sum = 0.0f64;
+        for x in 0..200u32 {
+            for y in 0..200u32 {
+                let noise = hash_dither(x, y);
+                assert!((0.0..1.0).contains(&noise));
+                sum += noise as f64;
+            }
+        }
+        let mean = sum / 40_000.0;
+        assert!((mean - 0.5).abs() < 0.01, "dither biased: mean {mean}");
+    }
+
+    #[test]
+    fn encode_lut_stays_under_an_eighth_lsb_of_powf() {
+        let lut = EncodeLut::new();
+        assert_eq!(lut.encode(0.0), 0.0, "true black must stay exact");
+        let mut worst = 0.0f32;
+        // dense linear sweep plus log-spaced dark values where the
+        // curve is steepest
+        for i in 1..40_000 {
+            let linear = i as f32 * (4.0 / 40_000.0);
+            let delta = (lut.encode(linear)
+                         - linear.powf(1.0 / GAMMA)).abs();
+            worst = worst.max(delta);
+        }
+        for exponent in 1..240 {
+            let linear = 10f32.powf(-(exponent as f32) / 30.0);
+            let delta = (lut.encode(linear)
+                         - linear.powf(1.0 / GAMMA)).abs();
+            worst = worst.max(delta);
+        }
+        assert!(worst < 0.5 / 255.0 * 0.27,
+                "LUT drifted {worst} from powf (limit ~0.13 LSB)");
     }
 
     #[test]
