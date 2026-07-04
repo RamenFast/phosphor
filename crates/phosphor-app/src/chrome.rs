@@ -51,22 +51,6 @@ const CPU_RESOLUTION_CHOICES: [(f32, &str); 3] = [
 const MAX_FPS_PRESETS: [i64; 11] =
     [0, -1, 30, 60, 90, 120, 144, 165, 240, 360, 480];
 
-/// UI styles as DATA (V4PLAN: egui owns the chrome completely — the
-/// 8 v3 style ids keep their names; "system" is dark, like v3's
-/// pass-through resolves on Ben's desktop).
-/// (id, panel_fill, window_fill, accent, text, translucent_panels)
-#[allow(clippy::type_complexity)]
-pub const UI_STYLES: [(&str, [u8; 3], [u8; 3], [u8; 3], [u8; 3], bool); 8] = [
-    ("system",     [30, 30, 34],    [24, 24, 27],  [110, 170, 255], [222, 222, 222], false),
-    ("dark",       [30, 30, 34],    [24, 24, 27],  [110, 170, 255], [222, 222, 222], false),
-    ("light",      [242, 242, 245], [250, 250, 250], [40, 110, 220], [30, 30, 30],   false),
-    ("black",      [0, 0, 0],       [0, 0, 0],     [90, 240, 130],  [200, 210, 200], false),
-    ("bloom",      [34, 26, 34],    [26, 20, 28],  [255, 120, 190], [235, 220, 232], false),
-    ("stone",      [44, 42, 40],    [36, 34, 32],  [200, 170, 120], [225, 220, 210], false),
-    ("stonebloom", [42, 36, 42],    [34, 28, 34],  [235, 150, 180], [230, 220, 226], false),
-    ("aero",       [40, 52, 66],    [30, 40, 54],  [140, 200, 255], [230, 240, 250], true),
-];
-
 pub const MINI_SIZE_PRESETS: [(&str, i64); 4] = [
     ("Small", 200), ("Medium", 280), ("Large", 380), ("Extra large", 520),
 ];
@@ -75,15 +59,16 @@ impl Shell {
     /// The main toolbar row (§4.3): [⏻ Live][status…][⏺][📷][mode][⟳][target][icon]
     pub(crate) fn ui_toolbar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            let mut live = self.capture_on;
-            if ui.toggle_value(&mut live, "⏻ Live")
-                .on_hover_text("Toggle audio capture (Space). Off = zero CPU.")
-                .clicked()
+            // Live is a PRIMARY control → carved/dimensional (the
+            // "stone toggle" — depth encodes importance, skill rule).
+            if self.carved_toggle(ui, "⏻ LIVE", self.capture_on,
+                                  "Toggle audio capture (Space). \
+                                   Off = zero CPU.")
             {
-                self.actions.push(if live {
-                    UiAction::CaptureOn
-                } else {
+                self.actions.push(if self.capture_on {
                     UiAction::CaptureOff
+                } else {
+                    UiAction::CaptureOn
                 });
             }
             if ui.button("📂").on_hover_text("Play audio file (O)")
@@ -263,7 +248,7 @@ impl Shell {
     }
 
     fn ui_settings_renderer(&mut self, ui: &mut egui::Ui) {
-        section(ui, "RENDERER");
+        section(ui, "RENDERER", self.active_palette.muted);
         let renderer_label = if self.settings.renderer == "cairo" {
             "CPU · cairo"
         } else {
@@ -327,7 +312,7 @@ impl Shell {
     }
 
     fn ui_settings_scope(&mut self, ui: &mut egui::Ui) {
-        section(ui, "SCOPE");
+        section(ui, "SCOPE", self.active_palette.muted);
         let rate_label = SCOPE_RATE_CHOICES
             .iter()
             .find(|(v, _)| *v == self.settings.scope_sample_rate)
@@ -408,7 +393,7 @@ impl Shell {
     }
 
     fn ui_settings_appearance(&mut self, ui: &mut egui::Ui) {
-        section(ui, "APPEARANCE");
+        section(ui, "APPEARANCE", self.active_palette.muted);
         egui::ComboBox::from_label("Theme")
             .selected_text(self.settings.theme_name.clone())
             .show_ui(ui, |ui| {
@@ -441,23 +426,22 @@ impl Shell {
                 self.actions.push(UiAction::RenderTuning);
             }
         }
+        // Theme selector: the six palettes (theme.rs). The v3 aero-
+        // coupling law retires with the old style set — glass is now a
+        // fully manual toggle usable with any theme (a deliberate v4
+        // divergence, recorded in PARITY.md).
         let current_style = self.settings.ui_style.clone();
-        egui::ComboBox::from_label("UI style")
-            .selected_text(current_style.clone())
+        let current_label = crate::theme::palette(&current_style).label;
+        egui::ComboBox::from_label("Theme")
+            .selected_text(current_label)
             .show_ui(ui, |ui| {
-                for (id, ..) in UI_STYLES {
-                    if ui.selectable_label(current_style == id, id)
+                for palette in crate::theme::PALETTES {
+                    if ui.selectable_label(current_style == palette.id,
+                                           palette.label)
                         .clicked()
-                        && current_style != id
+                        && current_style != palette.id
                     {
-                        self.settings.ui_style = id.to_string();
-                        // Aero coupling (v3 §7): fires on EVERY style
-                        // change — aero forces glass ON, any other
-                        // style forces it OFF.
-                        let want_glass = id == "aero";
-                        if self.settings.scope_glass != want_glass {
-                            self.settings.scope_glass = want_glass;
-                        }
+                        self.settings.ui_style = palette.id.to_string();
                         self.actions.push(UiAction::RenderTuning);
                         self.actions.push(UiAction::SaveSettings);
                     }
@@ -474,7 +458,7 @@ impl Shell {
     }
 
     fn ui_settings_kit(&mut self, ui: &mut egui::Ui) {
-        section(ui, "SIGNAL KIT");
+        section(ui, "SIGNAL KIT", self.active_palette.muted);
         let mut kits: Vec<std::path::PathBuf> = Vec::new();
         let mut scan = |dir: std::path::PathBuf| {
             if let Ok(entries) = std::fs::read_dir(dir) {
@@ -530,7 +514,7 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
     }
 
     fn ui_settings_performance(&mut self, ui: &mut egui::Ui) {
-        section(ui, "PERFORMANCE");
+        section(ui, "PERFORMANCE", self.active_palette.muted);
         let fps_label = match self.settings.max_fps {
             0 => "Monitor".to_string(),
             fps if fps < 0 => "Uncapped".to_string(),
@@ -565,30 +549,42 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
     /// Apply the UI style's egui visuals (data table above). Aero and
     /// glass make the chrome slightly translucent over the desktop.
     pub(crate) fn apply_ui_style(&mut self, ctx: &egui::Context) {
-        let style = UI_STYLES
-            .iter()
-            .find(|(id, ..)| *id == self.settings.ui_style)
-            .unwrap_or(&UI_STYLES[1]);
-        let (_, panel, window, accent, text, translucent) = *style;
-        let alpha = if translucent || self.settings.scope_glass {
-            220
-        } else {
-            255
-        };
-        let mut visuals = if style.0 == "light" {
-            egui::Visuals::light()
-        } else {
-            egui::Visuals::dark()
-        };
-        visuals.panel_fill = egui::Color32::from_rgba_unmultiplied(
-            panel[0], panel[1], panel[2], alpha);
-        visuals.window_fill = egui::Color32::from_rgb(
-            window[0], window[1], window[2]);
-        visuals.selection.bg_fill = egui::Color32::from_rgb(
-            accent[0], accent[1], accent[2]);
-        visuals.override_text_color = Some(egui::Color32::from_rgb(
-            text[0], text[1], text[2]));
-        ctx.set_visuals(visuals);
+        // afterglow's chrome samples the live beam color; every theme
+        // reads its tokens from the palette table (theme.rs).
+        let beam = crate::render::build_theme(&self.settings).beam_color;
+        let palette = crate::theme::palette(&self.settings.ui_style)
+            .with_beam(beam);
+        // glass floats the chrome over the desktop → dim the panels
+        let panel_alpha = if self.settings.scope_glass { 210 } else { 255 };
+        palette.apply(ctx, panel_alpha);
+        self.active_palette = palette;
+    }
+
+    /// A carved, dimensional toggle for a PRIMARY control (Live, the
+    /// vacuums, transport play/pause) — the "stone" treatment. Lower-
+    /// tier controls stay flat (`ui.button`); depth encodes importance.
+    pub(crate) fn carved_toggle(&self, ui: &mut egui::Ui, label: &str,
+                                active: bool, tooltip: &str) -> bool {
+        let font = egui::FontId::monospace(13.0);
+        let galley = ui.painter().layout_no_wrap(
+            label.to_string(), font.clone(), self.active_palette.ink);
+        let desired = egui::vec2(galley.size().x + 18.0,
+                                 galley.size().y + 10.0);
+        let (rect, response) =
+            ui.allocate_exact_size(desired, egui::Sense::click());
+        let pressed = response.is_pointer_button_down_on();
+        if ui.is_rect_visible(rect) {
+            self.active_palette.carve(ui.painter(), rect, pressed, active);
+            let text_color = if active {
+                self.active_palette.ink
+            } else {
+                self.active_palette.ink_2
+            };
+            ui.painter().text(
+                rect.center(), egui::Align2::CENTER_CENTER, label, font,
+                text_color);
+        }
+        response.on_hover_text(tooltip).clicked()
     }
 
     /// The context menu (§5.1 tree; items land as their passes do).
@@ -826,9 +822,11 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
     }
 }
 
-fn section(ui: &mut egui::Ui, title: &str) {
+/// A settings section header — muted, mono, letter-spaced (the
+/// terminal/NFO "quiet structural label" the design system wants).
+fn section(ui: &mut egui::Ui, title: &str, muted: egui::Color32) {
     ui.add_space(12.0);
-    ui.label(egui::RichText::new(title).small().strong());
+    ui.label(egui::RichText::new(title).monospace().small().color(muted));
     ui.separator();
 }
 

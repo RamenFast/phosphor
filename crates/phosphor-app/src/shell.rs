@@ -142,6 +142,9 @@ pub struct Shell {
     pub(crate) actions: Vec<UiAction>,
     pub(crate) target_cache: Vec<phosphor_audio::CaptureTarget>,
     pub(crate) settings_panel_open: bool,
+    pub(crate) active_palette: crate::theme::Palette,
+    /// short-lived on-scope toast (snapshot saved, vacuum notes…)
+    pub(crate) toast: Option<(String, Instant)>,
     pub(crate) player: crate::player::PlayerState,
     /// paths picked in the threaded native dialog
     file_dialog: Option<mpsc::Receiver<Option<std::path::PathBuf>>>,
@@ -231,6 +234,8 @@ impl Shell {
             actions: Vec::new(),
             target_cache: Vec::new(),
             settings_panel_open: false,
+            active_palette: crate::theme::palette("blossom"),
+            toast: None,
             player: Default::default(),
             file_dialog: None,
             konami_progress: 0,
@@ -1045,15 +1050,14 @@ impl Shell {
                     let metadata = self.engine.current_track_metadata()
                         .unwrap_or_default();
                     self.player.duration = metadata.duration;
-                    let vacuum_mark = if self.settings.vacuum_enabled {
-                        "⌀ "
-                    } else {
-                        ""
-                    };
                     let basename = path.file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default();
-                    self.status_line = format!("▶ {vacuum_mark}{basename}");
+                    // Track state lives ONLY in the transport row now
+                    // (Ben: "two places say when a track is playing —
+                    // consolidate"). The toolbar status stays for
+                    // capture/system notes; clear it so it isn't stale.
+                    self.status_line.clear();
                     if self.settings.show_now_playing {
                         let title = metadata.title.clone()
                             .unwrap_or_else(|| basename.clone());
@@ -1100,10 +1104,16 @@ impl Shell {
         {
             self.export_results = None;
             self.exporting = false;
-            self.status_line = match result {
-                Ok(path) => format!("saved {}", path.display()),
+            let message = match result {
+                Ok(path) => {
+                    let name = path.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    format!("saved {name}")
+                }
                 Err(error) => error,
             };
+            self.toast = Some((message, Instant::now()));
             self.chrome_dirty = true;
         }
 
@@ -1295,21 +1305,9 @@ impl Shell {
                 self.ui_settings_panel(ctx);
                 self.ui_playlist_panel(ctx);
             }
-            let fps = self.last_fps;
-            let show_fps = self.settings.show_fps;
-            if !hide_chrome {
-                egui::TopBottomPanel::bottom("statusbar").show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(self.status_line.as_str());
-                        if show_fps {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(
-                                    egui::Align::Center),
-                                |ui| { ui.label(format!("{fps:.0} fps")); });
-                        }
-                    });
-                });
-            }
+            // (the bottom status bar is gone — track state lives in the
+            //  transport row, fps is a scope overlay, transient notes
+            //  are on-scope toasts; consolidation per the design pass)
             let central = egui::CentralPanel::default()
                 .frame(egui::Frame::NONE);
             central.show(ctx, |ui| {
@@ -1365,6 +1363,65 @@ impl Shell {
                                 (alpha as f32 * 0.8) as u8));
                     }
                     ui.ctx().request_repaint();
+                }
+                // fps overlay: top-right of the scope, mono, all modes
+                // (mini + fullscreen included — Ben's requested home)
+                if self.settings.show_fps {
+                    let text = format!("{:.0} fps", self.last_fps);
+                    let anchor = egui::pos2(
+                        scope_rect_out.max.x - 10.0,
+                        scope_rect_out.min.y + 8.0);
+                    let painter = ui.painter();
+                    // hairline-boxed for legibility over any beam
+                    let galley = painter.layout_no_wrap(
+                        text.clone(), egui::FontId::monospace(12.0),
+                        self.active_palette.ink);
+                    let box_rect = egui::Rect::from_min_size(
+                        egui::pos2(anchor.x - galley.size().x - 6.0,
+                                   anchor.y - 2.0),
+                        galley.size() + egui::vec2(12.0, 4.0));
+                    painter.rect_filled(box_rect, 0.0,
+                        self.active_palette.surface.gamma_multiply(0.72));
+                    painter.rect_stroke(box_rect, 0.0,
+                        egui::Stroke::new(1.0, self.active_palette.line),
+                        egui::StrokeKind::Inside);
+                    painter.text(
+                        egui::pos2(anchor.x, anchor.y),
+                        egui::Align2::RIGHT_TOP, text,
+                        egui::FontId::monospace(12.0),
+                        self.active_palette.ink);
+                }
+                // transient toast: bottom-center, sharp hairline frame,
+                // fades over ~2.5 s (snapshot saved, vacuum notes…)
+                if let Some((message, shown)) = self.toast.clone() {
+                    let age = shown.elapsed().as_secs_f32();
+                    if age < 2.5 {
+                        let opacity =
+                            (1.0 - (age - 1.8).max(0.0) / 0.7).clamp(0.0, 1.0);
+                        let painter = ui.painter();
+                        let galley = painter.layout_no_wrap(
+                            message.clone(), egui::FontId::monospace(12.0),
+                            self.active_palette.ink);
+                        let center = egui::pos2(
+                            scope_rect_out.center().x,
+                            scope_rect_out.max.y - 30.0);
+                        let box_rect = egui::Rect::from_center_size(
+                            center,
+                            galley.size() + egui::vec2(18.0, 10.0));
+                        let alpha = (opacity * 255.0) as u8;
+                        painter.rect_filled(box_rect, 0.0, with_toast_alpha(
+                            self.active_palette.surface, alpha));
+                        painter.rect_stroke(box_rect, 0.0,
+                            egui::Stroke::new(1.0, with_toast_alpha(
+                                self.active_palette.line_strong, alpha)),
+                            egui::StrokeKind::Inside);
+                        painter.text(center, egui::Align2::CENTER_CENTER,
+                            message, egui::FontId::monospace(12.0),
+                            with_toast_alpha(self.active_palette.ink, alpha));
+                        ui.ctx().request_repaint();
+                    } else {
+                        self.toast = None;
+                    }
                 }
             });
         });
@@ -1747,6 +1804,12 @@ impl ApplicationHandler for Shell {
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
+}
+
+/// Scale a chrome color's alpha for the fading toast.
+fn with_toast_alpha(color: egui::Color32, alpha: u8) -> egui::Color32 {
+    let a = (color.a() as u16 * alpha as u16 / 255) as u8;
+    egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), a)
 }
 
 pub fn run(arguments: &[String]) -> i32 {
