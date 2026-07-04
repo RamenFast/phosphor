@@ -1,5 +1,34 @@
 # Handoff — next session starts here
 
+## Next session: v4 begins — the full-Rust rewrite (July 4, 2026)
+
+**Ben approved the v4 plan. The map is [V4PLAN.md](V4PLAN.md) — read it
+first.** Short version: sub-100 fps on a 165 Hz monitor with an idle
+RX 6750 XT because Python drives every frame; v4 is a Cargo workspace
+(egui + wgpu shell, SIMD+rayon CPU rasterizer, native PipeWire, one DSP
+engine — the Python↔Rust parity contract dies). Targets: ≥2× fps on CPU
+and GPU individually, GPU sharpness ≥ CPU, zero Python, no fallbacks.
+Formats (.phos / .phoskit / scenes) and the CLI surface are contracts.
+In-place migration: v3 stays runnable until the parity checklist passes,
+then one commit deletes it.
+
+**Start with Wave 1, step 1 — BEFORE writing any Rust:**
+1. Measure v3 baseline (fps + ms/frame, GPU and CPU, max settings) →
+   `BENCH.md`. Gotchas from below apply: probe apps MUST set
+   `Gio.ApplicationFlags.NON_UNIQUE`, use a scratch `HOME`, tones longer
+   than the test, `_frame_work_seconds` only resets while Show FPS is on.
+2. Golden fixtures from the pristine Python engine → `tests/golden/`
+   (all 11 modes × fixtures, kit chains, .phos round-trips). Use
+   `PHOSPHOR_NO_NATIVE=1` so the reference is the original Python math.
+
+Everything below this section is v3 history and hard-won constraints —
+still true, still load-bearing (the constraints port verbatim; the
+AFTERGLOW spec further down is now Wave 4's map, absorbed into V4PLAN).
+mmx plan ran out — music gen for AFTERGLOW is Lyria 3 via OpenRouter
+(Ben has credits; $0.08/song).
+
+---
+
 State as of July 1, 2026 (late evening): **the four-wave session landed.**
 master == GitHub == the machine, tags v3.2.0 → v3.5.0, each with a .deb,
 each verified live before the next began. In one evening:
