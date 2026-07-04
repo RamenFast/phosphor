@@ -2300,6 +2300,7 @@ dependencies = [
  "phosphor-proto",
  "phosphor-render-cpu",
  "phosphor-render-gpu",
+ "png",
  "pollster",
  "rfd",
  "serde_json",

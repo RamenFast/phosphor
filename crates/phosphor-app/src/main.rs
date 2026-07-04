@@ -15,6 +15,7 @@ use std::process::ExitCode;
 
 mod bench;
 mod chrome;
+mod exports;
 mod keyboard;
 mod player;
 mod render;

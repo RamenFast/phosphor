@@ -48,6 +48,8 @@ symphonia = { version = "0.5", features = ["all"] }
 rubato = "0.16"
 # native file-open dialog (v3 used GtkFileChooserNative; rfd talks to the portal)
 rfd = "0.15"
+# snapshot PNG writer (pure rust)
+png = "0.18"
 zbus = "5"
 proptest = "1"
 pollster = "0.4"

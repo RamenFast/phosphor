@@ -163,6 +163,10 @@ pub struct Shell {
     pub(crate) app_vacuum: Option<String>,
     ctrl_down: bool,
     quit_requested: bool,
+    /// the Konami visitor swim (verbatim v3 turtle)
+    visitor_started: Option<Instant>,
+    exporting: bool,
+    export_results: Option<mpsc::Receiver<Result<std::path::PathBuf, String>>>,
 
     // quiet law state
     quiet_frame_count: u32,
@@ -223,7 +227,7 @@ impl Shell {
             konami_progress: 0,
             camera_yaw: 0.0,
             camera_pitch: 0.0,
-            camera_dolly: 0.0,
+            camera_dolly: 3.2,
             orbit_last_interaction: Instant::now(),
             composing: false,
             is_mini: false,
@@ -233,6 +237,9 @@ impl Shell {
             app_vacuum: None,
             ctrl_down: false,
             quit_requested: false,
+            visitor_started: None,
+            exporting: false,
+            export_results: None,
             quiet_frame_count: 0,
             fade_out_frames_remaining: FADE_OUT_FRAMES,
             render_loop_active: true,
@@ -419,9 +426,34 @@ impl Shell {
                 UiAction::SaveSettings => {
                     self.settings.save(&default_path()).ok();
                 }
-                UiAction::SaveSnapshot | UiAction::SaveClip => {
-                    self.status_line =
-                        "snapshot/clip land in chrome pass iv".into();
+                action @ (UiAction::SaveSnapshot | UiAction::SaveClip) => {
+                    if self.exporting {
+                        self.status_line = "export already running".into();
+                        continue;
+                    }
+                    let snapshot = matches!(action, UiAction::SaveSnapshot);
+                    let seconds = if snapshot { 1.5 } else { 10.0 };
+                    let history = self.engine.copy_history(seconds);
+                    let settings = self.settings.clone();
+                    let rate = self.settings.scope_sample_rate;
+                    let (sender, receiver) = mpsc::channel();
+                    self.export_results = Some(receiver);
+                    self.exporting = true;
+                    self.status_line = if snapshot {
+                        "rendering snapshot…".into()
+                    } else {
+                        "rendering clip…".into()
+                    };
+                    std::thread::spawn(move || {
+                        let result = if snapshot {
+                            crate::exports::save_snapshot(
+                                history, settings, rate)
+                        } else {
+                            crate::exports::save_clip(
+                                history, settings, rate)
+                        };
+                        let _ = sender.send(result);
+                    });
                 }
                 UiAction::OpenFile => {
                     if self.file_dialog.is_none() {
@@ -557,8 +589,11 @@ impl Shell {
     }
 
     pub(crate) fn begin_visitor(&mut self) {
-        // the Konami turtle — the visitor proper arrives in pass v
-        self.status_line = "🐢 …something stirs (pass v)".into();
+        // you know the code
+        self.visitor_started = Some(Instant::now());
+        self.fade_out_frames_remaining = self.fade_out_frames_remaining
+            .max((crate::exports::VISITOR_SWIM_SECONDS * 240.0) as u32);
+        self.wake_render_loop();
     }
 
     pub(crate) fn push_camera(&mut self) {
@@ -877,8 +912,39 @@ impl Shell {
             self.chrome_dirty = true;
         }
 
-        // ---- samples + quiet law ----
+        // ---- export results ----
+        if let Some(receiver) = &self.export_results
+            && let Ok(result) = receiver.try_recv()
+        {
+            self.export_results = None;
+            self.exporting = false;
+            self.status_line = match result {
+                Ok(path) => format!("saved {}", path.display()),
+                Err(error) => error,
+            };
+            self.chrome_dirty = true;
+        }
+
+        // ---- 3D idle drift (§8: 6 s hands-off, 0.05 rad/s yaw) ----
+        let is_3d = matches!(self.settings.display_mode.as_str(),
+                             "xyz_takens" | "helix");
+        if is_3d
+            && self.orbit_last_interaction.elapsed().as_secs_f64() > 6.0
+        {
+            self.camera_yaw += 0.05 / self.cap_hz().max(30.0);
+            self.push_camera();
+        }
+
+        // ---- samples + quiet law (visitor overrides the sleep) ----
         let samples = self.engine.take_stereo_samples();
+        let visitor_active = self
+            .visitor_started
+            .map(|t| t.elapsed().as_secs_f64()
+                 <= crate::exports::VISITOR_SWIM_SECONDS)
+            .unwrap_or(false);
+        if !visitor_active {
+            self.visitor_started = None;
+        }
         let advancing = if self.capture_on || self.engine.is_playing_file() {
             let peak = samples
                 .iter()
@@ -894,7 +960,7 @@ impl Shell {
         } else {
             self.render_loop_active = false;
             false
-        };
+        } || visitor_active;
 
         let Some(mut graphics) = self.graphics.take() else {
             return false;
@@ -956,8 +1022,16 @@ impl Shell {
         let scope_height = scope_physical.height().max(1.0) as u32;
 
         if advancing {
-            let segments = self.computer.compute(
-                samples, scope_width as f32, scope_height as f32);
+            let mut segments: Vec<[f32; 5]> = self.computer.compute(
+                samples, scope_width as f32, scope_height as f32)
+                .to_vec();
+            // the visitor swims OVER whatever the audio draws
+            if let Some(started) = self.visitor_started {
+                segments.extend(crate::exports::visitor_segments(
+                    started.elapsed().as_secs_f64(),
+                    scope_width as f32, scope_height as f32));
+            }
+            let segments = &segments[..];
             if let Some(gpu) = graphics.scope_gpu.as_mut() {
                 if let Err(error) = gpu.resize(scope_width, scope_height) {
                     eprintln!("phosphor: scope resize: {error}");
@@ -1042,6 +1116,19 @@ impl Shell {
                 self.ui_context_menu(&scope_response);
                 if scope_response.double_clicked() && self.is_mini {
                     self.actions.push(UiAction::MiniToggle);
+                }
+                // drag-to-orbit (3D, desktop only — mini blocks drag,
+                // the v3 asymmetry; wheel-dolly still works in mini)
+                let is_3d = matches!(
+                    self.settings.display_mode.as_str(),
+                    "xyz_takens" | "helix");
+                if is_3d && !self.is_mini && scope_response.dragged() {
+                    let delta = scope_response.drag_delta();
+                    self.camera_yaw += delta.x as f64 * 0.008;
+                    self.camera_pitch = (self.camera_pitch
+                        + delta.y as f64 * 0.008).clamp(-1.45, 1.45);
+                    self.push_camera();
+                    self.mark_orbit_interaction();
                 }
                 if let Some(texture_id) = cpu_texture_id {
                     ui.painter().image(
@@ -1240,12 +1327,23 @@ impl ApplicationHandler for Shell {
                         winit::event::MouseScrollDelta::PixelDelta(p) =>
                             p.y / 40.0,
                     };
+                    let is_3d = matches!(
+                        self.settings.display_mode.as_str(),
+                        "xyz_takens" | "helix");
                     if self.is_mini && self.ctrl_down {
                         // Ctrl+scroll resizes the mini view (v3 §6.4)
                         let size = (self.settings.mini_size as f64
                                     + notches * 20.0)
                             .clamp(140.0, 1000.0) as i64;
                         self.actions.push(UiAction::MiniSizePreset(size));
+                    } else if is_3d && !self.composing {
+                        // wheel-dolly (§8.2: 0.92 in / 1.09 out,
+                        // clamp 1.6..8.0 — works in mini too)
+                        let factor = if notches > 0.0 { 0.92 } else { 1.09 };
+                        self.camera_dolly =
+                            (self.camera_dolly * factor).clamp(1.6, 8.0);
+                        self.push_camera();
+                        self.mark_orbit_interaction();
                     } else {
                         // wheel on the scope = gain (v3 §3.2 gain row)
                         self.settings.gain = (self.settings.gain
