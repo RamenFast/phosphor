@@ -1,0 +1,58 @@
+{
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512
+ ],
+ "input": {
+  "file": "sweep-48000.f32",
+  "floats": 14400,
+  "sha256": "a1cc6385fca414f131d27351a8d691b245837f48f8dd4046b721b77d5ebb6837",
+  "signal": "sweep"
+ },
+ "kit": {
+  "source": "KIT_CASES:chain",
+  "stages": [
+   [
+    "rotate",
+    [
+     0.05,
+     0.0,
+     0.0,
+     0.0
+    ]
+   ],
+   [
+    "midside",
+    [
+     1.4,
+     0.0,
+     0.0,
+     0.0
+    ]
+   ],
+   [
+    "ringmod",
+    [
+     3.0,
+     0.2,
+     0.0,
+     0.0
+    ]
+   ]
+  ]
+ },
+ "name": "kitaudio-chain__sweep__48000",
+ "output": {
+  "file": "kitaudio-chain__sweep__48000.out.f32",
+  "floats": 13368,
+  "sha256": "0a5c8d95ff1c1e181d33d4d363f1700a580fa2fec4b703785942f6e23f06dcb3"
+ },
+ "sample_rate": 48000
+}

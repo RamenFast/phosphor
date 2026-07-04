@@ -1,0 +1,40 @@
+{
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512
+ ],
+ "input": {
+  "file": "sweep-48000.f32",
+  "floats": 14400,
+  "sha256": "a1cc6385fca414f131d27351a8d691b245837f48f8dd4046b721b77d5ebb6837",
+  "signal": "sweep"
+ },
+ "kit": {
+  "source": "KIT_CASES:wobble",
+  "stages": [
+   [
+    "wobble",
+    [
+     1.3,
+     0.9,
+     0.0,
+     0.0
+    ]
+   ]
+  ]
+ },
+ "name": "kitaudio-wobble__sweep__48000",
+ "output": {
+  "file": "kitaudio-wobble__sweep__48000.out.f32",
+  "floats": 13368,
+  "sha256": "8b774b5e3693dfa4aea1cdcb3a7e2a383524333f1d1670ceec64b20e09e48545"
+ },
+ "sample_rate": 48000
+}

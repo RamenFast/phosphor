@@ -1,0 +1,49 @@
+{
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512
+ ],
+ "input": {
+  "file": "sine-48000.f32",
+  "floats": 14400,
+  "sha256": "35977b16732210f36111dbfc323dd4084bbf1ee9f76641f69f2c51e73df4fc26",
+  "signal": "sine"
+ },
+ "kit": {
+  "source": "kits/heartbeat.phoskit",
+  "stages": [
+   [
+    "ringmod",
+    [
+     1.2,
+     0.5,
+     0.0,
+     0.0
+    ]
+   ],
+   [
+    "rotate",
+    [
+     0.03,
+     0.0,
+     0.0,
+     0.0
+    ]
+   ]
+  ]
+ },
+ "name": "kitaudio-starter-heartbeat__sine__48000",
+ "output": {
+  "file": "kitaudio-starter-heartbeat__sine__48000.out.f32",
+  "floats": 13368,
+  "sha256": "5018baf2fd25fd0fa3f5652be4855fe711fa2d13d08ca1216d1b6c8912f0ef45"
+ },
+ "sample_rate": 48000
+}

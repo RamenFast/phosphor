@@ -1,0 +1,60 @@
+{
+ "beam_energy": 8.0,
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512
+ ],
+ "engine": "numpy",
+ "frame_glow_keep": 0.82,
+ "gain": 1.3,
+ "height": 600,
+ "input": {
+  "file": "sweep-48000.f32",
+  "floats": 14400,
+  "sha256": "a1cc6385fca414f131d27351a8d691b245837f48f8dd4046b721b77d5ebb6837",
+  "signal": "sweep"
+ },
+ "kit": {
+  "source": "KIT_CASES:wobble",
+  "stages": [
+   [
+    "wobble",
+    [
+     1.3,
+     0.9,
+     0.0,
+     0.0
+    ]
+   ]
+  ]
+ },
+ "mode": "xy",
+ "name": "kit-wobble__xy__sweep__48000",
+ "oversample": 1,
+ "recorded_calls": [
+  0,
+  1,
+  5,
+  6,
+  7,
+  8
+ ],
+ "sample_rate": 48000,
+ "segment_counts_recorded": [
+  799,
+  512,
+  800,
+  512,
+  1024,
+  256
+ ],
+ "segments_sha256": "0b9e6db5fbad1108a0f212b9c0644a6414a4497b9716c149ebb142c80f4482f5",
+ "width": 800
+}

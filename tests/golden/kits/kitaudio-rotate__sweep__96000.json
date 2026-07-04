@@ -1,0 +1,48 @@
+{
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024
+ ],
+ "input": {
+  "file": "sweep-96000.f32",
+  "floats": 28800,
+  "sha256": "66b6f88087522bf7b4b0bbc83d0137bb9698d33c325c868401156e8de33ed40a",
+  "signal": "sweep"
+ },
+ "kit": {
+  "source": "KIT_CASES:rotate",
+  "stages": [
+   [
+    "rotate",
+    [
+     0.8,
+     0.4,
+     0.0,
+     0.0
+    ]
+   ]
+  ]
+ },
+ "name": "kitaudio-rotate__sweep__96000",
+ "output": {
+  "file": "kitaudio-rotate__sweep__96000.out.f32",
+  "floats": 27176,
+  "sha256": "436f3beea1611a8aefb58e49887aa742174f88b166e3becfc0a1f3005d9dccc7"
+ },
+ "sample_rate": 96000
+}

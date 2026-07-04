@@ -1,0 +1,40 @@
+{
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512
+ ],
+ "input": {
+  "file": "sine-48000.f32",
+  "floats": 14400,
+  "sha256": "35977b16732210f36111dbfc323dd4084bbf1ee9f76641f69f2c51e73df4fc26",
+  "signal": "sine"
+ },
+ "kit": {
+  "source": "kits/orbit.phoskit",
+  "stages": [
+   [
+    "rotate",
+    [
+     0.08,
+     0.0,
+     0.0,
+     0.0
+    ]
+   ]
+  ]
+ },
+ "name": "kitaudio-starter-orbit__sine__48000",
+ "output": {
+  "file": "kitaudio-starter-orbit__sine__48000.out.f32",
+  "floats": 13368,
+  "sha256": "993923f683ff1d653ea483def9e6ab451f22ee3563bfcad99e5aeebb52065431"
+ },
+ "sample_rate": 48000
+}

@@ -1,0 +1,57 @@
+{
+ "beam_energy": 8.0,
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000
+ ],
+ "engine": "rust-v3",
+ "frame_glow_keep": 0.82,
+ "gain": 1.3,
+ "height": 600,
+ "input": {
+  "file": "sweep-48000.f32",
+  "floats": 33600,
+  "sha256": "30285a488ddf92b556dc6a7ad8eb24bfd402dd66f3f72dbddae5308c4b5e3d3e",
+  "signal": "sweep"
+ },
+ "mode": "xy_dots",
+ "name": "xy_dots__sweep__48000",
+ "oversample": 1,
+ "recorded_calls": [
+  0,
+  1,
+  16,
+  17,
+  18,
+  19
+ ],
+ "sample_rate": 48000,
+ "segment_counts_recorded": [
+  800,
+  512,
+  512,
+  1024,
+  256,
+  1500
+ ],
+ "segments_sha256": "1790c3dcc00e6b28a5642f51bd3e433e43f72bfb2a543ad4db76677998812e24",
+ "width": 800
+}

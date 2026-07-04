@@ -1,0 +1,62 @@
+{
+ "beam_energy": 8.0,
+ "camera": {
+  "dolly": 2.4,
+  "pitch": 0.25,
+  "yaw": 0.9
+ },
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000
+ ],
+ "engine": "numpy",
+ "frame_glow_keep": 0.82,
+ "gain": 1.3,
+ "height": 600,
+ "input": {
+  "file": "burst-48000.f32",
+  "floats": 33600,
+  "sha256": "7174f58f4a50fa8a817661a92ed7e7cc6707f7232dee6d5689ff1f307afa6760",
+  "signal": "burst"
+ },
+ "mode": "xyz_takens",
+ "name": "xyz_takens__burst__48000",
+ "oversample": 1,
+ "recorded_calls": [
+  0,
+  1,
+  16,
+  17,
+  18,
+  19
+ ],
+ "sample_rate": 48000,
+ "segment_counts_recorded": [
+  415,
+  512,
+  512,
+  1024,
+  256,
+  1500
+ ],
+ "segments_sha256": "5fcdc560eec4a56b0d802e63dee9f25adcd5874979f29d9b99ca33e6dae5ae3a",
+ "width": 800
+}

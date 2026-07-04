@@ -1,0 +1,58 @@
+{
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512
+ ],
+ "input": {
+  "file": "sine-48000.f32",
+  "floats": 14400,
+  "sha256": "35977b16732210f36111dbfc323dd4084bbf1ee9f76641f69f2c51e73df4fc26",
+  "signal": "sine"
+ },
+ "kit": {
+  "source": "kits/haunt.phoskit",
+  "stages": [
+   [
+    "chandelay",
+    [
+     8.0,
+     1.0,
+     0.0,
+     0.0
+    ]
+   ],
+   [
+    "wobble",
+    [
+     0.4,
+     0.3,
+     0.0,
+     0.0
+    ]
+   ],
+   [
+    "midside",
+    [
+     1.3,
+     0.0,
+     0.0,
+     0.0
+    ]
+   ]
+  ]
+ },
+ "name": "kitaudio-starter-haunt__sine__48000",
+ "output": {
+  "file": "kitaudio-starter-haunt__sine__48000.out.f32",
+  "floats": 13368,
+  "sha256": "fddcbb2f1d1c58bd551dd4bac6703a664740d1c6a5cc17005644dbc4fa4f3fbc"
+ },
+ "sample_rate": 48000
+}

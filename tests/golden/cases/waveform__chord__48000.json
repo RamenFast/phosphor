@@ -1,0 +1,51 @@
+{
+ "beam_energy": 8.0,
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000
+ ],
+ "engine": "numpy",
+ "frame_glow_keep": 0.82,
+ "gain": 1.3,
+ "height": 600,
+ "input": {
+  "file": "chord-48000.f32",
+  "floats": 33600,
+  "sha256": "f466c30be0e84f15eda36827ab348559f718490b248cad99fd3983abb4608c77",
+  "signal": "chord"
+ },
+ "mode": "waveform",
+ "name": "waveform__chord__48000",
+ "oversample": 1,
+ "recorded_calls": [
+  0,
+  18,
+  19
+ ],
+ "sample_rate": 48000,
+ "segment_counts_recorded": [
+  1598,
+  1598,
+  1598
+ ],
+ "segments_sha256": "e0196a92f37c0e0e21ab903b96cd60c985193ebbac9fa9a4366333867631cfe8",
+ "width": 800
+}

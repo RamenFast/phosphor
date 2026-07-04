@@ -1,0 +1,51 @@
+{
+ "beam_energy": 8.0,
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000
+ ],
+ "engine": "rust-v3",
+ "frame_glow_keep": 0.82,
+ "gain": 1.3,
+ "height": 600,
+ "input": {
+  "file": "sweep-48000.f32",
+  "floats": 33600,
+  "sha256": "30285a488ddf92b556dc6a7ad8eb24bfd402dd66f3f72dbddae5308c4b5e3d3e",
+  "signal": "sweep"
+ },
+ "mode": "waveform",
+ "name": "waveform__sweep__48000",
+ "oversample": 1,
+ "recorded_calls": [
+  0,
+  18,
+  19
+ ],
+ "sample_rate": 48000,
+ "segment_counts_recorded": [
+  1598,
+  1598,
+  1598
+ ],
+ "segments_sha256": "aa272199b87c45578b745f682532668b020e6a29115cbd80fb453a64f6b22a8c",
+ "width": 800
+}

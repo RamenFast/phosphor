@@ -1,0 +1,48 @@
+{
+ "chunks": [
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024,
+  2048,
+  512,
+  3000,
+  1600,
+  1024
+ ],
+ "input": {
+  "file": "sweep-96000.f32",
+  "floats": 28800,
+  "sha256": "66b6f88087522bf7b4b0bbc83d0137bb9698d33c325c868401156e8de33ed40a",
+  "signal": "sweep"
+ },
+ "kit": {
+  "source": "KIT_CASES:chandelay",
+  "stages": [
+   [
+    "chandelay",
+    [
+     7.0,
+     1.0,
+     0.0,
+     0.0
+    ]
+   ]
+  ]
+ },
+ "name": "kitaudio-chandelay__sweep__96000",
+ "output": {
+  "file": "kitaudio-chandelay__sweep__96000.out.f32",
+  "floats": 27176,
+  "sha256": "fc94d3ec746d18fa4ef354b111abf407e60a5afde178e20fa8e1f84bdc5895d2"
+ },
+ "sample_rate": 96000
+}
