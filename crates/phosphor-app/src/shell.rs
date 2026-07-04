@@ -125,6 +125,7 @@ pub(crate) enum UiAction {
     /// Route/release the CAPTURED app through the vacuum (the second,
     /// ephemeral ⌀ — never saved; distinct from the file-vacuum).
     VacuumApp(bool),
+    KitChanged,
     Quit,
 }
 
@@ -361,6 +362,12 @@ impl Shell {
         } else {
             self.start_capture_from_settings();
         }
+        if self.args.visitor {
+            self.begin_visitor(); // you know why
+        }
+        if self.args.mini || self.settings.start_in_mini {
+            self.actions.push(UiAction::MiniToggle);
+        }
     }
 
     /// Drain chrome intents (frame() calls this with graphics free).
@@ -397,6 +404,18 @@ impl Shell {
                 }
                 UiAction::RefreshTargets => {
                     self.refresh_target_cache();
+                }
+                UiAction::KitChanged => {
+                    // rebuild the computer so the kit chain re-applies
+                    // (state zeroed on configure — the kit parity law)
+                    let rate = self.settings.scope_sample_rate;
+                    if let Ok(computer) =
+                        crate::render::build_computer(&self.settings, rate)
+                    {
+                        self.computer = computer;
+                        self.push_camera();
+                    }
+                    self.settings.save(&default_path()).ok();
                 }
                 UiAction::ModeChanged => {
                     if let Ok(mode) = self.settings.display_mode
@@ -1016,9 +1035,27 @@ impl Shell {
                         let title = metadata.title.clone()
                             .unwrap_or_else(|| basename.clone());
                         // .phos: subtitle is "trace by <credit>" —
-                        // the postcard credit fade (v3 law)
+                        // the postcard credit fade (v3 law). Certain
+                        // artists get a nod (undocumented, v3 table).
+                        let mut subtitle = metadata.artist.clone();
+                        let nod = match metadata.artist.as_deref()
+                            .map(|a| a.trim().to_lowercase())
+                            .as_deref()
+                        {
+                            Some("jerobeam fenderson") =>
+                                Some("🍄 the real deal"),
+                            Some("brakence") =>
+                                Some("🫧 there are hidden pictures in here"),
+                            _ => None,
+                        };
+                        if let Some(nod) = nod {
+                            subtitle = Some(match subtitle {
+                                Some(s) => format!("{s}  ·  {nod}"),
+                                None => nod.to_string(),
+                            });
+                        }
                         self.player.flash_now_playing(
-                            &title, metadata.artist.as_deref());
+                            &title, subtitle.as_deref());
                     }
                     self.queue_gapless_next();
                     self.mpris_track_changed();

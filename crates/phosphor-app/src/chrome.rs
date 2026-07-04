@@ -250,6 +250,7 @@ impl Shell {
                     self.ui_settings_renderer(ui);
                     self.ui_settings_scope(ui);
                     self.ui_settings_appearance(ui);
+                    self.ui_settings_kit(ui);
                     self.ui_settings_performance(ui);
                 });
             });
@@ -467,6 +468,62 @@ impl Shell {
                  players (MPRIS)")
             .changed()
         {}
+    }
+
+    fn ui_settings_kit(&mut self, ui: &mut egui::Ui) {
+        section(ui, "SIGNAL KIT");
+        let mut kits: Vec<std::path::PathBuf> = Vec::new();
+        let mut scan = |dir: std::path::PathBuf| {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.extension().and_then(|e| e.to_str())
+                        .is_some_and(|e| e.eq_ignore_ascii_case("phoskit"))
+                    {
+                        kits.push(path);
+                    }
+                }
+            }
+        };
+        let home = std::env::var_os("HOME").unwrap_or_default();
+        scan(std::path::PathBuf::from(&home)
+             .join(".local/share/phosphor/kits"));
+        scan(std::path::PathBuf::from("kits"));
+        kits.sort();
+        let selected = self.settings.kit_path.clone();
+        let selected_name = selected.as_deref()
+            .and_then(|p| std::path::Path::new(p).file_stem()
+                      .map(|s| s.to_string_lossy().to_string()))
+            .unwrap_or_else(|| "—".into());
+        egui::ComboBox::from_label("Kit")
+            .selected_text(selected_name)
+            .show_ui(ui, |ui| {
+                for kit in &kits {
+                    let name = kit.file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    let is_selected = selected.as_deref()
+                        == Some(kit.to_string_lossy().as_ref());
+                    if ui.selectable_label(is_selected, name).clicked() {
+                        self.settings.kit_path =
+                            Some(kit.to_string_lossy().to_string());
+                        self.actions.push(UiAction::KitChanged);
+                    }
+                }
+            })
+            .response
+            .on_hover_text(
+                "A .phoskit transform chain bent into whatever plays —                  rotate,
+widen, ring-mod, delay… Friends send these;                  drop one on the
+window to import it.");
+        if ui.checkbox(&mut self.settings.kit_enabled, "Apply kit")
+            .on_hover_text(
+                "Run the chosen kit's ops on the signal before every                  display
+mode — the figure, the goniometer, the                  tunnel, all of it")
+            .changed()
+        {
+            self.actions.push(UiAction::KitChanged);
+        }
     }
 
     fn ui_settings_performance(&mut self, ui: &mut egui::Ui) {
