@@ -38,6 +38,8 @@ pub struct ShellArgs {
     pub exit_after: Option<f64>,
     pub visitor: bool,
     pub mini: bool,
+    /// `phosphor song.flac` — open like a file manager would.
+    pub play_path: Option<std::path::PathBuf>,
 }
 
 pub fn parse_args(arguments: &[String]) -> ShellArgs {
@@ -46,6 +48,7 @@ pub fn parse_args(arguments: &[String]) -> ShellArgs {
         exit_after: None,
         visitor: false,
         mini: false,
+        play_path: None,
     };
     let mut iterator = arguments.iter();
     while let Some(argument) = iterator.next() {
@@ -56,6 +59,12 @@ pub fn parse_args(arguments: &[String]) -> ShellArgs {
             }
             "--visitor" => args.visitor = true,
             "--mini" => args.mini = true,
+            other if !other.starts_with("--") => {
+                let path = std::path::PathBuf::from(other);
+                if crate::player::is_audio_path(&path) {
+                    args.play_path = Some(path);
+                }
+            }
             _ => {}
         }
     }
@@ -100,6 +109,13 @@ pub(crate) enum UiAction {
     SaveSettings,
     SaveSnapshot,
     SaveClip,
+    OpenFile,
+    PlayPath(std::path::PathBuf),
+    PlayerPrevious,
+    PlayerNext,
+    PlayerTogglePause,
+    PlayerVacuumToggled,
+    GaplessRequeue,
 }
 
 pub struct Shell {
@@ -115,6 +131,9 @@ pub struct Shell {
     pub(crate) actions: Vec<UiAction>,
     pub(crate) target_cache: Vec<phosphor_audio::CaptureTarget>,
     pub(crate) settings_panel_open: bool,
+    pub(crate) player: crate::player::PlayerState,
+    /// paths picked in the threaded native dialog
+    file_dialog: Option<mpsc::Receiver<Option<std::path::PathBuf>>>,
 
     // quiet law state
     quiet_frame_count: u32,
@@ -170,6 +189,8 @@ impl Shell {
             actions: Vec::new(),
             target_cache: Vec::new(),
             settings_panel_open: false,
+            player: Default::default(),
+            file_dialog: None,
             quiet_frame_count: 0,
             fade_out_frames_remaining: FADE_OUT_FRAMES,
             render_loop_active: true,
@@ -282,9 +303,13 @@ impl Shell {
         self.graphics = Some(graphics);
 
         // v3 starts scoping on launch: saved target, else the default
-        // monitor.
+        // monitor. A file argument opens like the file dialog would.
         self.refresh_target_cache();
-        self.start_capture_from_settings();
+        if let Some(path) = self.args.play_path.take() {
+            self.play_file(&path, true);
+        } else {
+            self.start_capture_from_settings();
+        }
     }
 
     /// Drain chrome intents (frame() calls this with graphics free).
@@ -356,8 +381,68 @@ impl Shell {
                     self.status_line =
                         "snapshot/clip land in chrome pass iv".into();
                 }
+                UiAction::OpenFile => {
+                    if self.file_dialog.is_none() {
+                        let (sender, receiver) = mpsc::channel();
+                        self.file_dialog = Some(receiver);
+                        std::thread::spawn(move || {
+                            let picked = rfd::FileDialog::new()
+                                .set_title("Play audio file")
+                                .add_filter(
+                                    "Audio files",
+                                    &["mp3", "flac", "ogg", "oga",
+                                      "opus", "wav", "m4a", "aac",
+                                      "wma", "aif", "aiff", "mka",
+                                      "phos"])
+                                .add_filter("All files", &["*"])
+                                .pick_file();
+                            let _ = sender.send(picked);
+                        });
+                    }
+                }
+                UiAction::PlayPath(path) => {
+                    self.play_file(&path, false);
+                }
+                UiAction::PlayerPrevious => self.step_playlist(-1),
+                UiAction::PlayerNext => self.step_playlist(1),
+                UiAction::PlayerTogglePause => {
+                    let paused = !self.player.paused;
+                    self.engine.set_playback_paused(paused);
+                    self.player.paused = paused;
+                    if !paused {
+                        self.wake_render_loop();
+                    }
+                }
+                UiAction::PlayerVacuumToggled => {
+                    // reopen the pipeline seek-style at the current
+                    // position, with/without the audible leg (v3 ⌀)
+                    if let Some(path) = self.player.playing.clone() {
+                        let position =
+                            self.engine.playback_position_seconds();
+                        let was_paused = self.player.paused;
+                        self.engine.start_file(
+                            &path, position, false,
+                            self.settings.vacuum_enabled);
+                        if was_paused {
+                            self.engine.set_playback_paused(true);
+                        }
+                        self.queue_gapless_next();
+                    }
+                }
+                UiAction::GaplessRequeue => self.queue_gapless_next(),
             }
         }
+
+        // threaded file-dialog result
+        if let Some(receiver) = &self.file_dialog
+            && let Ok(result) = receiver.try_recv()
+        {
+            self.file_dialog = None;
+            if let Some(path) = result {
+                self.play_file(&path, true);
+            }
+        }
+        self.service_seek_debounce();
     }
 
     /// Renderer or quality changed: rebuild the scope sinks in place.
@@ -450,7 +535,7 @@ impl Shell {
         }
     }
 
-    fn wake_render_loop(&mut self) {
+    pub(crate) fn wake_render_loop(&mut self) {
         self.quiet_frame_count = 0;
         self.fade_out_frames_remaining = FADE_OUT_FRAMES;
         self.next_frame_due = None;
@@ -509,11 +594,38 @@ impl Shell {
                     targets_dirty = true;
                 }
                 AudioEvent::PlaybackEnded => {
-                    self.status_line = "playback ended".into();
+                    self.handle_track_finished();
                 }
                 AudioEvent::TrackStarted { path } => {
-                    self.status_line =
-                        format!("playing {}", path.display());
+                    // gapless splice moved us forward: sync the index
+                    if let Some(index) = self.player.playlist
+                        .iter().position(|p| p == &path)
+                    {
+                        self.player.playlist_index = index;
+                    }
+                    self.player.playing = Some(path.clone());
+                    let metadata = self.engine.current_track_metadata()
+                        .unwrap_or_default();
+                    self.player.duration = metadata.duration;
+                    let vacuum_mark = if self.settings.vacuum_enabled {
+                        "⌀ "
+                    } else {
+                        ""
+                    };
+                    let basename = path.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    self.status_line = format!("▶ {vacuum_mark}{basename}");
+                    if self.settings.show_now_playing {
+                        let title = metadata.title.clone()
+                            .unwrap_or_else(|| basename.clone());
+                        // .phos: subtitle is "trace by <credit>" —
+                        // the postcard credit fade (v3 law)
+                        self.player.flash_now_playing(
+                            &title, metadata.artist.as_deref());
+                    }
+                    self.queue_gapless_next();
+                    self.chrome_dirty = true;
                 }
             }
         }
@@ -649,12 +761,15 @@ impl Shell {
                 .and_then(|c| c.texture.as_ref().map(|t| t.id()));
         let mut scope_rect_out = self.scope_rect;
         let egui_ctx = graphics.egui_ctx.clone();
+        self.player.tick_overlay();
         let full_output = egui_ctx.run(raw_input, |ctx| {
             egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
                 self.ui_toolbar(ui);
                 self.ui_sliders(ui);
+                self.ui_transport(ui);
             });
             self.ui_settings_panel(ctx);
+            self.ui_playlist_panel(ctx);
             let fps = self.last_fps;
             let show_fps = self.settings.show_fps;
             egui::TopBottomPanel::bottom("statusbar").show(ctx, |ui| {
@@ -678,6 +793,31 @@ impl Shell {
                         egui::Rect::from_min_max(egui::pos2(0.0, 0.0),
                                                  egui::pos2(1.0, 1.0)),
                         egui::Color32::WHITE);
+                }
+                // now-playing overlay: top-left, 12 px margins (v3 §9)
+                if let Some((title, subtitle, opacity)) =
+                    self.player.overlay_visible()
+                {
+                    let alpha = (opacity * 255.0) as u8;
+                    let position = scope_rect_out.min
+                        + egui::vec2(12.0, 12.0);
+                    let painter = ui.painter();
+                    let title_id = painter.text(
+                        position, egui::Align2::LEFT_TOP,
+                        title,
+                        egui::FontId::proportional(16.0),
+                        egui::Color32::from_white_alpha(alpha));
+                    if let Some(subtitle) = subtitle {
+                        painter.text(
+                            egui::pos2(position.x,
+                                       title_id.max.y + 2.0),
+                            egui::Align2::LEFT_TOP,
+                            subtitle,
+                            egui::FontId::proportional(12.0),
+                            egui::Color32::from_white_alpha(
+                                (alpha as f32 * 0.8) as u8));
+                    }
+                    ui.ctx().request_repaint();
                 }
             });
         });
@@ -791,6 +931,23 @@ impl ApplicationHandler for Shell {
                                                &graphics.config);
                     graphics.window.request_redraw();
                 }
+            }
+            WindowEvent::DroppedFile(path) => {
+                // whole-window drop target (v3 §1.5): .phoskit files
+                // import (pass iv); audio files become the playlist
+                // verbatim and the first one plays
+                let lower = path.to_string_lossy().to_lowercase();
+                if lower.ends_with(".phoskit") {
+                    self.status_line =
+                        "kit import lands in chrome pass iv".into();
+                } else if crate::player::is_audio_path(&path)
+                    && path.exists()
+                {
+                    self.player.playlist = vec![path.clone()];
+                    self.player.playlist_index = 0;
+                    self.play_file(&path, false);
+                }
+                self.chrome_dirty = true;
             }
             WindowEvent::RedrawRequested => {
                 let keep_going = self.redraw();

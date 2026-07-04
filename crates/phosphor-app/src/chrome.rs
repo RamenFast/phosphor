@@ -65,6 +65,11 @@ impl Shell {
                     UiAction::CaptureOff
                 });
             }
+            if ui.button("📂").on_hover_text("Play audio file (O)")
+                .clicked()
+            {
+                self.actions.push(UiAction::OpenFile);
+            }
 
             // pack_end order, right → left
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

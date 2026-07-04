@@ -46,6 +46,8 @@ symphonia = { version = "0.5", features = ["all"] }
 # (the audible path and the scope share ONE resampled stream, so the
 # picture stays sample-locked to the sound — v3's ffmpeg-rate law)
 rubato = "0.16"
+# native file-open dialog (v3 used GtkFileChooserNative; rfd talks to the portal)
+rfd = "0.15"
 zbus = "5"
 proptest = "1"
 pollster = "0.4"
