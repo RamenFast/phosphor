@@ -54,6 +54,15 @@ enum Command {
     SetPlaybackActive(bool),
     SetVolume(f32),
     SweepVacuum(mpsc::Sender<usize>),
+    /// Route one app's stream into the vacuum null sink. Replies Ok
+    /// once the app→vacuum link is confirmed on the graph (the facade
+    /// owns the timeout + rollback).
+    RouteVacuum {
+        app_global: u32,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    /// Put the world back: metadata restored exactly, sink destroyed.
+    ReleaseVacuum(mpsc::Sender<()>),
     Shutdown,
 }
 
@@ -73,6 +82,9 @@ pub struct AudioEngine {
     playback: Mutex<Option<crate::playback::PlayerSession>>,
     playback_paused: AtomicBool,
     volume: Mutex<f32>,
+    /// pactl module id of the live vacuum sink (the hatch — see the
+    /// vacuum section below).
+    vacuum_module: Mutex<Option<String>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -123,6 +135,7 @@ impl AudioEngine {
                 playback: Mutex::new(None),
                 playback_paused: AtomicBool::new(false),
                 volume: Mutex::new(1.0),
+                vacuum_module: Mutex::new(None),
                 thread: Some(thread),
             }),
             Ok(Err(message)) => Err(message),
@@ -315,22 +328,113 @@ impl AudioEngine {
 
     /// Unload stale vacuum sinks left behind by a crash (kill -9 never
     /// runs atexit — every launch sweeps; v3 law). Blocking, bounded.
+    ///
+    /// ORDER MATTERS (Gate A receipt): module unload FIRST — the
+    /// server migrates streams gracefully on unload. Destroying the
+    /// backing node natively kills pulse-shim streams playing into it
+    /// ("Connection terminated"), so the native broom only runs for
+    /// module-less leftovers that somehow remain after.
     pub fn sweep_stale_vacuum(&self) -> usize {
-        let (reply_sender, reply_receiver) = mpsc::channel();
-        if self.commands.send(Command::SweepVacuum(reply_sender)).is_err() {
-            return 0;
+        let mut removed = sweep_stale_pulse_modules();
+        let survivor = std::process::Command::new("pactl")
+            .args(["list", "short", "sinks"])
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| {
+                String::from_utf8_lossy(&o.stdout).contains(crate::VACUUM_SINK_NAME)
+            })
+            .unwrap_or(true);
+        if survivor {
+            let (reply_sender, reply_receiver) = mpsc::channel();
+            if self.commands.send(Command::SweepVacuum(reply_sender)).is_ok() {
+                removed += reply_receiver
+                    .recv_timeout(Duration::from_secs(2))
+                    .unwrap_or(0);
+            }
         }
-        reply_receiver
-            .recv_timeout(Duration::from_secs(2))
-            .unwrap_or(0)
+        removed
+    }
+
+    // ---- vacuum ------------------------------------------------------------
+    //
+    // THE HATCH, INVOKED (decision made once, Gate A receipt): sink
+    // lifecycle goes through `pactl load-module/unload-module`.
+    // Reason: destroying a null-sink NODE natively (registry destroy)
+    // kills pulse-shim streams playing into it on PipeWire 1.0.5
+    // ("Connection terminated" — the gate script caught paplay dying),
+    // while module unload migrates them gracefully. A module also
+    // survives kill -9 exactly like v3 (app keeps playing into the
+    // void; the next launch's sweep unloads it and the server rescues
+    // the stream). Routing, verification (link watch), and restore
+    // stay fully native — pactl is module load/unload ONLY, per the
+    // pre-authorized V4PLAN escape hatch.
+
+    /// Route one app (by its stable key, e.g. "Google Chrome") into
+    /// the vacuum. On success returns the combo id of the monitor to
+    /// scope (v3 returned "phosphor_vacuum.monitor" the same way).
+    /// On any failure the world is put back first (restore is sacred).
+    pub fn vacuum_route_app(&self, stable_key: &str) -> Result<String, String> {
+        self.vacuum_release();
+        let spec = {
+            let mirror = self.mirror.lock().unwrap();
+            targets::resolve_combo_id(&mirror, &format!("app:{stable_key}"))
+        };
+        let Some(ConnectSpec::AppStream { global_id, .. }) = spec else {
+            return Err(format!("no playing app matches \"{stable_key}\""));
+        };
+        let module_id = pactl_load_vacuum_sink()?;
+        *self.vacuum_module.lock().unwrap() = Some(module_id);
+        let (reply_sender, reply_receiver) = mpsc::channel();
+        let _ = self.commands.send(Command::RouteVacuum {
+            app_global: global_id,
+            reply: reply_sender,
+        });
+        match reply_receiver.recv_timeout(Duration::from_millis(2500)) {
+            Ok(Ok(())) => Ok(format!("device:{}.monitor", crate::VACUUM_SINK_NAME)),
+            Ok(Err(message)) => {
+                self.vacuum_release();
+                Err(message)
+            }
+            Err(_) => {
+                self.vacuum_release();
+                Err("vacuum route: no link confirmation within 2.5 s".into())
+            }
+        }
+    }
+
+    /// Restore the routed app, then unload the sink module (that
+    /// order — the stream is back home before its refuge vanishes).
+    /// Safe to call twice.
+    pub fn vacuum_release(&self) {
+        let (reply_sender, reply_receiver) = mpsc::channel();
+        if self.commands.send(Command::ReleaseVacuum(reply_sender)).is_ok() {
+            let _ = reply_receiver.recv_timeout(Duration::from_secs(2));
+        }
+        if let Some(module_id) = self.vacuum_module.lock().unwrap().take() {
+            let _ = std::process::Command::new("pactl")
+                .args(["unload-module", &module_id])
+                .status();
+        }
+    }
+
+    pub fn vacuum_active(&self) -> bool {
+        self.vacuum_module.lock().unwrap().is_some()
     }
 }
 
 impl Drop for AudioEngine {
     fn drop(&mut self) {
+        // Restore is sacred on quit: routing restored by the loop's
+        // Shutdown handler, then the sink module unloaded here.
         let _ = self.commands.send(Command::Shutdown);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
+        }
+        if let Some(module_id) = self.vacuum_module.lock().unwrap().take() {
+            let _ = std::process::Command::new("pactl")
+                .args(["unload-module", &module_id])
+                .status();
         }
     }
 }
@@ -341,7 +445,21 @@ struct LoopState {
     playback: Option<PlaybackHolder>,
     node_watches: HashMap<u32, NodeWatch>,
     metadata: Option<MetadataHold>,
+    vacuum: Option<VacuumHold>,
     sample_rate: u32,
+}
+
+/// The live vacuum routing (the sink itself is a pactl-loaded module
+/// owned by the facade — see the hatch note on [`AudioEngine::vacuum_route_app`]).
+struct VacuumHold {
+    sink_global: Option<u32>,
+    sink_serial: Option<u64>,
+    app_global: u32,
+    /// The app's explicit target.object before us (None = follow
+    /// default) — restore puts back exactly this. v3's previous_sink.
+    prior_target: Option<String>,
+    /// Present until the app→sink link is confirmed.
+    pending_reply: Option<mpsc::Sender<Result<(), String>>>,
 }
 
 struct PlaybackHolder {
@@ -403,6 +521,7 @@ fn run_loop(
         playback: None,
         node_watches: HashMap::new(),
         metadata: None,
+        vacuum: None,
         sample_rate,
     }));
 
@@ -526,12 +645,20 @@ fn run_loop(
                 }
             }
             Command::SweepVacuum(reply) => {
+                let own_sink = state
+                    .borrow()
+                    .vacuum
+                    .as_ref()
+                    .and_then(|v| v.sink_global);
                 let stale: Vec<u32> = {
                     let mirror = mirror.lock().unwrap();
                     mirror
                         .nodes_of_class(NodeClass::Sink)
                         .into_iter()
-                        .filter(|n| n.node_name == crate::VACUUM_SINK_NAME)
+                        .filter(|n| {
+                            n.node_name == crate::VACUUM_SINK_NAME
+                                && Some(n.global_id) != own_sink
+                        })
                         .map(|n| n.global_id)
                         .collect()
                 };
@@ -540,7 +667,72 @@ fn run_loop(
                 }
                 let _ = reply.send(stale.len());
             }
+            Command::RouteVacuum { app_global, reply } => {
+                // Route is release-first (v3 law: route() calls release()).
+                release_vacuum(&state, &mirror);
+                let prior_target = {
+                    let mirror = mirror.lock().unwrap();
+                    let candidate = mirror.explicit_targets.get(&app_global).cloned();
+                    // Never treat a vacuum as "where it lived": if the
+                    // recorded target IS a phosphor_vacuum sink (ours,
+                    // or a stale one), restore-to-default instead.
+                    candidate.filter(|value| {
+                        !mirror.nodes_of_class(NodeClass::Sink).iter().any(|n| {
+                            n.node_name == crate::VACUUM_SINK_NAME
+                                && (n.serial.map(|s| s.to_string()).as_deref()
+                                    == Some(value.as_str())
+                                    || n.node_name == value.as_str())
+                        }) && value != crate::VACUUM_SINK_NAME
+                    })
+                };
+                if state.borrow().metadata.is_none() {
+                    let _ = reply.send(Err(
+                        "no \"default\" metadata object on this server".into(),
+                    ));
+                    return;
+                }
+                // The sink module is already loading (facade, pactl).
+                // Everything else is event-driven: the sink's global
+                // announce writes the metadata move; the app→sink
+                // link announce confirms + replies. If the sink is
+                // ALREADY announced (fast pactl), do phase 2 now.
+                let existing = mirror
+                    .lock()
+                    .unwrap()
+                    .find_node_by_name(NodeClass::Sink, crate::VACUUM_SINK_NAME)
+                    .map(|n| (n.global_id, n.serial));
+                state.borrow_mut().vacuum = Some(VacuumHold {
+                    sink_global: None,
+                    sink_serial: None,
+                    app_global,
+                    prior_target,
+                    pending_reply: Some(reply),
+                });
+                if let Some((sink_global, sink_serial)) = existing {
+                    if let Some(hold) = state.borrow_mut().vacuum.as_mut() {
+                        hold.sink_global = Some(sink_global);
+                        hold.sink_serial = sink_serial;
+                    }
+                    if let (Some(metadata), Some(serial)) =
+                        (state.borrow().metadata.as_ref(), sink_serial)
+                    {
+                        metadata.proxy.set_property(
+                            app_global,
+                            "target.object",
+                            Some("Spa:Id"),
+                            Some(&serial.to_string()),
+                        );
+                    }
+                }
+            }
+            Command::ReleaseVacuum(reply) => {
+                release_vacuum(&state, &mirror);
+                let _ = reply.send(());
+            }
             Command::Shutdown => {
+                // Restore is sacred: put the routing back before quit
+                // (the facade unloads the sink module after the join).
+                release_vacuum(&state, &mirror);
                 stop_capture(&state, &flags);
                 mainloop_quit.quit();
             }
@@ -569,11 +761,12 @@ fn handle_global(
             let serial = props
                 .get("object.serial")
                 .and_then(|s| s.parse::<u64>().ok());
+            let node_name = props.get("node.name").unwrap_or("");
             {
                 let mut mirror = mirror.lock().unwrap();
                 mirror.upsert_node(global.id, class, crate::mirror::NodeAnnounce {
                     serial,
-                    node_name: props.get("node.name").unwrap_or(""),
+                    node_name,
                     description: props.get("node.description"),
                     app_name: props.get("application.name"),
                     media_name: props.get("media.name"),
@@ -581,6 +774,39 @@ fn handle_global(
                 });
             }
             let _ = events.send(AudioEvent::TargetsChanged);
+
+            // Vacuum phase 2: our null sink just appeared — move the
+            // app into it (metadata target.object = sink serial, the
+            // same write pactl move-sink-input performs).
+            if class == NodeClass::Sink && node_name == crate::VACUUM_SINK_NAME {
+                let mut state_mut = state.borrow_mut();
+                let (write, app_global) = match state_mut.vacuum.as_mut() {
+                    Some(hold) if hold.sink_global.is_none() => {
+                        hold.sink_global = Some(global.id);
+                        hold.sink_serial = serial;
+                        (serial, hold.app_global)
+                    }
+                    _ => (None, 0),
+                };
+                let metadata_ready = state_mut.metadata.is_some();
+                drop(state_mut);
+                if let Some(sink_serial) = write {
+                    if metadata_ready {
+                        if let Some(metadata) = state.borrow().metadata.as_ref() {
+                            metadata.proxy.set_property(
+                                app_global,
+                                "target.object",
+                                Some("Spa:Id"),
+                                Some(&sink_serial.to_string()),
+                            );
+                        }
+                    } else if let Some(hold) = state.borrow_mut().vacuum.as_mut()
+                        && let Some(reply) = hold.pending_reply.take()
+                    {
+                        let _ = reply.send(Err("metadata object missing".into()));
+                    }
+                }
+            }
 
             // Song titles live in node *info* events, not the registry:
             // watch app streams so the combo label follows the music.
@@ -623,6 +849,18 @@ fn handle_global(
                 .and_then(|s| s.parse::<u32>().ok());
             if let (Some(output), Some(input)) = (output, input) {
                 mirror.lock().unwrap().upsert_link(global.id, output, input);
+
+                // Vacuum phase 3: the app→sink link exists — the move
+                // is REAL (verified, not assumed). Confirm the route.
+                let mut state_mut = state.borrow_mut();
+                if let Some(hold) = state_mut.vacuum.as_mut()
+                    && hold.pending_reply.is_some()
+                    && output == hold.app_global
+                    && Some(input) == hold.sink_global
+                    && let Some(reply) = hold.pending_reply.take()
+                {
+                    let _ = reply.send(Ok(()));
+                }
             }
         }
         ObjectType::Metadata => {
@@ -635,7 +873,7 @@ fn handle_global(
                 let events = events.clone();
                 let listener = proxy
                     .add_listener_local()
-                    .property(move |_subject, key, _type, value| {
+                    .property(move |subject, key, _type, value| {
                         if key == Some("default.audio.sink") {
                             let name = value.and_then(parse_metadata_name);
                             let mut mirror = mirror.lock().unwrap();
@@ -643,6 +881,20 @@ fn handle_global(
                                 mirror.default_sink = name;
                                 drop(mirror);
                                 let _ = events.send(AudioEvent::DefaultSinkChanged);
+                            }
+                        } else if subject != 0
+                            && matches!(key, Some("target.object") | None)
+                        {
+                            // Track explicit routing so vacuum restore
+                            // puts back exactly what was there.
+                            let mut mirror = mirror.lock().unwrap();
+                            match (key, value) {
+                                (Some(_), Some(v)) => {
+                                    mirror.explicit_targets.insert(subject, v.to_string());
+                                }
+                                _ => {
+                                    mirror.explicit_targets.remove(&subject);
+                                }
                             }
                         }
                         0
@@ -696,6 +948,63 @@ fn handle_global_remove(
     }
 }
 
+/// Load the vacuum null sink via the hatch. v3 law verbatim: the
+/// module id must be digits (pactl prints it on success and nothing
+/// on most failures).
+fn pactl_load_vacuum_sink() -> Result<String, String> {
+    let output = std::process::Command::new("pactl")
+        .args([
+            "load-module",
+            "module-null-sink",
+            &format!("sink_name={}", crate::VACUUM_SINK_NAME),
+            "sink_properties=device.description=Phosphor\\ Vacuum",
+        ])
+        .output()
+        .map_err(|e| format!("pactl: {e}"))?;
+    let module_id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || module_id.is_empty()
+        || !module_id.bytes().all(|b| b.is_ascii_digit())
+    {
+        return Err("could not create the vacuum sink".into());
+    }
+    Ok(module_id)
+}
+
+/// pactl leftovers from a crashed v3 OR v4: unload any
+/// module-null-sink whose arguments name the vacuum. Return code is
+/// the only truth (pactl is silent on success — v3 law).
+fn sweep_stale_pulse_modules() -> usize {
+    let Ok(output) = std::process::Command::new("pactl")
+        .args(["list", "short", "modules"])
+        .output()
+    else {
+        return 0;
+    };
+    if !output.status.success() {
+        return 0;
+    }
+    let listing = String::from_utf8_lossy(&output.stdout);
+    let mut removed = 0;
+    for line in listing.lines() {
+        let mut parts = line.split('\t');
+        let (Some(module_id), Some(module_name)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let arguments = parts.next().unwrap_or("");
+        if module_name == "module-null-sink" && arguments.contains(crate::VACUUM_SINK_NAME) {
+            let unloaded = std::process::Command::new("pactl")
+                .args(["unload-module", module_id])
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            if unloaded {
+                removed += 1;
+            }
+        }
+    }
+    removed
+}
+
 /// `default.audio.sink` metadata value is JSON: `{"name":"sink-name"}`.
 fn parse_metadata_name(value: &str) -> Option<String> {
     let parsed: serde_json::Value = serde_json::from_str(value).ok()?;
@@ -710,6 +1019,54 @@ fn stop_capture(state: &Rc<std::cell::RefCell<LoopState>>, flags: &Arc<SharedFla
         let _ = holder.stream.disconnect();
     }
     flags.capture_running.store(false, Ordering::Relaxed);
+}
+
+/// Put the routing back: the app's target.object restored to exactly
+/// what it was (or cleared → follows default, v3's @DEFAULT_SINK@
+/// fallback). The sink module itself is unloaded by the facade via
+/// pactl AFTER this (restore first, then the sink goes). Safe twice.
+fn release_vacuum(
+    state: &Rc<std::cell::RefCell<LoopState>>,
+    mirror: &Arc<Mutex<GraphMirror>>,
+) {
+    let Some(hold) = state.borrow_mut().vacuum.take() else { return };
+    if let Some(reply) = hold.pending_reply {
+        let _ = reply.send(Err("vacuum released before the move confirmed".into()));
+    }
+    let app_alive = mirror.lock().unwrap().node(hold.app_global).is_some();
+    if app_alive
+        && let Some(metadata) = state.borrow().metadata.as_ref()
+    {
+        match &hold.prior_target {
+            Some(previous) => metadata.proxy.set_property(
+                hold.app_global,
+                "target.object",
+                Some("Spa:Id"),
+                Some(previous),
+            ),
+            None => metadata.proxy.set_property(
+                hold.app_global,
+                "target.object",
+                None,
+                None,
+            ),
+        }
+    }
+    // Fix the mirror NOW rather than waiting for the metadata event —
+    // an immediate re-route must not capture our own write as "prior".
+    {
+        let mut mirror = mirror.lock().unwrap();
+        match &hold.prior_target {
+            Some(previous) => {
+                mirror
+                    .explicit_targets
+                    .insert(hold.app_global, previous.clone());
+            }
+            None => {
+                mirror.explicit_targets.remove(&hold.app_global);
+            }
+        }
+    }
 }
 
 fn build_capture_stream(

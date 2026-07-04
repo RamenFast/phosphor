@@ -49,6 +49,10 @@ pub struct GraphMirror {
     links: HashMap<u32, LinkInfo>,
     /// node.name of the default sink (from the "default" metadata).
     pub default_sink: Option<String>,
+    /// Live `target.object` metadata per node id — what an app's
+    /// routing was *explicitly* set to (pavucontrol, a previous move…).
+    /// Vacuum restore puts back exactly this, or clears if absent.
+    pub explicit_targets: HashMap<u32, String>,
     next_order: u64,
 }
 
@@ -130,7 +134,15 @@ impl GraphMirror {
     /// Remove whatever this global was. Returns the node if one died.
     pub fn remove_global(&mut self, global_id: u32) -> Option<NodeInfo> {
         self.links.remove(&global_id);
+        self.explicit_targets.remove(&global_id);
         self.nodes.remove(&global_id)
+    }
+
+    /// Is there a live link from `output_node` into `input_node`?
+    pub fn has_link(&self, output_node: u32, input_node: u32) -> bool {
+        self.links
+            .values()
+            .any(|l| l.output_node == output_node && l.input_node == input_node)
     }
 
     pub fn node(&self, global_id: u32) -> Option<&NodeInfo> {
