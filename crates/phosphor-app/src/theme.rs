@@ -1,0 +1,310 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//! The chrome design system (Ben's data-representation house style).
+//!
+//! Hard rules, from the skill — non-negotiable:
+//! - **sharp corners everywhere** (`corner_radius = 0`); no pills.
+//! - hairline 1 px low-opacity strokes are the frames.
+//! - monospace for all DATA (values, ids, fps, time, labels).
+//! - **dimensional hierarchy**: a few important controls are carved
+//!   (beveled/inset — the "stone toggle" feel); everything lower-tier
+//!   stays flat and boxy. Depth encodes importance; shape never
+//!   changes between states, surface does.
+//!
+//! Six themes, all token-driven off [`Palette`]. Blossom is default.
+//! egui reads only the tokens, so a theme swap is one struct.
+
+use egui::Color32;
+
+/// One theme = one token block. Colors are the skill's tokens verbatim
+/// where a matching concept exists (plane/surface/ink/line/accent/
+/// stone); the CRT-native themes (chromacore/basalt/afterglow) are
+/// originals in the same shape.
+#[derive(Clone, Copy)]
+pub struct Palette {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub dark: bool,
+    pub plane: Color32,     // window/page fill (behind panels)
+    pub surface: Color32,   // panel/card face
+    pub surface_2: Color32, // recessed / lower tier
+    pub ink: Color32,       // primary text
+    pub ink_2: Color32,     // secondary text
+    pub muted: Color32,     // faint text / disabled
+    pub line: Color32,      // hairline frame
+    pub line_strong: Color32,
+    pub accent: Color32,    // the one bold hue (selection, active)
+    pub on_accent: Color32,
+    // carved-stone triple for dimensional controls
+    pub stone: Color32,
+    pub stone_hi: Color32,
+    pub stone_lo: Color32,
+    /// afterglow samples the live beam color into `accent` at runtime.
+    pub accent_follows_beam: bool,
+}
+
+const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
+    Color32::from_rgb(r, g, b)
+}
+const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color32 {
+    Color32::from_rgba_premultiplied(r, g, b, a)
+}
+
+/// All six, in menu order. Blossom first = the default.
+pub const PALETTES: [Palette; 6] = [
+    // ── Blossom — warm sakura, rice-paper, ink (skill default) ──
+    Palette {
+        id: "blossom", label: "Blossom", dark: false,
+        plane: rgb(0xf3, 0xe6, 0xe6), surface: rgb(0xfc, 0xf4, 0xf3),
+        surface_2: rgb(0xf6, 0xe9, 0xe9),
+        ink: rgb(0x2b, 0x21, 0x28), ink_2: rgb(0x5f, 0x4f, 0x57),
+        muted: rgb(0x9c, 0x88, 0x90),
+        line: rgba(43, 33, 40, 41), line_strong: rgba(43, 33, 40, 77),
+        accent: rgb(0xc8, 0x5a, 0x7c), on_accent: rgb(0xff, 0xf7, 0xf9),
+        stone: rgb(0xe7, 0xda, 0xd9), stone_hi: rgb(0xff, 0xfa, 0xfa),
+        stone_lo: rgb(0xc9, 0xb6, 0xb8),
+        accent_follows_beam: false,
+    },
+    // ── Light — cool neutral instrument ──
+    Palette {
+        id: "light", label: "Light", dark: false,
+        plane: rgb(0xea, 0xee, 0xf2), surface: rgb(0xff, 0xff, 0xff),
+        surface_2: rgb(0xf5, 0xf8, 0xfa),
+        ink: rgb(0x0e, 0x16, 0x20), ink_2: rgb(0x43, 0x51, 0x5e),
+        muted: rgb(0x7a, 0x88, 0x94),
+        line: rgba(14, 22, 32, 31), line_strong: rgba(14, 22, 32, 71),
+        accent: rgb(0x0c, 0x94, 0xa2), on_accent: rgb(0xff, 0xff, 0xff),
+        stone: rgb(0xe4, 0xe9, 0xee), stone_hi: rgb(0xff, 0xff, 0xff),
+        stone_lo: rgb(0xc2, 0xcc, 0xd4),
+        accent_follows_beam: false,
+    },
+    // ── Dark — deep instrument, plum-tinted near-black ──
+    Palette {
+        id: "dark", label: "Dark", dark: true,
+        plane: rgb(0x0a, 0x08, 0x10), surface: rgb(0x14, 0x10, 0x19),
+        surface_2: rgb(0x1b, 0x15, 0x22),
+        ink: rgb(0xf0, 0xea, 0xf0), ink_2: rgb(0xb3, 0xa6, 0xb3),
+        muted: rgb(0x7d, 0x6f, 0x7d),
+        line: rgba(240, 234, 240, 31), line_strong: rgba(240, 234, 240, 66),
+        accent: rgb(0xe7, 0x8a, 0xa6), on_accent: rgb(0x16, 0x08, 0x10),
+        stone: rgb(0x24, 0x1d, 0x29), stone_hi: rgb(0x33, 0x28, 0x38),
+        stone_lo: rgb(0x14, 0x0f, 0x18),
+        accent_follows_beam: false,
+    },
+    // ── Chromacore — terminal/NFO: near-black, cyan, structural ──
+    Palette {
+        id: "chromacore", label: "Chromacore", dark: true,
+        plane: rgb(0x08, 0x08, 0x10), surface: rgb(0x0d, 0x0d, 0x16),
+        surface_2: rgb(0x12, 0x12, 0x1e),
+        ink: rgb(0xe8, 0xe8, 0xf0), ink_2: rgb(0xa8, 0xb4, 0xc4),
+        muted: rgb(0x60, 0x6a, 0x7e),
+        line: rgba(0, 229, 255, 28), line_strong: rgba(0, 229, 255, 64),
+        accent: rgb(0x00, 0xe5, 0xff), on_accent: rgb(0x03, 0x0a, 0x0e),
+        stone: rgb(0x10, 0x18, 0x1e), stone_hi: rgb(0x1a, 0x2a, 0x30),
+        stone_lo: rgb(0x06, 0x0c, 0x10),
+        accent_follows_beam: false,
+    },
+    // ── Basalt — carved stone: strata grays, mica-glint accent ──
+    Palette {
+        id: "basalt", label: "Basalt", dark: true,
+        plane: rgb(0x17, 0x17, 0x19), surface: rgb(0x22, 0x22, 0x25),
+        surface_2: rgb(0x1a, 0x1a, 0x1d),
+        ink: rgb(0xdb, 0xd7, 0xce), ink_2: rgb(0x9a, 0x96, 0x8e),
+        muted: rgb(0x66, 0x63, 0x5d),
+        line: rgba(0, 0, 0, 110), line_strong: rgba(0, 0, 0, 150),
+        accent: rgb(0x9c, 0xb4, 0xc9), on_accent: rgb(0x10, 0x12, 0x15),
+        // real stonemasonry: high catch-light, deep shadow, cool basalt
+        stone: rgb(0x2c, 0x2c, 0x30), stone_hi: rgb(0x4a, 0x4a, 0x50),
+        stone_lo: rgb(0x0e, 0x0e, 0x10),
+        accent_follows_beam: false,
+    },
+    // ── Afterglow — CRT panel whose chrome remembers the beam ──
+    Palette {
+        id: "afterglow", label: "Afterglow", dark: true,
+        plane: rgb(0x05, 0x06, 0x07), surface: rgb(0x0b, 0x0d, 0x0e),
+        surface_2: rgb(0x10, 0x13, 0x14),
+        ink: rgb(0xd6, 0xe0, 0xdc), ink_2: rgb(0x8c, 0x9c, 0x96),
+        muted: rgb(0x55, 0x62, 0x5d),
+        line: rgba(255, 255, 255, 20), line_strong: rgba(255, 255, 255, 46),
+        accent: rgb(0x63, 0xff, 0xb0), on_accent: rgb(0x02, 0x08, 0x05),
+        stone: rgb(0x12, 0x16, 0x15), stone_hi: rgb(0x20, 0x28, 0x25),
+        stone_lo: rgb(0x06, 0x0a, 0x08),
+        accent_follows_beam: true,
+    },
+];
+
+pub fn palette(id: &str) -> Palette {
+    PALETTES.iter().copied().find(|p| p.id == id).unwrap_or(PALETTES[0])
+}
+
+impl Palette {
+    /// Blend a beam color into the accent (afterglow only).
+    pub fn with_beam(mut self, beam: [f32; 3]) -> Palette {
+        if self.accent_follows_beam {
+            let lift = |c: f32| (c.powf(1.0 / 2.2).clamp(0.0, 1.0)
+                                 * 255.0) as u8;
+            // keep it luminous but not blown — 82% toward the beam hue
+            let mix = |beam_channel: u8, base: u8| {
+                ((beam_channel as f32 * 0.82 + base as f32 * 0.18)
+                 as u8).max(base)
+            };
+            let b = [lift(beam[0]), lift(beam[1]), lift(beam[2])];
+            self.accent = Color32::from_rgb(
+                mix(b[0], 0x30), mix(b[1], 0x40), mix(b[2], 0x38));
+        }
+        self
+    }
+
+    /// Translate the tokens into an egui `Style`: sharp corners,
+    /// hairline frames, the accent on selection, panel fills. `alpha`
+    /// dims panels when glass is on (chrome floats over the desktop).
+    pub fn apply(&self, ctx: &egui::Context, panel_alpha: u8) {
+        let mut visuals = if self.dark {
+            egui::Visuals::dark()
+        } else {
+            egui::Visuals::light()
+        };
+
+        // sharp corners EVERYWHERE (the hard rule)
+        let sharp = egui::CornerRadius::ZERO;
+        visuals.window_corner_radius = sharp;
+        visuals.menu_corner_radius = sharp;
+
+        let panel = with_alpha(self.surface, panel_alpha);
+        visuals.panel_fill = panel;
+        visuals.window_fill = with_alpha(self.surface, panel_alpha);
+        visuals.window_stroke = egui::Stroke::new(1.0, self.line_strong);
+        // the plane sits behind panels (menu shadows, gaps)
+        visuals.extreme_bg_color = self.plane;
+        visuals.faint_bg_color = self.surface_2;
+        visuals.override_text_color = Some(self.ink);
+        visuals.weak_text_alpha = 0.55; // faint labels lean on `muted`
+        visuals.hyperlink_color = self.accent;
+        visuals.selection.bg_fill = self.accent;
+        visuals.selection.stroke = egui::Stroke::new(1.0, self.on_accent);
+
+        // Flat, hairline-framed widgets by default — depth is reserved
+        // for the few carved controls (drawn manually in chrome.rs).
+        let hairline = egui::Stroke::new(1.0, self.line);
+        let hairline_strong = egui::Stroke::new(1.0, self.line_strong);
+        let widgets = &mut visuals.widgets;
+        for w in [&mut widgets.noninteractive, &mut widgets.inactive,
+                  &mut widgets.hovered, &mut widgets.active,
+                  &mut widgets.open] {
+            w.corner_radius = sharp;
+        }
+        widgets.noninteractive.bg_fill = panel;
+        widgets.noninteractive.weak_bg_fill = panel;
+        widgets.noninteractive.bg_stroke = hairline;
+        widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, self.ink_2);
+
+        widgets.inactive.bg_fill = self.surface_2;
+        widgets.inactive.weak_bg_fill = self.surface_2;
+        widgets.inactive.bg_stroke = hairline;
+        widgets.inactive.fg_stroke = egui::Stroke::new(1.0, self.ink);
+
+        widgets.hovered.bg_fill = lerp(self.surface_2, self.accent, 0.14);
+        widgets.hovered.weak_bg_fill =
+            lerp(self.surface_2, self.accent, 0.14);
+        widgets.hovered.bg_stroke = hairline_strong;
+        widgets.hovered.fg_stroke = egui::Stroke::new(1.0, self.ink);
+
+        widgets.active.bg_fill = lerp(self.surface_2, self.accent, 0.30);
+        widgets.active.weak_bg_fill =
+            lerp(self.surface_2, self.accent, 0.30);
+        widgets.active.bg_stroke = egui::Stroke::new(1.0, self.accent);
+        widgets.active.fg_stroke = egui::Stroke::new(1.0, self.ink);
+
+        widgets.open.bg_fill = self.surface_2;
+        widgets.open.bg_stroke = hairline_strong;
+
+        ctx.set_visuals(visuals);
+
+        // Spacing + the mono data face: install a Style with tightened,
+        // consistent spacing (breathing room without sprawl).
+        let mut style = (*ctx.style()).clone();
+        style.spacing.button_padding = egui::vec2(8.0, 4.0);
+        style.spacing.item_spacing = egui::vec2(7.0, 5.0);
+        style.spacing.window_margin = egui::Margin::same(8);
+        // data reads in mono; body/buttons keep the proportional face
+        style.text_styles.insert(
+            egui::TextStyle::Monospace,
+            egui::FontId::monospace(12.5));
+        ctx.set_style(style);
+    }
+
+    /// Paint a carved, dimensional control background into `rect`
+    /// (the "stone" treatment — bevel light top-left, shadow
+    /// bottom-right; pressed = it sinks). For the FEW important
+    /// controls only. `active` = toggled-on state (accent-tinted face).
+    pub fn carve(&self, painter: &egui::Painter, rect: egui::Rect,
+                 pressed: bool, active: bool) {
+        let face = if active {
+            lerp(self.stone, self.accent, 0.34)
+        } else {
+            self.stone
+        };
+        painter.rect_filled(rect, 0.0, face);
+        let hi = egui::Stroke::new(1.0, self.stone_hi);
+        let lo = egui::Stroke::new(1.0, self.stone_lo);
+        let (top_left, bottom_right) = if pressed { (lo, hi) } else { (hi, lo) };
+        // top + left = catch-light; bottom + right = shadow
+        painter.line_segment([rect.left_top(), rect.right_top()], top_left);
+        painter.line_segment([rect.left_top(), rect.left_bottom()], top_left);
+        painter.line_segment(
+            [rect.left_bottom(), rect.right_bottom()], bottom_right);
+        painter.line_segment(
+            [rect.right_top(), rect.right_bottom()], bottom_right);
+        if active {
+            // a hairline accent rim marks it "on"
+            painter.rect_stroke(
+                rect.shrink(1.0), 0.0,
+                egui::Stroke::new(1.0, self.accent),
+                egui::StrokeKind::Inside);
+        }
+    }
+}
+
+fn with_alpha(color: Color32, alpha: u8) -> Color32 {
+    if alpha == 255 {
+        color
+    } else {
+        Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(),
+                                        alpha)
+    }
+}
+
+fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
+    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
+    Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()),
+                      mix(a.b(), b.b()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn six_palettes_blossom_first() {
+        assert_eq!(PALETTES.len(), 6);
+        assert_eq!(PALETTES[0].id, "blossom");
+        assert!(!PALETTES[0].dark, "blossom is a warm light theme");
+    }
+
+    #[test]
+    fn afterglow_accent_follows_beam() {
+        let base = palette("afterglow").accent;
+        let lit = palette("afterglow").with_beam([0.42, 1.0, 0.55]).accent;
+        assert_ne!(base, lit, "afterglow chrome must remember the beam");
+        // a non-following theme ignores the beam
+        assert_eq!(palette("basalt").accent,
+                   palette("basalt").with_beam([1.0, 0.0, 0.0]).accent);
+    }
+
+    #[test]
+    fn unknown_id_falls_back_to_blossom() {
+        assert_eq!(palette("no-such-theme").id, "blossom");
+        // old v3 ids resolve to blossom too (migration)
+        assert_eq!(palette("stone").id, "blossom");
+        assert_eq!(palette("aero").id, "blossom");
+    }
+}

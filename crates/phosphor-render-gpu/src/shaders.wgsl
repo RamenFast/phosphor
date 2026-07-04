@@ -131,6 +131,13 @@ struct CompositeUniforms {
     // the offscreen path (bytes unchanged, goldens hold), the scope
     // rect's origin when compositing into a window surface
     origin: vec2f,
+    // 1 = the target view is sRGB and the hardware encodes: skip the
+    // manual gamma (double-encode lifts blacks / washes glow).
+    // 0 offline — output identical to wave 1.
+    hw_encode: f32,
+    _pad2: f32,
+    _pad3: f32,
+    _pad4: f32,
 }
 
 @group(0) @binding(0) var composite_energy: texture_2d<f32>;
@@ -187,7 +194,9 @@ fn composite_fs(@builtin(position) position: vec4f) -> @location(0) vec4f {
     }
     color += srgb_to_linear(composite.beam_color.rgb) * glow
         + srgb_to_linear(composite.flash_color.rgb) * flash * 0.6;
-    color = pow(color, vec3f(1.0 / 2.2));
+    if composite.hw_encode < 0.5 {
+        color = pow(color, vec3f(1.0 / 2.2));
+    }
 
     // hash dither breaks 8-bit banding in the dark falloff, gated below
     // ~1 LSB so AMOLED black stays exactly black (local: offline-exact)

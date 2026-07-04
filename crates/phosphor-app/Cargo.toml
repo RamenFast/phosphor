@@ -28,4 +28,7 @@ egui-winit.workspace = true
 pollster.workspace = true
 rfd.workspace = true
 png.workspace = true
+# cover-art decode (png+jpeg only — no default codecs)
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 zbus.workspace = true
+egui-phosphor = "0.11"

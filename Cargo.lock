@@ -848,6 +848,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui-phosphor"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3b2838620355debaeb7fa3cc331a1d8ab77e6387d40e65686fa468c229dbf63"
+dependencies = [
+ "egui",
+]
+
+[[package]]
 name = "egui-wgpu"
 version = "0.33.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1475,6 +1484,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2292,8 +2303,10 @@ name = "phosphor-app"
 version = "4.0.0-dev"
 dependencies = [
  "egui",
+ "egui-phosphor",
  "egui-wgpu",
  "egui-winit",
+ "image",
  "phosphor-audio",
  "phosphor-beam",
  "phosphor-dsp",

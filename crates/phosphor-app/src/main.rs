@@ -21,6 +21,7 @@ mod mpris;
 mod player;
 mod render;
 mod shell;
+mod theme;
 mod signals;
 
 const PENDING: &[&str] = &["probe", "tap", "ctl", "feed", "kit",

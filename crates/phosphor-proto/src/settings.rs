@@ -6,7 +6,8 @@
 //!
 //! Full key set per the v3 table (UI-SPEC §3.2): defaults verbatim,
 //! `scope_sample_rate` re-validated against v3's VALID_SCOPE_RATES,
-//! `gl_supersample` clamped to v3's 1..=3, `max_fps` to 0..=1000.
+//! `gl_supersample` clamped to v3's 1..=3, `max_fps` to -1..=1000
+//! (-1 = Uncapped, a v4 addition; v3 clamps it to 0 = Monitor).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -251,7 +252,7 @@ impl Settings {
               serde_json::Value::as_bool);
         take!("max_fps", settings.max_fps,
               |value: &serde_json::Value| value.as_i64()
-              .map(|number| number.clamp(0, 1000)));
+              .map(|number| number.clamp(-1, 1000))); // -1 = Uncapped (v4)
         take!("target_id", settings.target_id, optional_string);
         take!("pinned", settings.pinned, serde_json::Value::as_bool);
         take!("show_now_playing", settings.show_now_playing,

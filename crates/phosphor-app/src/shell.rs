@@ -126,6 +126,8 @@ pub(crate) enum UiAction {
     /// ephemeral ⌀ — never saved; distinct from the file-vacuum).
     VacuumApp(bool),
     KitChanged,
+    OpenKitEditor,
+    OpenPostcard,
     Quit,
 }
 
@@ -142,6 +144,15 @@ pub struct Shell {
     pub(crate) actions: Vec<UiAction>,
     pub(crate) target_cache: Vec<phosphor_audio::CaptureTarget>,
     pub(crate) settings_panel_open: bool,
+    pub(crate) active_palette: crate::theme::Palette,
+    /// short-lived on-scope toast (snapshot saved, vacuum notes…)
+    pub(crate) toast: Option<(String, Instant)>,
+    /// the kit editor window (None = closed)
+    pub(crate) kit_editor: Option<crate::chrome::KitEditorState>,
+    /// the postcard-export dialog (None = closed)
+    pub(crate) postcard_dialog: Option<crate::chrome::PostcardState>,
+    /// decoded cover-art texture for the playing track + its source path
+    pub(crate) cover_texture: Option<(std::path::PathBuf, egui::TextureHandle)>,
     pub(crate) player: crate::player::PlayerState,
     /// paths picked in the threaded native dialog
     file_dialog: Option<mpsc::Receiver<Option<std::path::PathBuf>>>,
@@ -164,6 +175,13 @@ pub struct Shell {
     pub(crate) app_vacuum: Option<String>,
     ctrl_down: bool,
     quit_requested: bool,
+    /// ids of genuinely text-capable widgets that held focus this
+    /// frame — the ONLY focus that may eat keyboard shortcuts
+    pub(crate) text_focus_ids: std::collections::HashSet<egui::Id>,
+    /// pending square-enforcement side after a mini corner resize
+    mini_resquare: Option<i64>,
+    cursor_position: (f64, f64),
+    mini_last_click: Option<Instant>,
     /// the Konami visitor swim (verbatim v3 turtle)
     visitor_started: Option<Instant>,
     exporting: bool,
@@ -224,6 +242,11 @@ impl Shell {
             actions: Vec::new(),
             target_cache: Vec::new(),
             settings_panel_open: false,
+            active_palette: crate::theme::palette("blossom"),
+            toast: None,
+            kit_editor: None,
+            postcard_dialog: None,
+            cover_texture: None,
             player: Default::default(),
             file_dialog: None,
             konami_progress: 0,
@@ -239,6 +262,10 @@ impl Shell {
             app_vacuum: None,
             ctrl_down: false,
             quit_requested: false,
+            text_focus_ids: std::collections::HashSet::new(),
+            mini_resquare: None,
+            cursor_position: (0.0, 0.0),
+            mini_last_click: None,
             visitor_started: None,
             exporting: false,
             export_results: None,
@@ -263,7 +290,7 @@ impl Shell {
     fn init_graphics(&mut self, event_loop: &ActiveEventLoop) {
         #[allow(unused_imports)]
         use winit::platform::x11::WindowAttributesExtX11;
-        let attributes = Window::default_attributes()
+        let mut attributes = Window::default_attributes()
             .with_title("Phosphor")
             // WM_CLASS "phosphor" — the .desktop StartupWMClass match
             // (v3 did this via GLib.set_prgname)
@@ -273,6 +300,17 @@ impl Shell {
                 self.settings.window_width.max(320) as f64,
                 self.settings.window_height.max(240) as f64,
             ));
+        // the 4-panel scope icon (embedded, decoded once)
+        if let Some(icon) = load_window_icon() {
+            attributes = attributes.with_window_icon(Some(icon));
+        }
+        // restore the remembered window position (v3 law)
+        if let (Some(x), Some(y)) =
+            (self.settings.window_x, self.settings.window_y)
+        {
+            attributes = attributes.with_position(
+                winit::dpi::PhysicalPosition::new(x as i32, y as i32));
+        }
         let window = std::sync::Arc::new(
             event_loop.create_window(attributes).expect("window"));
 
@@ -309,9 +347,18 @@ impl Shell {
             .unwrap_or(wgpu::CompositeAlphaMode::Opaque);
 
         let size = window.inner_size();
+        // Prefer a NON-sRGB surface: the composite shader encodes its
+        // own gamma; formats[0] on RADV is typically Bgra8UnormSrgb
+        // and double-encoding washed the live beam (wave-2.5 root #3).
+        let surface_format = capabilities
+            .formats
+            .iter()
+            .copied()
+            .find(|format| !format.is_srgb())
+            .unwrap_or(capabilities.formats[0]);
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: capabilities.formats[0],
+            format: surface_format,
             width: size.width.max(1),
             height: size.height.max(1),
             present_mode,
@@ -322,6 +369,17 @@ impl Shell {
         surface.configure(&device, &config);
 
         let egui_ctx = egui::Context::default();
+        // Phosphor icon font (the crate is literally named for the
+        // app) — replaces emoji so icons render at one consistent
+        // weight/size in every theme. Regular only: active/toggled
+        // state is encoded by the carved SURFACE + accent, never by a
+        // shape swap (the design system's rule #2).
+        {
+            let mut fonts = egui::FontDefinitions::default();
+            egui_phosphor::add_to_fonts(
+                &mut fonts, egui_phosphor::Variant::Regular);
+            egui_ctx.set_fonts(fonts);
+        }
         let egui_state = egui_winit::State::new(
             egui_ctx.clone(), egui::ViewportId::ROOT, &window, None,
             None, None);
@@ -560,6 +618,35 @@ impl Shell {
                                 self.settings.mini_size as u32));
                     }
                 }
+                UiAction::OpenKitEditor => {
+                    // seed from the current kit if one is loaded, else
+                    // a single rotate stage
+                    let stages = self.settings.kit_path.as_deref()
+                        .and_then(|p| phosphor_proto::phoskit::load(
+                            std::path::Path::new(p)).ok())
+                        .map(|kit| (kit.name, kit.author, kit.stages))
+                        .unwrap_or_else(|| (
+                            "my kit".into(),
+                            self.settings.postcard_credit.clone(),
+                            vec![("rotate".into(),
+                                  phosphor_proto::phoskit::default_params(
+                                      "rotate"))]));
+                    self.kit_editor = Some(crate::chrome::KitEditorState {
+                        name: stages.0, author: stages.1, stages: stages.2,
+                    });
+                }
+                UiAction::OpenPostcard => {
+                    if let Some(path) = self.player.playing.clone() {
+                        self.postcard_dialog =
+                            Some(crate::chrome::PostcardState {
+                                title: path.file_stem()
+                                    .map(|s| s.to_string_lossy().to_string())
+                                    .unwrap_or_default(),
+                                credit: self.settings.postcard_credit.clone(),
+                                source: path,
+                            });
+                    }
+                }
                 UiAction::Quit => {
                     self.quit_requested = true;
                 }
@@ -723,6 +810,47 @@ impl Shell {
             let _ = mpris.notify.send(
                 crate::mpris::MprisNotify::Seeked((seconds * 1e6) as i64));
         }
+    }
+
+    /// Decode the engine's extracted cover art into an egui texture
+    /// (png/jpeg only, thumbnailed) — the transport shows it framed.
+    fn load_cover_art(&mut self, path: &std::path::Path) {
+        self.cover_texture = None;
+        let Some(art) = self.engine.current_cover_art() else { return };
+        let Some(graphics) = &self.graphics else { return };
+        let Ok(decoded) = image::load_from_memory(&art.data) else { return };
+        let thumb = decoded.thumbnail(96, 96).to_rgba8();
+        let size = [thumb.width() as usize, thumb.height() as usize];
+        let image = egui::ColorImage::from_rgba_unmultiplied(
+            size, thumb.as_raw());
+        let texture = graphics.egui_ctx.load_texture(
+            "cover", image, egui::TextureOptions::LINEAR);
+        self.cover_texture = Some((path.to_path_buf(), texture));
+    }
+
+    /// Show a transient on-scope toast now.
+    pub(crate) fn toast_now(&mut self, message: impl Into<String>) {
+        self.toast = Some((message.into(), Instant::now()));
+        self.chrome_dirty = true;
+    }
+
+    /// Export the playing file as a .phos postcard on a worker thread.
+    pub(crate) fn export_postcard(&mut self,
+                                  dialog: &crate::chrome::PostcardState) {
+        // credit persists (v3: the "Trace by" field writes the setting)
+        self.settings.postcard_credit = dialog.credit.clone();
+        self.actions.push(UiAction::SaveSettings);
+        let source = dialog.source.clone();
+        let title = dialog.title.clone();
+        let credit = dialog.credit.clone();
+        let (sender, receiver) = mpsc::channel();
+        self.export_results = Some(receiver);
+        self.exporting = true;
+        self.toast_now("exporting postcard…");
+        std::thread::spawn(move || {
+            let _ = sender.send(crate::exports::export_postcard(
+                &source, &title, &credit));
+        });
     }
 
     pub(crate) fn begin_visitor(&mut self) {
@@ -962,10 +1090,13 @@ impl Shell {
         }
     }
 
-    /// The frame cadence: user cap, else the monitor's refresh
-    /// (v3's "0 = uncapped/monitor"). 0.0 = genuinely uncapped.
+    /// The frame cadence: -1 = genuinely uncapped (new in v4), 0 =
+    /// the monitor's refresh (v3's meaning), else the user's cap.
+    /// Returns 0.0 for "no deadline pacing".
     fn cap_hz(&self) -> f64 {
-        if self.settings.max_fps > 0 {
+        if self.settings.max_fps < 0 {
+            0.0
+        } else if self.settings.max_fps > 0 {
             self.settings.max_fps as f64
         } else {
             self.monitor_hz
@@ -1022,15 +1153,14 @@ impl Shell {
                     let metadata = self.engine.current_track_metadata()
                         .unwrap_or_default();
                     self.player.duration = metadata.duration;
-                    let vacuum_mark = if self.settings.vacuum_enabled {
-                        "⌀ "
-                    } else {
-                        ""
-                    };
                     let basename = path.file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default();
-                    self.status_line = format!("▶ {vacuum_mark}{basename}");
+                    // Track state lives ONLY in the transport row now
+                    // (Ben: "two places say when a track is playing —
+                    // consolidate"). The toolbar status stays for
+                    // capture/system notes; clear it so it isn't stale.
+                    self.status_line.clear();
                     if self.settings.show_now_playing {
                         let title = metadata.title.clone()
                             .unwrap_or_else(|| basename.clone());
@@ -1059,6 +1189,7 @@ impl Shell {
                     }
                     self.queue_gapless_next();
                     self.mpris_track_changed();
+                    self.load_cover_art(&path);
                     self.chrome_dirty = true;
                 }
             }
@@ -1077,10 +1208,16 @@ impl Shell {
         {
             self.export_results = None;
             self.exporting = false;
-            self.status_line = match result {
-                Ok(path) => format!("saved {}", path.display()),
+            let message = match result {
+                Ok(path) => {
+                    let name = path.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    format!("saved {name}")
+                }
                 Err(error) => error,
             };
+            self.toast = Some((message, Instant::now()));
             self.chrome_dirty = true;
         }
 
@@ -1184,15 +1321,23 @@ impl Shell {
         let scope_width = scope_physical.width().max(1.0) as u32;
         let scope_height = scope_physical.height().max(1.0) as u32;
 
+        // CPU path traces at its reduced resolution (v3 law); GPU at full.
+        let (trace_w, trace_h) = if graphics.scope_cpu.is_some() {
+            let fraction = self.settings.cairo_resolution.clamp(0.25, 1.0);
+            (((scope_width as f32 * fraction) as u32).max(64),
+             ((scope_height as f32 * fraction) as u32).max(64))
+        } else {
+            (scope_width, scope_height)
+        };
         if advancing {
             let mut segments: Vec<[f32; 5]> = self.computer.compute(
-                samples, scope_width as f32, scope_height as f32)
+                samples, trace_w as f32, trace_h as f32)
                 .to_vec();
             // the visitor swims OVER whatever the audio draws
             if let Some(started) = self.visitor_started {
                 segments.extend(crate::exports::visitor_segments(
                     started.elapsed().as_secs_f64(),
-                    scope_width as f32, scope_height as f32));
+                    trace_w as f32, trace_h as f32));
             }
             let segments = &segments[..];
             if let Some(gpu) = graphics.scope_gpu.as_mut() {
@@ -1202,10 +1347,19 @@ impl Shell {
                 gpu.advance(segments);
             }
             if let Some(cpu) = graphics.scope_cpu.as_mut() {
+                // v3's CPU resolution law: render at scope x fraction,
+                // the egui image upscales (0.75/0.5 presets — this was
+                // silently ignored in wave 2, all CPU frames full-res)
+                let fraction =
+                    self.settings.cairo_resolution.clamp(0.25, 1.0);
+                let target_w = ((scope_width as f32 * fraction) as usize)
+                    .max(64);
+                let target_h = ((scope_height as f32 * fraction) as usize)
+                    .max(64);
                 let (w, h) = (cpu.renderer.width(), cpu.renderer.height());
-                if w != scope_width as usize || h != scope_height as usize {
+                if w != target_w || h != target_h {
                     let mut renderer = CpuRenderer::new(
-                        scope_width as usize, scope_height as usize, 1);
+                        target_w, target_h, 1);
                     renderer.beam_focus = cpu.renderer.beam_focus;
                     renderer.persistence = cpu.renderer.persistence;
                     renderer.theme = cpu.renderer.theme;
@@ -1242,10 +1396,11 @@ impl Shell {
         let mut scope_rect_out = self.scope_rect;
         let egui_ctx = graphics.egui_ctx.clone();
         self.player.tick_overlay();
-        let is_mini = self.is_mini;
+        self.text_focus_ids.clear(); // chrome re-registers each frame
+        let hide_chrome = self.is_mini || self.is_fullscreen;
         let full_output = egui_ctx.run(raw_input, |ctx| {
             self.apply_ui_style(ctx);
-            if !is_mini {
+            if !hide_chrome {
                 egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
                     self.ui_toolbar(ui);
                     self.ui_sliders(ui);
@@ -1254,21 +1409,14 @@ impl Shell {
                 self.ui_settings_panel(ctx);
                 self.ui_playlist_panel(ctx);
             }
-            let fps = self.last_fps;
-            let show_fps = self.settings.show_fps;
-            if !is_mini {
-                egui::TopBottomPanel::bottom("statusbar").show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(self.status_line.as_str());
-                        if show_fps {
-                            ui.with_layout(
-                                egui::Layout::right_to_left(
-                                    egui::Align::Center),
-                                |ui| { ui.label(format!("{fps:.0} fps")); });
-                        }
-                    });
-                });
+            // dialogs float above chrome, hidden only in fullscreen
+            if !self.is_fullscreen {
+                self.ui_kit_editor(ctx);
+                self.ui_postcard_dialog(ctx);
             }
+            // (the bottom status bar is gone — track state lives in the
+            //  transport row, fps is a scope overlay, transient notes
+            //  are on-scope toasts; consolidation per the design pass)
             let central = egui::CentralPanel::default()
                 .frame(egui::Frame::NONE);
             central.show(ctx, |ui| {
@@ -1325,9 +1473,95 @@ impl Shell {
                     }
                     ui.ctx().request_repaint();
                 }
+                // fps overlay: top-right of the scope, mono, all modes
+                // (mini + fullscreen included — Ben's requested home)
+                if self.settings.show_fps {
+                    let text = format!("{:.0} fps", self.last_fps);
+                    let anchor = egui::pos2(
+                        scope_rect_out.max.x - 10.0,
+                        scope_rect_out.min.y + 8.0);
+                    let painter = ui.painter();
+                    // hairline-boxed for legibility over any beam
+                    let galley = painter.layout_no_wrap(
+                        text.clone(), egui::FontId::monospace(12.0),
+                        self.active_palette.ink);
+                    let box_rect = egui::Rect::from_min_size(
+                        egui::pos2(anchor.x - galley.size().x - 6.0,
+                                   anchor.y - 2.0),
+                        galley.size() + egui::vec2(12.0, 4.0));
+                    painter.rect_filled(box_rect, 0.0,
+                        self.active_palette.surface.gamma_multiply(0.72));
+                    painter.rect_stroke(box_rect, 0.0,
+                        egui::Stroke::new(1.0, self.active_palette.line),
+                        egui::StrokeKind::Inside);
+                    painter.text(
+                        egui::pos2(anchor.x, anchor.y),
+                        egui::Align2::RIGHT_TOP, text,
+                        egui::FontId::monospace(12.0),
+                        self.active_palette.ink);
+                }
+                // transient toast: bottom-center, sharp hairline frame,
+                // fades over ~2.5 s (snapshot saved, vacuum notes…)
+                if let Some((message, shown)) = self.toast.clone() {
+                    let age = shown.elapsed().as_secs_f32();
+                    if age < 2.5 {
+                        let opacity =
+                            (1.0 - (age - 1.8).max(0.0) / 0.7).clamp(0.0, 1.0);
+                        let painter = ui.painter();
+                        let galley = painter.layout_no_wrap(
+                            message.clone(), egui::FontId::monospace(12.0),
+                            self.active_palette.ink);
+                        let center = egui::pos2(
+                            scope_rect_out.center().x,
+                            scope_rect_out.max.y - 30.0);
+                        let box_rect = egui::Rect::from_center_size(
+                            center,
+                            galley.size() + egui::vec2(18.0, 10.0));
+                        let alpha = (opacity * 255.0) as u8;
+                        painter.rect_filled(box_rect, 0.0, with_toast_alpha(
+                            self.active_palette.surface, alpha));
+                        painter.rect_stroke(box_rect, 0.0,
+                            egui::Stroke::new(1.0, with_toast_alpha(
+                                self.active_palette.line_strong, alpha)),
+                            egui::StrokeKind::Inside);
+                        painter.text(center, egui::Align2::CENTER_CENTER,
+                            message, egui::FontId::monospace(12.0),
+                            with_toast_alpha(self.active_palette.ink, alpha));
+                        ui.ctx().request_repaint();
+                    } else {
+                        self.toast = None;
+                    }
+                }
             });
         });
         self.scope_rect = scope_rect_out;
+
+        // Focus hygiene: only registered text widgets may HOLD focus —
+        // egui buttons keep focus after a click, and gating shortcuts
+        // on that killed them all (the wave-2.5 root fix).
+        egui_ctx.memory_mut(|memory| {
+            if let Some(id) = memory.focused()
+                && !self.text_focus_ids.contains(&id)
+            {
+                memory.surrender_focus(id);
+            }
+        });
+        // Honor egui's requested follow-up paints (press/release
+        // visuals, hover fades) — without this, chrome only repainted
+        // on new input while the scope was quiet-asleep ("laggy").
+        let repaint_delay = full_output
+            .viewport_output
+            .values()
+            .map(|viewport| viewport.repaint_delay)
+            .min()
+            .unwrap_or(Duration::MAX);
+        if repaint_delay < Duration::from_secs(1) {
+            self.chrome_dirty = true;
+            let due = Instant::now() + repaint_delay;
+            self.next_frame_due =
+                Some(self.next_frame_due.map_or(due, |d| d.min(due)));
+        }
+
         let clipped = graphics.egui_ctx.tessellate(
             full_output.shapes, full_output.pixels_per_point);
         let screen = egui_wgpu::ScreenDescriptor {
@@ -1448,7 +1682,56 @@ impl ApplicationHandler for Shell {
                     graphics.config.height = size.height.max(1);
                     graphics.surface.configure(&graphics.device,
                                                &graphics.config);
+                    // chrome MUST repaint even while quiet-asleep, or
+                    // freshly exposed regions present as black bands
+                    self.chrome_dirty = true;
                     graphics.window.request_redraw();
+                }
+                // mini stays square: a WM corner-resize can skew it —
+                // re-square once the drag settles (shares the
+                // magnetism settle timer)
+                if self.is_mini {
+                    let side = size.width.max(size.height)
+                        .clamp(140, 1000) as i64;
+                    if size.width != size.height {
+                        self.mini_resquare = Some(side);
+                    }
+                    self.settings.mini_size = side;
+                    self.mini_settle = Some(
+                        Instant::now() + Duration::from_millis(180));
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_position = (position.x, position.y);
+            }
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left, ..
+            } if self.is_mini => {
+                // Mini owns left-press: corner 26 px = WM resize, a
+                // quick second click = restore, anywhere else = WM
+                // move (v3: drag moves the mini; drag never orbits).
+                if let Some(graphics) = &self.graphics {
+                    let now = Instant::now();
+                    let double = self.mini_last_click
+                        .is_some_and(|t| now.duration_since(t)
+                                     < Duration::from_millis(400));
+                    self.mini_last_click = Some(now);
+                    if double {
+                        self.actions.push(UiAction::MiniToggle);
+                        graphics.window.request_redraw();
+                    } else {
+                        let size = graphics.window.inner_size();
+                        let (x, y) = self.cursor_position;
+                        let in_corner = x > (size.width as f64 - 26.0)
+                            && y > (size.height as f64 - 26.0);
+                        let _ = if in_corner {
+                            graphics.window.drag_resize_window(
+                                winit::window::ResizeDirection::SouthEast)
+                        } else {
+                            graphics.window.drag_window()
+                        };
+                    }
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
@@ -1457,10 +1740,14 @@ impl ApplicationHandler for Shell {
                 // (buttons included), so gate ONLY on an egui widget
                 // holding focus AND expecting text — otherwise our
                 // table wins first, like GTK's window-level handler.
+                // The gate is OUR text registry: egui 0.33's
+                // wants_keyboard_input() is literally
+                // focused().is_some(), and clicked buttons KEEP focus
+                // — gating on it killed every shortcut after the
+                // first click (Ben's "Show FPS doesn't work at all").
                 let editing = self.graphics.as_ref()
-                    .map(|g| g.egui_ctx.memory(|m| m.focused().is_some())
-                         && g.egui_ctx.wants_keyboard_input())
-                    .unwrap_or(false);
+                    .and_then(|g| g.egui_ctx.memory(|m| m.focused()))
+                    .is_some_and(|id| self.text_focus_ids.contains(&id));
                 if !editing
                     && event.state == winit::event::ElementState::Pressed
                 {
@@ -1507,9 +1794,13 @@ impl ApplicationHandler for Shell {
                         self.push_camera();
                         self.mark_orbit_interaction();
                     } else {
-                        // wheel on the scope = gain (v3 §3.2 gain row)
-                        self.settings.gain = (self.settings.gain
-                            + notches as f32 * 0.15).clamp(0.1, 6.0);
+                        // wheel on the scope = gain — MULTIPLICATIVE
+                        // so steps feel even across 0.1..6.0 (linear
+                        // +0.15 was mushy low and jumpy high — Ben's
+                        // "inconsistent zoom" feedback)
+                        let factor = 1.08f32.powf(notches as f32);
+                        self.settings.gain =
+                            (self.settings.gain * factor).clamp(0.1, 6.0);
                         self.actions.push(UiAction::SignalTuning);
                     }
                     self.chrome_dirty = true;
@@ -1521,11 +1812,20 @@ impl ApplicationHandler for Shell {
             WindowEvent::ModifiersChanged(modifiers) => {
                 self.ctrl_down = modifiers.state().control_key();
             }
-            WindowEvent::Moved(_) => {
+            WindowEvent::Moved(position) => {
                 if self.is_mini {
                     // magnetism: settle 180 ms after the LAST move
                     self.mini_settle = Some(
                         Instant::now() + Duration::from_millis(180));
+                } else if !self.is_fullscreen {
+                    // persist the normal-window position (v3 law: not
+                    // while tiled/maximized/mini) — restored at launch
+                    let maximized = self.graphics.as_ref()
+                        .is_some_and(|g| g.window.is_maximized());
+                    if !maximized {
+                        self.settings.window_x = Some(position.x as i64);
+                        self.settings.window_y = Some(position.y as i64);
+                    }
                 }
             }
             WindowEvent::DroppedFile(path) => {
@@ -1589,12 +1889,19 @@ impl ApplicationHandler for Shell {
         {
             self.mini_settle = None;
             if let Some(graphics) = self.graphics.take() {
+                // square first (a corner drag may have skewed it),
+                // then snap to the work-area edges
+                if let Some(side) = self.mini_resquare.take() {
+                    let _ = graphics.window.request_inner_size(
+                        winit::dpi::PhysicalSize::new(
+                            side as u32, side as u32));
+                }
                 self.snap_mini_to_edges(&graphics);
                 self.graphics = Some(graphics);
             }
         }
         let mut wake_at = self.mini_settle;
-        if self.render_loop_active
+        if (self.render_loop_active || self.chrome_dirty)
             && let Some(due) = self.next_frame_due
         {
             if Instant::now() >= due {
@@ -1615,6 +1922,28 @@ impl ApplicationHandler for Shell {
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
     }
+}
+
+/// Decode the embedded 4-panel scope icon for the window title bar /
+/// taskbar. None on any decode error (an icon is never load-bearing).
+fn load_window_icon() -> Option<winit::window::Icon> {
+    let bytes = include_bytes!("../assets/icon-64.png");
+    let decoder = png::Decoder::new(std::io::Cursor::new(&bytes[..]));
+    let mut reader = decoder.read_info().ok()?;
+    let mut buffer = vec![0u8; reader.output_buffer_size()?];
+    let info = reader.next_frame(&mut buffer).ok()?;
+    // the SVG rasterizes to RGBA8; guard the assumption
+    if info.color_type != png::ColorType::Rgba {
+        return None;
+    }
+    buffer.truncate(info.buffer_size());
+    winit::window::Icon::from_rgba(buffer, info.width, info.height).ok()
+}
+
+/// Scale a chrome color's alpha for the fading toast.
+fn with_toast_alpha(color: egui::Color32, alpha: u8) -> egui::Color32 {
+    let a = (color.a() as u16 * alpha as u16 / 255) as u8;
+    egui::Color32::from_rgba_unmultiplied(color.r(), color.g(), color.b(), a)
 }
 
 pub fn run(arguments: &[String]) -> i32 {

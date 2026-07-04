@@ -20,10 +20,7 @@ repository = "https://github.com/2bmb/phosphor"
 phosphor-proto = { path = "crates/phosphor-proto" }
 phosphor-dsp = { path = "crates/phosphor-dsp" }
 phosphor-beam = { path = "crates/phosphor-beam" }
-phosphor-render-gpu = { path = "crates/phosphor-render-gpu" }
-phosphor-render-cpu = { path = "crates/phosphor-render-cpu" }
 phosphor-audio = { path = "crates/phosphor-audio" }
-phosphor-studio = { path = "crates/phosphor-studio" }
 serde = { version = "1", features = ["derive"] }
 # preserve_order: .phos headers must repack in their original key order
 serde_json = { version = "1", features = ["preserve_order"] }
