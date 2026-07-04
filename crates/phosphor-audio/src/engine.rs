@@ -53,6 +53,10 @@ enum Command {
     DestroyPlayback,
     SetPlaybackActive(bool),
     SetVolume(f32),
+    /// Multi-app mixing: N app streams, each into its own member
+    /// buffer; the facade folds them into the scope ring at drain
+    /// time (new in v4 — V4PLAN step 8).
+    StartMix(Vec<(ConnectSpec, Arc<Mutex<Vec<f32>>>)>),
     SweepVacuum(mpsc::Sender<usize>),
     /// Route one app's stream into the vacuum null sink. Replies Ok
     /// once the app→vacuum link is confirmed on the graph (the facade
@@ -85,6 +89,8 @@ pub struct AudioEngine {
     /// pactl module id of the live vacuum sink (the hatch — see the
     /// vacuum section below).
     vacuum_module: Mutex<Option<String>>,
+    /// Live mix member buffers (empty = single-capture mode).
+    mix_members: Mutex<Vec<Arc<Mutex<Vec<f32>>>>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -136,6 +142,7 @@ impl AudioEngine {
                 playback_paused: AtomicBool::new(false),
                 volume: Mutex::new(1.0),
                 vacuum_module: Mutex::new(None),
+                mix_members: Mutex::new(Vec::new()),
                 thread: Some(thread),
             }),
             Ok(Err(message)) => Err(message),
@@ -169,7 +176,37 @@ impl AudioEngine {
     }
 
     pub fn stop_capture(&self) {
+        self.mix_members.lock().unwrap().clear();
         let _ = self.commands.send(Command::StopCapture);
+    }
+
+    /// Start a multi-app mix: every resolvable app combo id gets its
+    /// own capture stream; the scope sees their sum. Returns how many
+    /// resolved (0 = nothing started).
+    pub fn start_capture_mix(&self, combo_ids: &[String]) -> usize {
+        let mut specs = Vec::new();
+        {
+            let mirror = self.mirror.lock().unwrap();
+            for combo_id in combo_ids {
+                if let Some(spec @ ConnectSpec::AppStream { .. }) =
+                    targets::resolve_combo_id(&mirror, combo_id)
+                {
+                    specs.push(spec);
+                }
+            }
+        }
+        if specs.is_empty() {
+            return 0;
+        }
+        let members: Vec<(ConnectSpec, Arc<Mutex<Vec<f32>>>)> = specs
+            .into_iter()
+            .map(|spec| (spec, Arc::new(Mutex::new(Vec::new()))))
+            .collect();
+        *self.mix_members.lock().unwrap() =
+            members.iter().map(|(_, buffer)| buffer.clone()).collect();
+        let count = members.len();
+        let _ = self.commands.send(Command::StartMix(members));
+        count
     }
 
     pub fn is_capture_running(&self) -> bool {
@@ -319,7 +356,38 @@ impl AudioEngine {
     }
 
     pub fn take_stereo_samples(&self) -> Vec<f32> {
+        self.fold_mix_into_ring();
         self.ring.lock().unwrap().take_stereo_samples()
+    }
+
+    /// Fold pending mix-member audio into the scope ring: sum with
+    /// zero-padding to the longest member (a silent app contributes
+    /// silence, a paused one just stops contributing). Inter-app skew
+    /// is bounded by one drain period; each app's own L/R stays
+    /// coherent, so each source's shape is exact.
+    fn fold_mix_into_ring(&self) {
+        let members = self.mix_members.lock().unwrap();
+        if members.is_empty() {
+            return;
+        }
+        let mut mixed: Vec<f32> = Vec::new();
+        for member in members.iter() {
+            let mut buffer = member.lock().unwrap();
+            if buffer.len() > mixed.len() {
+                mixed.resize(buffer.len(), 0.0);
+            }
+            for (slot, sample) in mixed.iter_mut().zip(buffer.iter()) {
+                *slot += *sample;
+            }
+            buffer.clear();
+        }
+        if !mixed.is_empty() {
+            let whole = mixed.len() - mixed.len() % 2;
+            self.ring
+                .lock()
+                .unwrap()
+                .push_interleaved(&mixed[..whole]);
+        }
     }
 
     pub fn copy_history(&self, seconds: f32) -> Vec<f32> {
@@ -442,11 +510,21 @@ impl Drop for AudioEngine {
 /// Everything the loop thread owns, reachable from listener closures.
 struct LoopState {
     capture: Option<CaptureHolder>,
+    mix: Vec<CaptureHolder>,
     playback: Option<PlaybackHolder>,
     node_watches: HashMap<u32, NodeWatch>,
     metadata: Option<MetadataHold>,
     vacuum: Option<VacuumHold>,
     sample_rate: u32,
+}
+
+/// Where a capture stream's samples land.
+enum CaptureDestination {
+    /// Straight into the scope ring (single-target capture).
+    ScopeRing(Arc<Mutex<SampleRing>>),
+    /// Into a mix member buffer, folded by the facade at drain time.
+    /// Capped at ~2 s so a stalled shell never balloons memory.
+    MemberBuffer(Arc<Mutex<Vec<f32>>>, usize),
 }
 
 /// The live vacuum routing (the sink itself is a pactl-loaded module
@@ -518,6 +596,7 @@ fn run_loop(
 
     let state = Rc::new(std::cell::RefCell::new(LoopState {
         capture: None,
+        mix: Vec::new(),
         playback: None,
         node_watches: HashMap::new(),
         metadata: None,
@@ -601,14 +680,35 @@ fn run_loop(
             }
             Command::StartCapture(spec) => {
                 stop_capture(&state, &flags);
+                let destination = CaptureDestination::ScopeRing(ring.clone());
                 match build_capture_stream(
-                    &core, &state, &ring, &flags, &events, &spec,
+                    &core, &state, destination, &flags, &events, &spec,
                 ) {
                     Ok(holder) => state.borrow_mut().capture = Some(holder),
                     Err(error) => {
                         eprintln!("phosphor-audio: capture failed: {error}");
                         let _ = events.send(AudioEvent::StreamEnded);
                     }
+                }
+            }
+            Command::StartMix(members) => {
+                stop_capture(&state, &flags);
+                let cap_samples =
+                    state.borrow().sample_rate as usize * 2 * 2; // 2 s stereo
+                for (spec, buffer) in members {
+                    let destination =
+                        CaptureDestination::MemberBuffer(buffer, cap_samples);
+                    match build_capture_stream(
+                        &core, &state, destination, &flags, &events, &spec,
+                    ) {
+                        Ok(holder) => state.borrow_mut().mix.push(holder),
+                        Err(error) => {
+                            eprintln!("phosphor-audio: mix member failed: {error}");
+                        }
+                    }
+                }
+                if state.borrow().mix.is_empty() {
+                    let _ = events.send(AudioEvent::StreamEnded);
                 }
             }
             Command::StopCapture => {
@@ -942,6 +1042,24 @@ fn handle_global_remove(
         flags.capture_running.store(false, Ordering::Relaxed);
         let _ = events.send(AudioEvent::StreamEnded);
     }
+    // A mix member died: drop it, keep mixing; the LAST death ends
+    // the stream like a single capture would.
+    let had_mix = !state_mut.mix.is_empty();
+    if had_mix {
+        let mut dead = Vec::new();
+        state_mut.mix.retain(|holder| {
+            if holder.watched_global == Some(global_id) {
+                dead.push(());
+                false
+            } else {
+                true
+            }
+        });
+        if !dead.is_empty() && state_mut.mix.is_empty() {
+            flags.capture_running.store(false, Ordering::Relaxed);
+            let _ = events.send(AudioEvent::StreamEnded);
+        }
+    }
     drop(state_mut);
     if removed_node.is_some() {
         let _ = events.send(AudioEvent::TargetsChanged);
@@ -1015,9 +1133,14 @@ fn parse_metadata_name(value: &str) -> Option<String> {
 }
 
 fn stop_capture(state: &Rc<std::cell::RefCell<LoopState>>, flags: &Arc<SharedFlags>) {
-    if let Some(holder) = state.borrow_mut().capture.take() {
+    let mut state_mut = state.borrow_mut();
+    if let Some(holder) = state_mut.capture.take() {
         let _ = holder.stream.disconnect();
     }
+    for holder in state_mut.mix.drain(..) {
+        let _ = holder.stream.disconnect();
+    }
+    drop(state_mut);
     flags.capture_running.store(false, Ordering::Relaxed);
 }
 
@@ -1072,7 +1195,7 @@ fn release_vacuum(
 fn build_capture_stream(
     core: &pw::core::CoreRc,
     state: &Rc<std::cell::RefCell<LoopState>>,
-    ring: &Arc<Mutex<SampleRing>>,
+    destination: CaptureDestination,
     flags: &Arc<SharedFlags>,
     events: &mpsc::Sender<AudioEvent>,
     spec: &ConnectSpec,
@@ -1110,7 +1233,6 @@ fn build_capture_stream(
     let stream = pw::stream::StreamRc::new(core.clone(), "phosphor-capture", props)?;
 
     let listener = {
-        let ring = ring.clone();
         let flags_state = flags.clone();
         let events = events.clone();
         stream
@@ -1140,9 +1262,29 @@ fn build_capture_stream(
                     if let Some(slice) = data.data() {
                         let end = (offset + size).min(slice.len());
                         if offset < end {
-                            ring.lock()
-                                .unwrap()
-                                .push_interleaved_le_bytes(&slice[offset..end]);
+                            let bytes = &slice[offset..end];
+                            match &destination {
+                                CaptureDestination::ScopeRing(ring) => {
+                                    ring.lock()
+                                        .unwrap()
+                                        .push_interleaved_le_bytes(bytes);
+                                }
+                                CaptureDestination::MemberBuffer(member, cap) => {
+                                    let mut buffer = member.lock().unwrap();
+                                    let whole = bytes.len() - bytes.len() % 4;
+                                    buffer.reserve(whole / 4);
+                                    for quad in bytes[..whole].chunks_exact(4) {
+                                        buffer.push(f32::from_le_bytes([
+                                            quad[0], quad[1], quad[2], quad[3],
+                                        ]));
+                                    }
+                                    if buffer.len() > *cap {
+                                        let overflow = buffer.len() - *cap;
+                                        let aligned = overflow - overflow % 2;
+                                        buffer.drain(..aligned);
+                                    }
+                                }
+                            }
                         }
                     }
                 }
