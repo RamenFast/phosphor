@@ -112,19 +112,17 @@ impl Shell {
                     UiAction::CaptureOn
                 });
             }
-            if ui.button(icon::FOLDER_OPEN).on_hover_text("Play audio file (O)")
-                .clicked()
+            if self.bevel_button(ui, icon::FOLDER_OPEN,
+                                 "Play audio file (O)").clicked()
             {
                 self.actions.push(UiAction::OpenFile);
             }
-            if self.settings.show_pin_button {
-                let mut pinned = self.settings.pinned;
-                if ui.toggle_value(&mut pinned, icon::PUSH_PIN)
-                    .on_hover_text("Pin above other windows (P)")
-                    .clicked()
-                {
-                    self.actions.push(UiAction::PinToggle);
-                }
+            if self.settings.show_pin_button
+                && self.bevel_toggle(ui, icon::PUSH_PIN,
+                                     self.settings.pinned,
+                                     "Pin above other windows (P)")
+            {
+                self.actions.push(UiAction::PinToggle);
             }
 
             // pack_end order, right → left
@@ -183,8 +181,8 @@ impl Shell {
                         "What to scope: APP = one playing application, \
                          OUT = everything on that output, IN = microphones");
 
-                if ui.button(icon::ARROW_CLOCKWISE)
-                    .on_hover_text("Re-scan devices and playing apps")
+                if self.bevel_button(ui, icon::ARROW_CLOCKWISE,
+                                     "Re-scan devices and playing apps")
                     .clicked()
                 {
                     self.actions.push(UiAction::RefreshTargets);
@@ -209,20 +207,22 @@ impl Shell {
                         }
                     });
 
-                if ui.button(icon::CAMERA)
-                    .on_hover_text("Snapshot to ~/Pictures/Phosphor (S)")
+                if self.bevel_button(
+                        ui, icon::CAMERA,
+                        "Snapshot to ~/Pictures/Phosphor (S)")
                     .clicked()
                 {
                     self.actions.push(UiAction::SaveSnapshot);
                 }
-                if ui.button(icon::RECORD)
-                    .on_hover_text("Save the last 10 s as mp4 with sound (C)")
+                if self.bevel_button(
+                        ui, icon::RECORD,
+                        "Save the last 10 s as mp4 with sound (C)")
                     .clicked()
                 {
                     self.actions.push(UiAction::SaveClip);
                 }
-                ui.toggle_value(&mut self.settings_panel_open, icon::GEAR)
-                    .on_hover_text("Settings");
+                // (the settings gear lives at the right end of the
+                // sliders row now — directly below the source icon)
 
                 // status text expands in the middle (ellipsized by clip)
                 let status = self.status_line.clone();
@@ -237,34 +237,68 @@ impl Shell {
             let auto_gain = self.settings.auto_gain;
             let mut gain = self.settings.gain;
             let mut text_ids = std::mem::take(&mut self.text_focus_ids);
-            if slider_with_percent(ui, SliderSpec {
+            if data_slider(ui, SliderSpec {
                 name: "Gain", minimum: 0.1, maximum: 6.0,
-                tooltip: "Deflection scale (also mouse scroll)",
+                tooltip: "Deflection scale — ×1 is unity; also mouse \
+                          scroll over the scope",
                 enabled: !auto_gain,
+                display: |v| format!("×{v:.2}"),
+                drag_speed: 0.02,
             }, &mut gain, &mut text_ids) {
                 self.settings.gain = gain;
                 self.actions.push(UiAction::SignalTuning);
             }
+            if auto_gain {
+                ui.label(egui::RichText::new("auto")
+                    .monospace().size(11.0)
+                    .color(self.active_palette.accent))
+                    .on_hover_text(
+                        "Auto gain is sizing the trace — the effective \
+                         gain follows the signal's peak");
+            }
             let mut glow = self.settings.persistence;
-            if slider_with_percent(ui, SliderSpec {
+            if data_slider(ui, SliderSpec {
                 name: "Glow", minimum: 0.0, maximum: 0.98,
                 tooltip: "Phosphor persistence — how long trails linger",
                 enabled: true,
+                display: |v| format!("{:.0} %", v * 100.0),
+                drag_speed: 0.005,
             }, &mut glow, &mut text_ids) {
                 self.settings.persistence = glow;
                 self.actions.push(UiAction::RenderTuning);
             }
             let mut beam = self.settings.beam_energy;
-            if slider_with_percent(ui, SliderSpec {
+            if data_slider(ui, SliderSpec {
                 name: "Beam", minimum: 1.0, maximum: 30.0,
                 tooltip: "Beam brightness budget — higher keeps fast \
                           strokes visible",
                 enabled: true,
+                display: |v| format!("×{v:.0}"),
+                drag_speed: 0.1,
             }, &mut beam, &mut text_ids) {
                 self.settings.beam_energy = beam;
                 self.actions.push(UiAction::SignalTuning);
             }
             self.text_focus_ids = text_ids;
+
+            // the settings pair rides the far right of THIS row so the
+            // gear sits directly BELOW the toolbar's source icon (Ben:
+            // "farmost right, below the music icon"), Manual beside it
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.bevel_toggle(ui, icon::GEAR,
+                                         self.settings_panel_open,
+                                         "Settings")
+                    {
+                        self.settings_panel_open =
+                            !self.settings_panel_open;
+                    }
+                    if self.bevel_toggle(ui, icon::BOOK_OPEN,
+                                         self.manual_open, "Manual")
+                    {
+                        self.manual_open = !self.manual_open;
+                    }
+                });
         });
     }
 
@@ -285,7 +319,10 @@ impl Shell {
                         ui.with_layout(
                             egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
-                                if ui.button("✕").clicked() {
+                                // icon-font X, not raw U+2715 — the
+                                // loaded faces have no ✕ glyph, so it
+                                // rendered as the "blank square"
+                                if ui.button(icon::X).clicked() {
                                     open = false;
                                 }
                             });
@@ -499,15 +536,41 @@ impl Shell {
             .selected_text(current_label)
             .show_ui(ui, |ui| {
                 for palette in crate::theme::PALETTES {
-                    if ui.selectable_label(current_style == palette.id,
-                                           palette.label)
-                        .clicked()
-                        && current_style != palette.id
-                    {
-                        self.settings.ui_style = palette.id.to_string();
-                        self.actions.push(UiAction::RenderTuning);
-                        self.actions.push(UiAction::SaveSettings);
-                    }
+                    // swatch row: ground + accent chips make the
+                    // difference visible BEFORE committing (the
+                    // eleven looks read at a glance)
+                    ui.horizontal(|ui| {
+                        let (chips, _) = ui.allocate_exact_size(
+                            egui::vec2(26.0, 12.0), egui::Sense::hover());
+                        let painter = ui.painter();
+                        let ground = egui::Rect::from_min_size(
+                            chips.min, egui::vec2(12.0, 12.0));
+                        let accent = egui::Rect::from_min_size(
+                            chips.min + egui::vec2(14.0, 0.0),
+                            egui::vec2(12.0, 12.0));
+                        painter.rect_filled(ground, 0.0, palette.plane);
+                        painter.rect_stroke(
+                            ground, 0.0,
+                            egui::Stroke::new(
+                                1.0, self.active_palette.line_strong),
+                            egui::StrokeKind::Inside);
+                        painter.rect_filled(accent, 0.0, palette.accent);
+                        painter.rect_stroke(
+                            accent, 0.0,
+                            egui::Stroke::new(
+                                1.0, self.active_palette.line_strong),
+                            egui::StrokeKind::Inside);
+                        if ui.selectable_label(
+                            current_style == palette.id, palette.label)
+                            .clicked()
+                            && current_style != palette.id
+                        {
+                            self.settings.ui_style =
+                                palette.id.to_string();
+                            self.actions.push(UiAction::RenderTuning);
+                            self.actions.push(UiAction::SaveSettings);
+                        }
+                    });
                 }
             });
         ui.checkbox(&mut self.settings.show_pin_button, "Pin button");
@@ -577,9 +640,9 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
         {
             self.actions.push(UiAction::KitChanged);
         }
-        if ui.button("Kit editor…")
-            .on_hover_text("Build or tweak a chain live and save it \
-                            as a .phoskit postcard")
+        if self.bevel_button(ui, "Kit editor…",
+                             "Build or tweak a chain live and save it \
+                              as a .phoskit postcard")
             .clicked()
         {
             self.actions.push(UiAction::OpenKitEditor);
@@ -677,6 +740,80 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
         self.active_palette = shown;
     }
 
+    /// The STANDARD button tier (Ben: "buttons don't have 3d depth"):
+    /// a real two-stroke bevel — catch-light top/left, shadow
+    /// bottom/right — that inverts and nudges the glyph 1 px when
+    /// pressed. One tier below the carved primaries (those keep the
+    /// accent rim privilege); combos and menu rows stay flat. Depth
+    /// now encodes THREE levels of importance.
+    pub(crate) fn bevel_button(&self, ui: &mut egui::Ui, label: &str,
+                               tooltip: &str) -> egui::Response {
+        let (rect, response, galley) = self.bevel_base(ui, label, false);
+        self.bevel_paint(ui, rect, &response, galley, 0.0);
+        response.on_hover_text(tooltip)
+    }
+
+    /// Standard-tier toggle: same bevel, the face eases toward the
+    /// accent while active (no rim — that stays carved-primary).
+    /// Returns true on click.
+    pub(crate) fn bevel_toggle(&self, ui: &mut egui::Ui, label: &str,
+                               active: bool, tooltip: &str) -> bool {
+        let (rect, response, galley) = self.bevel_base(ui, label, false);
+        let mix = ui.ctx().animate_bool(response.id, active) * 0.22;
+        self.bevel_paint(ui, rect, &response, galley, mix);
+        response.on_hover_text(tooltip).clicked()
+    }
+
+    fn bevel_base(&self, ui: &mut egui::Ui, label: &str, wide: bool)
+        -> (egui::Rect, egui::Response, std::sync::Arc<egui::Galley>)
+    {
+        let font = egui::TextStyle::Button.resolve(ui.style());
+        let galley = ui.painter().layout_no_wrap(
+            label.to_string(), font, self.active_palette.ink);
+        let pad_x = if wide { 18.0 } else { 13.0 };
+        let desired = egui::vec2(galley.size().x + pad_x,
+                                 galley.size().y + 8.0);
+        let (rect, response) =
+            ui.allocate_exact_size(desired, egui::Sense::click());
+        (rect, response, galley)
+    }
+
+    fn bevel_paint(&self, ui: &egui::Ui, rect: egui::Rect,
+                   response: &egui::Response,
+                   galley: std::sync::Arc<egui::Galley>, active_mix: f32) {
+        if !ui.is_rect_visible(rect) {
+            return;
+        }
+        let palette = &self.active_palette;
+        let pressed = response.is_pointer_button_down_on();
+        let hover_mix = ui.ctx().animate_bool(
+            response.id.with("hover"), response.hovered()) * 0.10;
+        let face = crate::theme::lerp_ink(
+            palette.stone, palette.accent,
+            (hover_mix + active_mix).min(0.32));
+        let painter = ui.painter();
+        painter.rect_filled(rect, 0.0, face);
+        let hi = egui::Stroke::new(1.0, palette.stone_hi);
+        let lo = egui::Stroke::new(1.0, palette.stone_lo);
+        let (top_left, bottom_right) =
+            if pressed { (lo, hi) } else { (hi, lo) };
+        painter.line_segment([rect.left_top(), rect.right_top()],
+                             top_left);
+        painter.line_segment([rect.left_top(), rect.left_bottom()],
+                             top_left);
+        painter.line_segment([rect.left_bottom(), rect.right_bottom()],
+                             bottom_right);
+        painter.line_segment([rect.right_top(), rect.right_bottom()],
+                             bottom_right);
+        let nudge = if pressed {
+            egui::vec2(1.0, 1.0)
+        } else {
+            egui::Vec2::ZERO
+        };
+        let text_pos = rect.center() - galley.size() / 2.0 + nudge;
+        painter.galley(text_pos, galley, palette.ink);
+    }
+
     /// A carved, dimensional toggle for a PRIMARY control (Live, the
     /// vacuums, transport play/pause) — the "stone" treatment. Lower-
     /// tier controls stay flat (`ui.button`); depth encodes importance.
@@ -704,6 +841,129 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                 text_color);
         }
         response.on_hover_text(tooltip).clicked()
+    }
+
+    /// The in-app Manual (book icon, left of the gear): the essentials
+    /// in the app's own voice — sections, a keys table, and a pointer
+    /// to the full MANUAL.md. Click-to-dismiss (it persists until the
+    /// ✕ / book toggle — the popout law).
+    pub(crate) fn ui_manual_window(&mut self, ctx: &egui::Context) {
+        if !self.manual_open {
+            return;
+        }
+        let mut open = self.manual_open;
+        let muted = self.active_palette.muted;
+        egui::Window::new("Manual")
+            .collapsible(false)
+            .resizable(true)
+            .default_width(430.0)
+            .default_height(480.0)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let head = |ui: &mut egui::Ui, text: &str| {
+                        ui.add_space(6.0);
+                        ui.label(egui::RichText::new(text)
+                            .monospace().size(12.0).color(muted));
+                        ui.separator();
+                    };
+                    head(ui, "THE SCOPE");
+                    ui.label(
+                        "In XY mode the left channel moves the beam \
+                         horizontally, the right vertically — stereo \
+                         music draws itself. The beam behaves like a \
+                         real CRT: brightness falls as it moves \
+                         faster, and the phosphor decays in two \
+                         layers. Pick a display mode from the toolbar \
+                         (or press M) — the goniometer, waveform, \
+                         spectrum family, and two true-3D views you \
+                         can orbit with the mouse.");
+                    head(ui, "SOURCES & THE LIGHT");
+                    ui.label(format!(
+                        "The right-hand combo picks what to scope: \
+                         OUT = everything on an output, APP = one \
+                         application, IN = a microphone. Picking a \
+                         source starts scoping it; opening a file \
+                         pauses scoping and plays instead — the combo \
+                         always shows what actually feeds the beam. \
+                         VACUUM (the {} controls) plays sound as light \
+                         only: the track or app pours into a silent \
+                         sink and nothing reaches the speakers. Sound \
+                         is always restored — even after a crash.",
+                        icon::PROHIBIT));
+                    head(ui, "PLAYER");
+                    ui.label(
+                        "Open a file (O) and the folder becomes a \
+                         playlist: gapless, shuffle, repeat, seek, \
+                         cover art. Space is play/pause. Media keys \
+                         work — and when you're scoping another \
+                         player, the transport drives that player \
+                         instead.");
+                    head(ui, "KITS & POSTCARDS");
+                    ui.label(
+                        "A .phoskit is a chain of signal transforms \
+                         (rotate, widen, ring-mod, delay…) that bends \
+                         whatever plays — drop one on the window to \
+                         wear it. The kit editor composes chains \
+                         against the live beam. A .phos postcard is a \
+                         recorded trace a friend can drop on their \
+                         Phosphor; it plays with your credit fading \
+                         in.");
+                    head(ui, "COMPOSE");
+                    ui.label(
+                        "Press D and draw on the scope — the shape \
+                         becomes audio, looping until you leave. \
+                         Scroll retunes the pitch. Export the drawing \
+                         as a WAV from the right-click menu and play \
+                         it on any oscilloscope on earth.");
+                    head(ui, "MINI & GLASS");
+                    ui.label(
+                        "M shrinks Phosphor to a square always-on-top \
+                         mini scope — drag it anywhere, edges snap, \
+                         corners resize, double-click restores. Glass \
+                         makes the pane translucent so the beam \
+                         floats over your desktop. F11 is fullscreen: \
+                         nothing but light.");
+                    head(ui, "KEYS");
+                    egui::Grid::new("manual-keys")
+                        .num_columns(2)
+                        .spacing([18.0, 3.0])
+                        .show(ui, |ui| {
+                            for (key, what) in [
+                                ("Space", "play/pause · capture toggle"),
+                                ("O", "open audio file"),
+                                ("M", "mini view"),
+                                ("F11", "fullscreen scope"),
+                                ("D", "compose — draw a shape"),
+                                ("S / C", "snapshot / 10 s clip"),
+                                ("G", "graticule"),
+                                ("F", "fps → nerd HUD → off"),
+                                ("L", "playlist panel"),
+                                ("P", "pin above"),
+                                ("←/→", "seek · playlist"),
+                                ("Esc", "leave compose/fullscreen/mini"),
+                                ("Q", "quit"),
+                            ] {
+                                ui.label(egui::RichText::new(key)
+                                    .monospace());
+                                ui.label(what);
+                                ui.end_row();
+                            }
+                        });
+                    head(ui, "AGENTS & THE FULL STORY");
+                    ui.label(
+                        "Phosphor is drivable without pixels: \
+                         `phosphor probe`, `ctl`, `tap` — see \
+                         `phosphor schema` or docs/AGENTS.md. The \
+                         full manual with every setting explained:");
+                    ui.hyperlink_to(
+                        "MANUAL.md on GitHub",
+                        "https://github.com/RamenFast/phosphor/blob/\
+                         master/docs/MANUAL.md");
+                    ui.add_space(8.0);
+                });
+            });
+        self.manual_open = open;
     }
 
     /// The kit editor window: rows generated from the OPERATIONS table.
@@ -777,8 +1037,12 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                             {
                                 let value =
                                     &mut editor.stages[index].1[slot];
+                                // same slider language as the main
+                                // row: accent-filled track, mono value
                                 if ui.add(egui::Slider::new(
-                                    value, *low..=*high).text(*key))
+                                    value, *low..=*high)
+                                    .trailing_fill(true)
+                                    .text(*key))
                                     .changed()
                                 {
                                     changed = true;
@@ -794,7 +1058,9 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                 }
 
                 ui.horizontal(|ui| {
-                    if ui.button(format!("{} add stage", icon::PLUS))
+                    if self.bevel_button(
+                            ui, &format!("{} add stage", icon::PLUS),
+                            "Append a transform to the chain")
                         .clicked()
                         && editor.stages.len() < 16
                     {
@@ -803,7 +1069,9 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                             phoskit::default_params("rotate")));
                         changed = true;
                     }
-                    if ui.button(format!("{} save", icon::FLOPPY_DISK))
+                    if self.bevel_button(
+                            ui, &format!("{} save", icon::FLOPPY_DISK),
+                            "Write the chain as a .phoskit postcard")
                         .clicked()
                         && !editor.stages.is_empty()
                     {
@@ -1005,7 +1273,13 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
             {
                 let mut vacuum_on = self.app_vacuum.is_some();
                 if ui.checkbox(&mut vacuum_on,
-                               "Vacuum this app  ⌀  (light only)")
+                               format!("Vacuum this app  {}  — light \
+                                        only, no sound", icon::PROHIBIT))
+                    .on_hover_text(
+                        "Routes the app into a silent sink: it plays \
+                         full-tilt into the void and arrives only as \
+                         light. Sound comes back the moment you \
+                         untick (the restore path is sacred).")
                     .clicked()
                 {
                     self.actions.push(UiAction::VacuumApp(vacuum_on));
@@ -1027,14 +1301,15 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                     ui.close();
                 }
                 let many = self.player.playlist.len() > 1;
-                if ui.add_enabled(many, egui::Button::new("Next track  ⏭"))
+                if ui.add_enabled(many, egui::Button::new(
+                        format!("Next track  {}", icon::SKIP_FORWARD)))
                     .clicked()
                 {
                     self.actions.push(UiAction::PlayerNext);
                     ui.close();
                 }
-                if ui.add_enabled(many,
-                                  egui::Button::new("Previous track  ⏮"))
+                if ui.add_enabled(many, egui::Button::new(
+                        format!("Previous track  {}", icon::SKIP_BACK)))
                     .clicked()
                 {
                     self.actions.push(UiAction::PlayerPrevious);
@@ -1167,14 +1442,18 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
             ui.separator();
             if self.is_mini {
                 ui.menu_button("Align", |ui| {
-                    for (label, fx, fy) in [
-                        ("◰  Top left", 0.0, 0.0),
-                        ("◳  Top right", 1.0, 0.0),
-                        ("◱  Bottom left", 0.0, 1.0),
-                        ("◲  Bottom right", 1.0, 1.0),
-                        ("▣  Center", 0.5, 0.5),
-                    ] {
-                        if ui.button(label).clicked() {
+                    // icon-font arrows (the box-drawing glyphs were
+                    // tofu candidates in the loaded faces)
+                    let corners = [
+                        (icon::ARROW_UP_LEFT, "Top left", 0.0, 0.0),
+                        (icon::ARROW_UP_RIGHT, "Top right", 1.0, 0.0),
+                        (icon::ARROW_DOWN_LEFT, "Bottom left", 0.0, 1.0),
+                        (icon::ARROW_DOWN_RIGHT, "Bottom right", 1.0, 1.0),
+                        (icon::SQUARE, "Center", 0.5, 0.5),
+                    ];
+                    for (glyph, label, fx, fy) in corners {
+                        if ui.button(format!("{glyph}  {label}")).clicked()
+                        {
                             self.actions.push(
                                 UiAction::AlignMini(fx, fy));
                             ui.close();
@@ -1256,34 +1535,46 @@ struct SliderSpec<'a> {
     maximum: f32,
     tooltip: &'a str,
     enabled: bool,
+    /// real-unit readout ("×2.13", "71 %", "1.6 px") — the old opaque
+    /// percent spin never said what was happening (Ben's slider note)
+    display: fn(f32) -> String,
+    /// DragValue speed in value units per point of drag
+    drag_speed: f64,
 }
 
-fn slider_with_percent(ui: &mut egui::Ui, spec: SliderSpec, value: &mut f32,
-                       text_ids: &mut std::collections::HashSet<egui::Id>)
-                       -> bool {
-    let SliderSpec { name, minimum, maximum, tooltip, enabled } = spec;
+fn data_slider(ui: &mut egui::Ui, spec: SliderSpec, value: &mut f32,
+               text_ids: &mut std::collections::HashSet<egui::Id>)
+               -> bool {
+    let SliderSpec {
+        name, minimum, maximum, tooltip, enabled, display, drag_speed,
+    } = spec;
     let mut changed = false;
     ui.add_enabled_ui(enabled, |ui| {
         ui.label(name);
         changed |= ui
             .add(egui::Slider::new(value, minimum..=maximum)
-                 .show_value(false))
+                 .show_value(false)
+                 .trailing_fill(true))
             .on_hover_text(tooltip)
             .changed();
-        let mut percent =
-            ((*value - minimum) / (maximum - minimum) * 100.0).round();
-        let spin = ui.add(
-            egui::DragValue::new(&mut percent)
-                .range(0.0..=100.0).speed(1.0).suffix("%"));
-        if spin.has_focus() {
-            text_ids.insert(spin.id);
-        }
-        if spin.on_hover_text(format!("{name} as percent — type a value"))
-            .changed()
-        {
-            *value = minimum + (maximum - minimum) * percent / 100.0;
-            changed = true;
-        }
+        // the readout is DATA: mono, real units, still draggable and
+        // typeable (double-click) like the old spin
+        ui.scope(|ui| {
+            ui.style_mut().text_styles.insert(
+                egui::TextStyle::Button,
+                egui::FontId::monospace(12.5));
+            let spin = ui.add(
+                egui::DragValue::new(value)
+                    .range(minimum..=maximum)
+                    .speed(drag_speed)
+                    .custom_formatter(move |v, _| display(v as f32)));
+            if spin.has_focus() {
+                text_ids.insert(spin.id);
+            }
+            if spin.on_hover_text(tooltip.to_string()).changed() {
+                changed = true;
+            }
+        });
     });
     changed
 }

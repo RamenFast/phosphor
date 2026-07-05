@@ -49,9 +49,11 @@ const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color32 {
     Color32::from_rgba_premultiplied(r, g, b, a)
 }
 
-/// All seven, in menu order. Blossom first = the default; Blossom
-/// Dark sits right after it (the wanted dark default).
-pub const PALETTES: [Palette; 7] = [
+/// Menu order. Blossom Dark is THE default (wired in settings since
+/// the regalia wave); the last four are the distinct-visual-system
+/// additions — bevel city, true black, warm paper, amber CRT — so
+/// switching themes changes the ROOM, not just the paint.
+pub const PALETTES: [Palette; 11] = [
     // ── Blossom — warm sakura, rice-paper, ink (skill default) ──
     Palette {
         id: "blossom", label: "Blossom", dark: false,
@@ -150,6 +152,65 @@ pub const PALETTES: [Palette; 7] = [
         stone_lo: rgb(0x06, 0x0a, 0x08),
         accent_follows_beam: true,
     },
+    // ── Stonework 95 — the v3 cult favorite reborn: warm platinum
+    //    chrome, navy accent, and the LOUDEST stone triple in the
+    //    table (near-white catch-light over deep slate shadow) so
+    //    every bevel reads like a machine from 1995. ──
+    Palette {
+        id: "stonework95", label: "Stonework 95", dark: false,
+        plane: rgb(0xc8, 0xc5, 0xbd), surface: rgb(0xd9, 0xd6, 0xce),
+        surface_2: rgb(0xc3, 0xc0, 0xb8),
+        ink: rgb(0x1a, 0x1a, 0x1f), ink_2: rgb(0x45, 0x45, 0x4d),
+        muted: rgb(0x6e, 0x6e, 0x76),
+        line: rgba(26, 26, 31, 64), line_strong: rgba(26, 26, 31, 115),
+        accent: rgb(0x20, 0x32, 0x8c), on_accent: rgb(0xf2, 0xf2, 0xf7),
+        stone: rgb(0xd4, 0xd0, 0xc8), stone_hi: rgb(0xff, 0xff, 0xfb),
+        stone_lo: rgb(0x86, 0x83, 0x7c),
+        accent_follows_beam: false,
+    },
+    // ── AMOLED — true #000, hot pink, maximum contrast: the panel
+    //    disappears and only light remains (v3's AMOLED pink nod). ──
+    Palette {
+        id: "amoled", label: "AMOLED", dark: true,
+        plane: rgb(0x00, 0x00, 0x00), surface: rgb(0x00, 0x00, 0x00),
+        surface_2: rgb(0x0d, 0x0d, 0x0d),
+        ink: rgb(0xff, 0xff, 0xff), ink_2: rgb(0xc4, 0xc4, 0xc4),
+        muted: rgb(0x8a, 0x8a, 0x8a),
+        line: rgba(255, 255, 255, 46), line_strong: rgba(255, 255, 255, 92),
+        accent: rgb(0xff, 0x2d, 0x7e), on_accent: rgb(0xff, 0xff, 0xff),
+        stone: rgb(0x14, 0x14, 0x14), stone_hi: rgb(0x33, 0x33, 0x33),
+        stone_lo: rgb(0x00, 0x00, 0x00),
+        accent_follows_beam: false,
+    },
+    // ── Paper — warm cream, espresso ink, a vermilion seal: the
+    //    scope as a printed instrument sheet. Reads in sunlight. ──
+    Palette {
+        id: "paper", label: "Paper", dark: false,
+        plane: rgb(0xf2, 0xec, 0xdf), surface: rgb(0xfa, 0xf6, 0xec),
+        surface_2: rgb(0xec, 0xe5, 0xd6),
+        ink: rgb(0x2e, 0x28, 0x20), ink_2: rgb(0x5c, 0x52, 0x44),
+        muted: rgb(0x8f, 0x84, 0x72),
+        line: rgba(46, 40, 32, 46), line_strong: rgba(46, 40, 32, 92),
+        accent: rgb(0xc3, 0x3d, 0x2e), on_accent: rgb(0xfd, 0xf9, 0xf2),
+        stone: rgb(0xe8, 0xe0, 0xd0), stone_hi: rgb(0xff, 0xfd, 0xf6),
+        stone_lo: rgb(0xc0, 0xb5, 0xa0),
+        accent_follows_beam: false,
+    },
+    // ── CRT Amber — the P3 phosphor homage: lamp-black chassis, every
+    //    tone an amber temperature. Monochrome discipline: even ink is
+    //    banked-fire amber, so the room glows like 1979. ──
+    Palette {
+        id: "amber", label: "CRT Amber", dark: true,
+        plane: rgb(0x0e, 0x08, 0x02), surface: rgb(0x17, 0x0e, 0x04),
+        surface_2: rgb(0x20, 0x14, 0x06),
+        ink: rgb(0xff, 0xc9, 0x66), ink_2: rgb(0xc9, 0x96, 0x42),
+        muted: rgb(0x8a, 0x66, 0x2e),
+        line: rgba(255, 176, 0, 38), line_strong: rgba(255, 176, 0, 84),
+        accent: rgb(0xff, 0xb0, 0x00), on_accent: rgb(0x1a, 0x0f, 0x00),
+        stone: rgb(0x24, 0x17, 0x08), stone_hi: rgb(0x45, 0x2d, 0x10),
+        stone_lo: rgb(0x08, 0x05, 0x01),
+        accent_follows_beam: false,
+    },
 ];
 
 pub fn palette(id: &str) -> Palette {
@@ -196,8 +257,12 @@ impl Palette {
         // the plane sits behind panels (menu shadows, gaps)
         visuals.extreme_bg_color = self.plane;
         visuals.faint_bg_color = self.surface_2;
-        visuals.override_text_color = Some(self.ink);
-        visuals.weak_text_alpha = 0.55; // faint labels lean on `muted`
+        // NO override_text_color: it forced `ink` onto accent-filled
+        // selection rows too (ink-on-pink — the theme-picker clash).
+        // Text color flows from each widget's fg_stroke; selected rows
+        // get `on_accent` via selection.stroke below.
+        visuals.override_text_color = None;
+        visuals.weak_text_alpha = 0.7; // was 0.55 — part of "hard to read"
         visuals.hyperlink_color = self.accent;
         visuals.selection.bg_fill = self.accent;
         visuals.selection.stroke = egui::Stroke::new(1.0, self.on_accent);
@@ -221,7 +286,9 @@ impl Palette {
         widgets.noninteractive.bg_fill = panel;
         widgets.noninteractive.weak_bg_fill = panel;
         widgets.noninteractive.bg_stroke = hairline;
-        widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, self.ink_2);
+        // labels read PRIMARY (ink) — secondary text opts in via
+        // RichText(ink_2/muted), never the other way around
+        widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, self.ink);
 
         widgets.inactive.bg_fill = button_face;
         widgets.inactive.weak_bg_fill = self.surface_2;
@@ -257,7 +324,21 @@ impl Palette {
         style.spacing.button_padding = egui::vec2(8.0, 4.0);
         style.spacing.item_spacing = egui::vec2(7.0, 5.0);
         style.spacing.window_margin = egui::Margin::same(8);
-        // data reads in mono; body/buttons keep the proportional face
+        // the type scale: Plex body at a readable size (egui default
+        // was 14 in a thin face), mono for data, Medium for headings
+        style.text_styles.insert(
+            egui::TextStyle::Body,
+            egui::FontId::proportional(14.5));
+        style.text_styles.insert(
+            egui::TextStyle::Button,
+            egui::FontId::proportional(14.5));
+        style.text_styles.insert(
+            egui::TextStyle::Small,
+            egui::FontId::proportional(11.5));
+        style.text_styles.insert(
+            egui::TextStyle::Heading,
+            egui::FontId::new(
+                16.5, egui::FontFamily::Name("plex-medium".into())));
         style.text_styles.insert(
             egui::TextStyle::Monospace,
             egui::FontId::monospace(12.5));
@@ -363,12 +444,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn seven_palettes_blossom_first() {
-        assert_eq!(PALETTES.len(), 7);
+    fn eleven_palettes_blossom_family_first() {
+        assert_eq!(PALETTES.len(), 11);
         assert_eq!(PALETTES[0].id, "blossom");
         assert!(!PALETTES[0].dark, "blossom is a warm light theme");
-        // Blossom Dark sits right after blossom (the wanted dark default)
+        // Blossom Dark sits right after blossom AND is the settings
+        // default (the wanted default, actually wired now)
         assert_eq!(PALETTES[1].id, "blossom_dark");
+        assert_eq!(
+            phosphor_proto::settings::Settings::default().ui_style,
+            "blossom_dark");
+        // the distinct four exist and split 2 light / 2 dark
+        assert!(!palette("stonework95").dark);
+        assert!(palette("amoled").dark);
+        assert!(!palette("paper").dark);
+        assert!(palette("amber").dark);
+        // AMOLED means TRUE black
+        assert_eq!(palette("amoled").plane, Color32::from_rgb(0, 0, 0));
+        // Stonework's bevel range is the loudest in the table
+        let range = |p: &Palette| {
+            (p.stone_hi.r() as i32 - p.stone_lo.r() as i32).abs()
+        };
+        let stonework = range(&palette("stonework95"));
+        assert!(PALETTES.iter().all(|p| range(p) <= stonework),
+                "stonework95 must carry the strongest bevel");
     }
 
     #[test]
