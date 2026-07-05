@@ -119,8 +119,24 @@ lines into the export machinery proven live by the snapshot toast —
 the literal menu click could not be XTEST-verified (menu automation
 raced Ben's live mouse). First human use will receipt it.
 
-**Deferrals now: {compose studio-panel integration (wave 4), applet
-(wave 3), timeline (wave 4)}.**
+**Deferrals now: {compose studio-panel integration (wave 4), timeline
+(wave 4)}.**
+
+## Wave 3.1 — the applet goes engine-free (2026-07-04)
+
+Issue #3 closed. The Cinnamon applet (2.0.0) bundles ZERO engine code;
+it spawns `["phosphor","feed"]` and draws the beam-segment stream.
+
+| Item | State | Receipt |
+|---|---|---|
+| `phosphor feed` subcommand (stdio NDJSON, protocol verbatim from v3's `phosphor_applet_feed.py`) | ✅ | receipts in the `v4-applet` merge commit |
+| Deliberate deviation: capture-death recovery | ✅ | on capture death, re-resolves the default output monitor once/second and reconnects — v3's feed just went dark |
+| Applet 2.0.0, engine-free | ✅ | no bundled `phosphor_core.py`/`.so`; native-fed via `applet/install.sh` against deb `4.0.0~wave3.1` |
+
+Issue #4 still owes the control-socket transport (Unix NDJSON
+`ctl`/`tap`/`probe`); the applet can migrate off stdio onto that socket
+when it lands. Deferrals now: {compose studio-panel integration (wave
+4), timeline (wave 4)}.
 
 ## The one receipt that matters
 

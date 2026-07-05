@@ -1,31 +1,38 @@
 #!/usr/bin/env bash
 # Install the Phosphor Scope Cinnamon applet for the current user.
 #
-# It copies the applet into ~/.local/share/cinnamon/applets/ and bundles the
-# feed helper plus the two Phosphor modules it imports, so the applet is
-# self-contained and works whether or not the .deb is installed.
+# The applet is engine-free: it draws by spawning `phosphor feed`, so it
+# requires phosphor >= 4.0 on PATH (install the .deb). Nothing is bundled but
+# the five applet files below. Upgrades from a pre-2.0 install must CLEAN the
+# old bundled Python engine, not accrete alongside it.
 set -euo pipefail
 
 uuid="phosphor-scope@phosphor"
 here="$(cd "$(dirname "$0")" && pwd)"
-repo="$(cd "$here/.." && pwd)"
+src="$here/$uuid"
 dest="$HOME/.local/share/cinnamon/applets/$uuid"
 
 mkdir -p "$dest"
-cp -f "$here/$uuid"/* "$dest/"
-# Bundle the headless feed + the modules it imports (kept in sync at install time).
-cp -f "$repo/phosphor_applet_feed.py" \
-      "$repo/phosphor_audio.py" \
-      "$repo/phosphor_signal.py" \
-      "$repo/phosphor_core.py" \
+cp -f "$src/applet.js" \
+      "$src/metadata.json" \
+      "$src/settings-schema.json" \
+      "$src/stylesheet.css" \
+      "$src/icon.png" \
       "$dest/"
-# Native core, if it has been built (the feed falls back to Python without it).
-if [ -f "$repo/core/target/release/libphosphor_core.so" ]; then
-    cp -f "$repo/core/target/release/libphosphor_core.so" "$dest/"
-fi
+
+# Clean a pre-2.0 install: the applet used to bundle its own v3 Python engine.
+# Upgrades must clean, not accrete — remove the retired files if present.
+rm -f "$dest/phosphor_applet_feed.py" \
+      "$dest/phosphor_audio.py" \
+      "$dest/phosphor_signal.py" \
+      "$dest/phosphor_core.py" \
+      "$dest/libphosphor_core.so"
+rm -rf "$dest/__pycache__"
 
 echo "Installed Phosphor Scope to:"
 echo "  $dest"
+echo
+echo "Requires phosphor >= 4.0 on PATH (install the .deb)."
 echo
 echo "Next: right-click your panel -> Applets (or Menu -> Applets), find"
 echo "'Phosphor Scope', and click + to add it. If it was already running,"

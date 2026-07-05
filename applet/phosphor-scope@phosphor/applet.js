@@ -2,11 +2,12 @@
 //
 // Phosphor Scope — a live vectorscope applet for the Cinnamon panel.
 //
-// The applet itself is just a thin drawer: a small Python helper
-// (phosphor_applet_feed.py) captures the default output monitor and streams
+// The applet itself is just a thin drawer: it spawns `phosphor feed` (the
+// installed v4 binary), which captures the default output monitor and streams
 // beam segments as JSON lines on stdout, using the exact same signal path as
 // the full Phosphor app. We read those lines and paint them with Cairo, in
-// the panel and in a larger hover popup.
+// the panel and in a larger hover popup. Same protocol as before: one JSON
+// line of beam segments per frame.
 
 const Applet = imports.ui.applet;
 const St = imports.gi.St;
@@ -278,12 +279,6 @@ PhosphorScopeApplet.prototype = {
 
     // -- the feed subprocess -------------------------------------------------
 
-    _helperPath: function() {
-        let bundled = this._metadata.path + "/phosphor_applet_feed.py";
-        if (GLib.file_test(bundled, GLib.FileTest.EXISTS)) return bundled;
-        return "/usr/lib/phosphor/phosphor_applet_feed.py";
-    },
-
     _startFeed: function() {
         this._cancellable = new Gio.Cancellable();
         try {
@@ -292,9 +287,10 @@ PhosphorScopeApplet.prototype = {
                      | Gio.SubprocessFlags.STDOUT_PIPE
                      | Gio.SubprocessFlags.STDERR_SILENCE
             });
-            this._proc = launcher.spawnv(["python3", this._helperPath(), "--fps", String(this.fps)]);
+            this._proc = launcher.spawnv(["phosphor", "feed", "--fps", String(this.fps)]);
         } catch (e) {
-            global.logError("[phosphor-scope] could not start feed: " + e);
+            global.logError("[phosphor-scope] could not start feed (install phosphor >= 4.0): " + e);
+            this.set_applet_tooltip("Phosphor Scope: install phosphor ≥ 4.0");
             return;
         }
         this._stdout = new Gio.DataInputStream({ base_stream: this._proc.get_stdout_pipe() });

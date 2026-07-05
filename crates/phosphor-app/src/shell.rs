@@ -2101,12 +2101,18 @@ fn load_window_icon() -> Option<winit::window::Icon> {
     let mut reader = decoder.read_info().ok()?;
     let mut buffer = vec![0u8; reader.output_buffer_size()?];
     let info = reader.next_frame(&mut buffer).ok()?;
-    // the SVG rasterizes to RGBA8; guard the assumption
-    if info.color_type != png::ColorType::Rgba {
-        return None;
-    }
     buffer.truncate(info.buffer_size());
-    winit::window::Icon::from_rgba(buffer, info.width, info.height).ok()
+    // The asset is RGBA8, but a re-export once flattened it to RGB and
+    // the icon silently vanished from the window list — accept both.
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => buffer,
+        png::ColorType::Rgb => buffer
+            .chunks_exact(3)
+            .flat_map(|px| [px[0], px[1], px[2], 255])
+            .collect(),
+        _ => return None,
+    };
+    winit::window::Icon::from_rgba(rgba, info.width, info.height).ok()
 }
 
 /// Scale a chrome color's alpha for the fading toast.
