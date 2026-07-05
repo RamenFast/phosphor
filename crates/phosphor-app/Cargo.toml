@@ -1,10 +1,29 @@
 [package]
 name = "phosphor-app"
-description = "The phosphor binary: subcommand-first CLI; render + bench land in wave 1, the egui shell in wave 2"
+description = "CRT-style XY oscilloscope for desktop audio — one Rust engine, GPU beam, native PipeWire"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+
+# `packaging/build-rpm.sh` drives cargo-generate-rpm with this table
+# (the .deb has its own script; the two stay content-identical).
+[package.metadata.generate-rpm]
+name = "phosphor"
+summary = "CRT-style XY oscilloscope for desktop audio"
+assets = [
+  { source = "../../target/release/phosphor", dest = "/usr/bin/phosphor", mode = "755" },
+  { source = "../../kits/haunt.phoskit", dest = "/usr/share/phosphor/kits/haunt.phoskit", mode = "644" },
+  { source = "../../kits/heartbeat.phoskit", dest = "/usr/share/phosphor/kits/heartbeat.phoskit", mode = "644" },
+  { source = "../../kits/orbit.phoskit", dest = "/usr/share/phosphor/kits/orbit.phoskit", mode = "644" },
+  { source = "../../packaging/phosphor4-scope.svg", dest = "/usr/share/icons/hicolor/scalable/apps/phosphor-scope.svg", mode = "644" },
+  { source = "../../packaging/phosphor4-scope-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/phosphor-scope.png", mode = "644" },
+  { source = "../../packaging/phosphor.desktop", dest = "/usr/share/applications/phosphor.desktop", mode = "644" },
+  { source = "../../LICENSE", dest = "/usr/share/doc/phosphor/copyright", mode = "644" },
+  { source = "../../target/rpm-stage/phosphor.1.gz", dest = "/usr/share/man/man1/phosphor.1.gz", mode = "644" },
+]
+[package.metadata.generate-rpm.requires]
+ffmpeg = "*"
 
 [[bin]]
 name = "phosphor"

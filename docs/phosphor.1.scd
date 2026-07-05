@@ -22,11 +22,19 @@ phosphor - CRT-style XY oscilloscope for desktop audio
 Phosphor draws what your PC plays the way an analog scope would: XY
 mode for oscilloscope music, a goniometer for stereo width, 3D
 delay-embedding views, waveform and spectrum. One Rust engine
-simulates P7 phosphor decay on the GPU (wgpu) or CPU (SIMD), captures
-whole outputs, single applications, or microphones natively over
+simulates P7 phosphor decay on the GPU (wgpu) or CPU (SIMD, on its
+own worker thread), captures whole outputs, single applications,
+microphones, or several apps folded into one beam, natively over
 PipeWire, plays audio files and signal postcards (_.phos_), wears
 transform kits (_.phoskit_), lets you draw shapes the scope plays
-back (compose mode), and exports snapshots and mp4 clips with sound.
+back (compose mode), posts systemwide track notifications with album
+art, and exports snapshots and mp4 clips with sound. When the beam
+scopes another MPRIS player (Spotify, a browser), Phosphor's
+transport drives that player.
+
+Phosphor is single-instance: a plain launch while one runs focuses
+the existing window (a _file_ argument is forwarded to it). *--help*
+prints usage; unknown options exit 3 rather than opening a window.
 
 Launching with a _file_ argument opens it like a file manager would.
 Dropping audio files on the window queues them; dropping a _.phoskit_
@@ -55,8 +63,11 @@ installs and activates it.
 	(_$XDG_RUNTIME_DIR/phosphor/ctl.sock_, NDJSON). Verbs:
 	*play*, *pause*, *toggle*, *stop*, *next*, *previous*, *seek*,
 	*volume*, *mode*, *theme*, *ui*, *capture* *on*|*off*,
-	*target*, *snapshot*, *clip*, *quit*. *snapshot*/*clip* return
-	the written file path.
+	*target*, *open* _path_, *raise*, *snapshot*, *clip*, *quit*.
+	*target mix:app:a+app:b* folds several app streams into one
+	beam. *open* loads a file into the player and focuses the
+	window; *raise* just focuses. *snapshot*/*clip* return the
+	written file path.
 
 *tap*
 	Stream the live beam as NDJSON: a *hello* greeting, *frame*
@@ -100,7 +111,8 @@ agent.
 Space: capture on/off (play/pause while a track is loaded) · O: open
 file · D: compose (draw on the scope) · M: mini view · S: snapshot ·
 C: save the last 10 s as mp4 · P: pin above · G: grid · L: playlist ·
-F: fps overlay · F11: fullscreen scope · Escape: leave
+F: fps overlay, again for the nerd HUD (frame ms, gpu ms, p99,
+drops, segments/s) · F11: fullscreen scope · Escape: leave
 compose/fullscreen/mini, else quit · Q: quit. The mouse wheel over
 the scope is gain (pitch while composing; dolly in 3D modes).
 

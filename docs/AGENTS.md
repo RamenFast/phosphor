@@ -1,0 +1,113 @@
+# Driving Phosphor as an agent
+
+Phosphor is a station-grade instrument: one binary, JSON everywhere,
+short directive errors, no pixels needed. This is the worked guide —
+the schema itself comes from `phosphor schema`.
+
+## The contract
+
+- Every one-shot emits **one envelope**:
+  `{"status":"ok|error","tool":"phosphor","version":…,"ts":…,…}`.
+- Errors always carry a `fix` you can act on.
+- Exit codes: `0` ok · `2` unavailable (not running / not built yet) ·
+  `3` bad arguments · `4` runtime failure.
+- Output auto-switches to JSON when stdout is a pipe; `--json` forces
+  it on a TTY.
+- Streams (`tap`, `feed`) are NDJSON; the first `tap` line is a
+  `hello` event, and `tick` heartbeats prove liveness while the scope
+  is quiet.
+
+## Read state
+
+```bash
+phosphor probe --json
+```
+
+`running:false` (exit 0) when no GUI is up. The field to trust is
+**`source`** — `{"kind":"capture|mix|player|silent","detail":…}` —
+it is *what actually feeds the beam*, reconciled with the engine.
+`capture.target_id` is only the remembered preference.
+
+## Drive the scope
+
+```bash
+phosphor ctl mode xy45            # modes: see `phosphor schema` enums
+phosphor ctl theme "P7 Green"     # beam phosphor color
+phosphor ctl ui amber             # chrome look (11 ids)
+phosphor ctl target "device:alsa_output.pci-0000_0b_00.4.analog-stereo.monitor"
+phosphor ctl target "app:Spotify" # one app, by name key
+phosphor ctl target "mix:app:one+app:two"   # fold several apps
+phosphor ctl capture off
+phosphor ctl open /music/song.flac          # load + focus
+phosphor ctl play / pause / toggle / next / previous
+phosphor ctl seek -- -10          # relative seconds
+phosphor ctl volume 0.7
+phosphor ctl raise                # focus the window
+phosphor ctl snapshot             # BLOCKS until the PNG lands, returns its path
+phosphor ctl clip                 # same for the 10 s mp4 with sound
+phosphor ctl quit
+```
+
+`snapshot`/`clip` use a deferred reply — parse `result.path` from the
+envelope; the file exists by the time you see it.
+
+## Watch the beam as numbers
+
+```bash
+phosphor tap | jq -c '{mode, segments, bbox, peak}'
+```
+
+Per-frame geometry: `bbox` `[minx,miny,maxx,maxy]` in trace px,
+`centroid`, `peak`, a ≤64-point `polyline`, `trace_size`. Two laws
+worth knowing:
+
+- **Segments arrive in bursts.** At high scope rates the
+  reconstruction emits ~8k-segment batches every ~20 ms with zero
+  frames between — that's physics, not silence. Judge shape from
+  frames where `segments > 0`; judge liveness from `tick`s.
+- **A circle is aspect 1.0.** `(bbox[2]-bbox[0])/(bbox[3]-bbox[1])`
+  on an L=sin/R=cos tone is the whole rendering-geometry test.
+
+## Kits (the 7B-model art form)
+
+```bash
+phosphor kit validate my.phoskit     # ok | error with the exact key named
+phosphor kit inspect my.phoskit      # stages, params, what each op does
+```
+
+Errors are one line and directive ("stages[0]: unknown op 'sparkle'
+(known: …)") — designed so a small model repairs its kit in one
+round-trip. Schema: `docs/phoskit.schema.json`. Multiple files: exit
+reflects the worst.
+
+## Headless / background
+
+```bash
+phosphor --background &   # full GUI on a private Xvfb display:
+                          # renders, serves the socket, steals nothing
+phosphor render song.flac out.mp4   # no GUI at all
+phosphor bench                      # perf gates, JSON
+```
+
+## Gotchas (paid for, so you don't have to)
+
+- **The GUI is the default command.** `phosphor` with no args opens a
+  window (or focuses the running one and exits 0 — single instance).
+  Scripted runs that *need* a second instance set
+  `PHOSPHOR_NO_SINGLE_INSTANCE=1` or use `--background`.
+- The control socket lives at `$XDG_RUNTIME_DIR/phosphor/ctl.sock`;
+  clients fall back to `/tmp/phosphor-$UID`. Isolating a test
+  instance = giving it its own `XDG_RUNTIME_DIR` — but then hand the
+  process `PIPEWIRE_RUNTIME_DIR=/run/user/$UID` (and `PULSE_SERVER=`
+  `unix:/run/user/$UID/pulse/native`) or it goes deaf: PipeWire finds
+  its socket through the same variable.
+- Socket paths must fit `SUN_LEN` (~108 bytes) — deep temp dirs fail
+  to bind, silently costing you the whole surface.
+- `ctl` needs a *running* GUI (exit 2 otherwise). `probe` never
+  fails on a dead GUI — `running:false` is an answer.
+- `feed` speaks the frozen v3 applet protocol (`{"s":[…]}` lines, no
+  envelope) — it is the ONE deliberate exception to the contract.
+- Sending `Escape` to the window walks the leave-cascade
+  (compose → fullscreen → mini) — it is not a popup-closer.
+- `--visitor`, `--exit-after`, `--fps-log` are receipt/dev flags and
+  bypass single-instance on purpose.

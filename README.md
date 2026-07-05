@@ -1,14 +1,15 @@
 # Phosphor
 
 <p align="center">
-  <img src="docs/phosphor-demo.gif" alt="Phosphor tracing a Lissajous figure from live audio" width="420"><br>
-  <em>A software XY oscilloscope for everything your PC plays.</em>
+  <img src="docs/phosphor-demo.gif" alt="Phosphor tracing Attack Vector live — a real capture from the app's own clip recorder" width="440"><br>
+  <em>A GPU oscilloscope for everything your PC plays.</em>
 </p>
 
 <p align="center">
   <a href="LICENSE"><img alt="License: GPL-3.0-or-later" src="https://img.shields.io/badge/license-GPLv3-blue.svg"></a>
   <a href="https://github.com/RamenFast/phosphor/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/RamenFast/phosphor"></a>
   <img alt="Platform: Linux" src="https://img.shields.io/badge/platform-Linux-555">
+  <img alt="Language: Rust" src="https://img.shields.io/badge/rust-one%20engine-b7410e">
 </p>
 
 In XY mode the left channel moves the beam horizontally, the right channel
@@ -21,183 +22,191 @@ a colored glow that lingers.
 > The animation above is a real Phosphor capture, exported straight from
 > the app's own clip recorder.
 
-> **v4 status (July 2026):** Phosphor is now the full-Rust rewrite —
-> egui + wgpu + native PipeWire, one engine, far past v3's frame
-> ceiling. The Python v3 app is retired; `packaging/build-deb.sh`
-> builds the compiled `.deb` (`4.0.0~wave3.3`). Screenshots and
-> MANUAL.md still show v3 pending the wave-3 docs pass.
->
-> **Not yet in v4 (honest ledger vs v3.5)** — each tracked as a
-> GitHub issue:
-> - **`phosphor-studio` scene compiler** (scenes → oscilloscope
->   audio) was retired with v3; it returns in Rust in wave 4.
-> - **Render-ahead precompute** was deliberately not ported — the v4
->   engine reconstructs in realtime (GPU path); rationale + revisit
->   criteria live in PARITY.md.
-> - **Agent CLI** — `probe`/`tap`/`ctl`/`kit validate|inspect` (plus
->   `schema`) shipped in wave 3.2 over a Unix control socket; `feed`
->   shipped in wave 3.1 (the engine-free applet draws from it). Only
->   `studio` (wave 4) and `probe --at` a past timestamp remain stubs.
-> - **Multi-app mixing** exists in the audio engine but has no UI yet.
-> - **MANUAL.md** describes v3 until the wave-3 docs rewrite; v4
->   ships a `phosphor(1)` manpage meanwhile.
+**v4 is the full-Rust instrument**: one engine, `egui + wgpu` chrome,
+native PipeWire capture, zero Python, zero fallback paths. It holds the
+monitor's refresh rate with the GPU nearly idle (3,400 fps uncapped where
+v3 ceilinged at 163), and everything it renders offline is byte-exact
+with what you saw live.
+
+## v3 → v4, honestly
+
+| | v3.5 (Python/GTK) | v4.0 (Rust) |
+|---|---|---|
+| Live ceiling, 2560×1440 | 163 fps (GTK frame clock) | monitor-locked; 3,400 fps uncapped |
+| CPU renderer on noise | 3 fps | ~26 fps engine, on its own thread — the UI stays at panel rate |
+| Signal engines | two (Python + Rust core, kept in parity) | **one** |
+| Audio | pactl/parec subprocesses | native PipeWire (capture, playback, gapless, vacuum) |
+| Mix several apps into one beam | — | ✅ the light-streams panel |
+| Control another player (Spotify…) | watched titles only | **watches and drives** — the transport controls whatever the beam scopes |
+| Track notifications with album art | — | ✅ systemwide |
+| Agent surface | none | `probe · ctl · tap · feed · kit · schema` over a control socket |
+| Single instance | GTK gave it for free | ✅ second launch focuses the first, files forward |
+| Chrome | 7 GTK styles | 11 token-driven looks, IBM Plex + JetBrains Mono type |
+| Studio scene compiler | ✅ v3.5 | returns in Rust after 4.0 ([#1](https://github.com/RamenFast/phosphor/issues/1)) |
+| Render-ahead precompute | ✅ | retired by design — the GPU reconstructs in realtime ([#2](https://github.com/RamenFast/phosphor/issues/2)) |
 
 ## Drawn by sound
 
-Each shape below is just a stereo audio file, traced live by the beam —
-saved with the snapshot button:
+Each shape below is just a stereo audio file, traced by the beam — saved
+with the snapshot button:
 
 <p align="center">
-  <img src="docs/gallery-ufo.png" width="240" alt="A flying saucer traced by the oscilloscope beam">
-  <img src="docs/gallery-heart.png" width="240" alt="A heart traced by the oscilloscope beam">
-  <img src="docs/gallery-sphere.png" width="240" alt="A wireframe sphere traced by the oscilloscope beam">
+  <img src="docs/gallery-ufo.png" width="200" alt="A flying saucer traced by the oscilloscope beam">
+  <img src="docs/gallery-heart.png" width="200" alt="A heart traced by the oscilloscope beam">
+  <img src="docs/gallery-sphere.png" width="200" alt="A wireframe sphere traced by the oscilloscope beam">
+  <img src="docs/gallery-takens.png" width="200" alt="A 3D Takens attractor of live music">
 </p>
 
 ## In use
 
 <p align="center">
-  <img src="docs/inuse-full.png" width="860" alt="Phosphor 3.1 playing a track: AMOLED pink chrome, Vaporwave beam, headerbar transport and seek"><br>
-  <sub>v3.1 on a Cinnamon desktop — AMOLED pink chrome, the built-in player mid-track, track info fading in.</sub>
-</p>
-
-<p align="center"><sub><em>“Made with Claude Fable 5 — finished the last prompt before the feds took it down. Amazing model…”</em> — Ben<br>
-Shipped to GitHub by Claude&nbsp;Opus&nbsp;4.8, the day Fable&nbsp;5 went dark (12 June 2026).</sub></p>
-
-## Seven looks
-
-<p align="center">
-  <img src="docs/styles.png" width="860" alt="Six of Phosphor's chrome styles: AMOLED pink, Bloom neon, Stonework 95, Stonework bloom, Aero glass, Ice Blue"><br>
-  <sub>Same scope, different metal: AMOLED pink · Bloom neon · Stonework 95 · Stonework bloom · Aero glass (genuinely translucent under a compositor) · Ice Blue ❄ — plus your system theme.</sub>
+  <img src="docs/inuse-full.png" width="860" alt="Phosphor 4.0 playing Attack Vector: Blossom Dark chrome, auto-gain tag, mono readouts"><br>
+  <sub>v4.0 in Blossom Dark — Attack Vector mid-cube, auto-gain breathing, every readout in real units.</sub>
 </p>
 
 <p align="center">
-  <img src="docs/glass.png" width="700" alt="Aero glass with the glass scope: the desktop shows through the entire window while the beam floats on top"><br>
-  <sub>And with <b>Glass scope</b> on, the scope becomes a window to your desktop — the beam draws over whatever is behind it while the controls keep their solid chrome. Works in every style; pairs dangerously well with the mini view.</sub>
+  <img src="docs/spotify-transport.png" width="700" alt="The transport driving Spotify: brakence — introvert, via Spotify"><br>
+  <sub>Scoping Spotify? The transport <b>drives Spotify</b> — prev/pause/next straight over MPRIS.</sub>
 </p>
 
 ## Eleven ways to see sound
 
 <p align="center">
-  <img src="docs/modes.png" width="860" alt="Three of the eleven display modes: XY swirl, ring oscillogram, spectrum tunnel"><br>
-  <sub>Three of the eleven: XY · swirl, Ring · oscillogram, Spectrum · tunnel. The others: XY scope art, goniometer, XY dots, waveform, spectrum, radial — and two true-3D views below.</sub>
+  <img src="docs/modes.png" width="860" alt="All eleven display modes on the same track"><br>
+  <sub>One track, eleven instruments: XY scope art · goniometer · swirl · dots · waveform · ring · spectrum · radial · tunnel — and two true-3D views, the Takens attractor and the time helix, both orbitable by mouse.</sub>
 </p>
 
-### The third dimension
+## Eleven rooms to see it in
 
-**3D · attractor** delay-embeds the signal — (x(t), x(t−τ), x(t−2τ)),
-τ chasing a quarter period of the dominant pitch — so the music's
-*attractor* appears: pure tones are tilted ellipses, chords weave tori,
-voices grow organic knots. **3D · time helix** extrudes the XY figure
-backwards into the past, newest audio floating near the eye. Drag to
-orbit either one, scroll to dolly, arrows to nudge — and left alone,
-the view slowly drifts on its own. Depth dims the beam like far
-phosphor. Try one over a fully-clear **Glass scope**.
+<p align="center">
+  <img src="docs/styles.png" width="700" alt="Five of the eleven chrome themes: Blossom Dark, Stonework 95, AMOLED, Paper, CRT Amber"><br>
+  <sub>Blossom Dark (default) · Stonework 95 · AMOLED · Paper · CRT Amber — plus Blossom, Light, Dark, Chromacore, Basalt, Afterglow (whose chrome remembers the beam color). Different rooms, not different paint: the picker shows swatches so you can tell.</sub>
+</p>
+
+<p align="center">
+  <img src="docs/glass.png" width="640" alt="The glass mini scope floating over a terminal, beam drawing over the text"><br>
+  <sub><b>Glass + mini:</b> an always-on-top square of pure beam, the desktop showing through. (Here: drawing over the very terminal that shipped this release.)</sub>
+</p>
 
 ## What it does
 
-- **Scope anything** — whole outputs, one application, or a microphone
-  (PulseAudio/PipeWire); capture off costs ~0% CPU.
-- **Play music in it** — a built-in player with folder playlists, a
-  playlist panel with shuffle/repeat, drag-and-drop, seek, per-stream
-  volume, artist/title fading in on track change, and full **MPRIS** both
-  ways: media keys drive Phosphor, and songs changing in your browser or
-  Spotify still show on the scope.
-- **Eleven displays** — XY scope art, goniometer, a slowly revolving
-  swirl, XY dots, triggered waveform, ring oscillogram, spectrum, radial
-  spectrum, a breathing spectrum tunnel — and two true-3D views: the
-  Takens attractor and the time helix, both orbitable by mouse.
-- **Seven chrome styles** — AMOLED pink, Bloom neon, Stonework 95,
-  Stonework · bloom, truly-translucent Aero glass, Ice Blue ❄, or your
-  system theme.
-- **A real beam** — analytic Gaussian beam integral on the GPU, linear-light
-  compositing, two-layer phosphor decay, octave-stepped graticule.
-- **A Rust core** — the samples→segments math runs native, and in-process
-  sinc oversampling reconstructs up to **384 kHz of trace detail** from a
-  48/96 kHz capture feed (Python fallbacks keep everything working
-  without it).
-- **Precompute** — render a track's scope stream to disk ahead of time and
-  trace it synced to playback time: slow machines get perfect detail,
-  nothing drops.
-- **Compose mode** — draw a shape on the scope and it *becomes* audio: a
-  loop that draws itself, exportable as WAV for any oscilloscope.
-- **Signal postcards** — share the scope itself: export any track's trace
-  as a `.phos` stream a friend can drop on their Phosphor (it plays, at
-  *your* detail rate, with *"trace by you"* fading in), or send a
-  `.phoskit` — a chain of signal-space transforms (rotate, widen,
-  ring-mod, channel delay…) that bends into **whatever they're
-  listening to**, live. A built-in kit editor composes chains against
-  the running beam; three starter kits ship in the box.
-- **Vacuum mode** — play without sound: the track (or a whole app, routed
-  into a null sink) plays full-tilt into the void and arrives only as
-  light. Sound can't cross a vacuum; a CRT is a vacuum tube. Scope a
-  muted game, preview loud things at 3 am, watch a second player
-  silently. The ⌀ toggle lives in the transport; *Vacuum this app* in
-  the right-click menu. The restore path is sacred — streams always
-  come back, even after a crash.
-- **Exports** — snapshots and 10-second mp4 clips *with sound*, re-rendered
-  offline so they look exactly like the screen did — plus
-  `phosphor --render song.flac out.mp4`, a headless full-track render
-  of any audio file or `.phos` postcard through the same pipeline.
-- **Cinnamon panel applet** — a tiny live vectorscope in your panel, with
-  its own themes, refresh rate, and CRT power switch.
-- **phosphor-studio** — a scene compiler: plain-JSON documents
-  (`{"shape": {"kind": "turtle"}, "animate": …}`) compile to stereo audio
-  whose waveform *is* the picture, playable on any XY scope on earth.
-  `render` / `validate` / `inspect` / `preview`, `--output json` for
-  agents, deterministic builds pinned by golden tests, a manpage, and
-  two starter scenes — the breathing dot, and the turtle.
-
-The [manual](docs/MANUAL.md) covers all of it in detail.
+- **Scope anything** — whole outputs, one application, a microphone, or
+  **several apps folded into one beam** (the light-streams panel), all
+  native PipeWire. Capture off costs ~0% CPU.
+- **Play music in it** — gapless playlists, shuffle/repeat, seek, cover
+  art, per-stream volume; full **MPRIS both ways** — media keys drive
+  Phosphor, and when the beam scopes another player, **Phosphor's
+  transport drives that player**.
+- **Tell you what's playing** — a systemwide notification with the album
+  art on every track change (yours or the scoped player's). Toggleable.
+- **A real beam** — analytic Gaussian beam integral, linear-light
+  compositing, two-layer P7 decay, octave graticule; GPU (wgpu) and
+  SIMD-CPU renderers sharing one beam model, byte-compared in CI-grade
+  tests. The CPU raster runs on its own worker thread.
+- **The nerd HUD** — F cycles fps → full panel: cpu/gpu frame times
+  (real GPU timestamps), p99, dropped frames, segments/s, resolution.
+- **Compose mode** — press D, draw a shape, hear it immediately; export
+  the drawing as a WAV any oscilloscope on earth can play.
+- **Signal postcards** — export a track's trace as `.phos` (plays at
+  your detail rate with "trace by you" fading in) or send a `.phoskit`:
+  a transform chain (rotate, widen, ring-mod, delay…) that bends into
+  whatever the receiver is listening to, live. Kit editor included;
+  three starter kits in the box.
+- **Vacuum mode** — sound as light only: the track (or a whole app)
+  plays full-tilt into a silent sink and arrives only on screen. The
+  restore path is sacred — sound always comes back, even after a crash.
+- **Exports** — snapshots and 10-second clips with sound, re-rendered
+  offline so they look exactly like the screen did; plus
+  `phosphor render song.flac out.mp4`, a headless full-track render.
+- **An agent surface** — see below; a 7B model can drive the scope.
 
 ## Install
 
-**Debian / Ubuntu / Linux Mint — prebuilt package**
+Grab the [latest release](https://github.com/RamenFast/phosphor/releases/latest).
 
-Download the `.deb` from the [latest release](https://github.com/RamenFast/phosphor/releases/latest), then:
-
-```bash
-sudo apt install ./phosphor_3.0.0_amd64.deb
-```
-
-(An `N: Download is performed unsandboxed…` note from apt is harmless —
-install from `/tmp` to avoid it.)
-
-**From source**
+**Debian · Ubuntu · Mint (.deb)** — or just double-click it:
 
 ```bash
-git clone https://github.com/RamenFast/phosphor.git
-cd phosphor
-python3 phosphor.py
+sudo apt install ./phosphor_4.0.0_amd64.deb
 ```
 
-Dependencies, all in the stock Debian / Mint / Ubuntu repositories:
+**Fedora · openSUSE (.rpm)** *(built on Mint, `rpm --test`-verified — reports welcome)*:
 
 ```bash
-sudo apt install python3-gi python3-gi-cairo gir1.2-gtk-3.0 \
-                 pulseaudio-utils ffmpeg python3-numpy
+sudo dnf install ./phosphor-4.0.0-1.x86_64.rpm
 ```
 
-Optional but worth it — the native signal core (any recent Rust):
+**From source** (any Linux; Rust 1.96+):
 
 ```bash
-cd core && cargo build --release
+git clone https://github.com/RamenFast/phosphor.git && cd phosphor
+# build deps — Debian/Ubuntu/Mint:
+sudo apt install build-essential libpipewire-0.3-dev scdoc
+# Fedora:  sudo dnf install gcc pipewire-devel scdoc
+cargo build --release
+sudo install -m755 target/release/phosphor /usr/local/bin/phosphor
 ```
 
-**Panel applet (Cinnamon)**
+Runtime needs: PipeWire (any modern distro), Vulkan drivers for the GPU
+renderer (`libvulkan1` — the CPU renderer works without), `ffmpeg` for
+mp4 clips and `.phos`-from-anything renders.
+
+**Verify it breathes:**
 
 ```bash
-applet/install.sh   # then add "Phosphor Scope" from Menu -> Applets
+phosphor --version   # phosphor 4.0.0 (v4)
+phosphor             # the scope; second launches focus this one
 ```
+
+## The panel applet (Cinnamon only)
+
+A live vectorscope in your Cinnamon panel, fed by `phosphor feed` —
+zero engine code of its own. GNOME/KDE: the applet can't load there
+(it's Cinnamon's applet API), but the main app runs everywhere.
+
+```bash
+applet/install.sh    # then add "Phosphor Scope" from Menu → Applets
+```
+
+Details: [applet/README.md](applet/README.md).
+
+## For agents
+
+Phosphor is drivable without pixels — one binary, JSON everywhere,
+exit codes 0/2/3/4, every error carries a `fix`:
+
+```bash
+phosphor probe --json                    # live state in one shot
+phosphor ctl mode xy45                   # drive the running scope
+phosphor ctl target mix:app:a+app:b      # fold two apps into the beam
+phosphor tap | jq .bbox                  # per-frame geometry stream
+phosphor kit validate mykit.phoskit      # errors a 7B model can fix
+phosphor schema                          # the whole machine-readable map
+```
+
+The full guide (patterns, gotchas, the feed protocol):
+[docs/AGENTS.md](docs/AGENTS.md).
 
 ## Things to try
 
 - Jerobeam Fenderson — *How To Draw Mushrooms*; whole albums at
-  https://oscilloscopemusic.com
-- Any normal song in **XY · goniometer**, and watch the stereo image dance.
+  [oscilloscopemusic.com](https://oscilloscopemusic.com)
+- Any normal song in **XY · goniometer** and watch the stereo image dance.
 - Hit `D` and draw something. It plays.
+- Scope Spotify, then press pause — *in Phosphor.*
 - Load the **haunt** kit on a mono podcast and watch voices grow shapes.
 
-## License
+The [manual](docs/MANUAL.md) covers everything in detail — there's a
+copy inside the app too (the book icon, left of the gear).
+
+## License & credits
 
 GPL-3.0-or-later — see [LICENSE](LICENSE). Free as in phosphorescence:
 use it, read it, change it, share it; derivatives stay free too.
+
+Bundled type: IBM Plex Sans & JetBrains Mono (OFL).
+
+<p align="center"><sub>Designed and built by Ben with <b>Claude</b> —
+v1→v3 with Claude Fable 5 & Opus 4.8; v4.0, the full-Rust rewrite,
+shipped in one long night with Fable 5, camera rolling.<br>
+Signed, as always: <b>TURTLE VECTOR</b> 🐢⚡📼</sub></p>
