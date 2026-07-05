@@ -1,48 +1,48 @@
-# Phosphor Scope — Cinnamon applet
+# Phosphor Scope — the panel applet
 
-A live vectorscope in your Cinnamon panel, like a CPU monitor but for sound.
-It reuses Phosphor's exact signal path: a small headless helper
-(`phosphor_applet_feed.py`) captures your default output's monitor with
-`parec`, runs the same `SegmentComputer`, auto-gains the trace, and streams
-beam segments to the applet, which paints them with Cairo.
+A tiny live vectorscope in your **Cinnamon** panel: the beam in
+miniature, fed by the real engine. Hover for a bigger scope, click
+for modes and themes, flip the CRT power switch when you want the
+panel dark.
 
-## Install
-
-```bash
-applet/install.sh
+```
+applet/install.sh     # copy into ~/.local/share/cinnamon/applets
 ```
 
-Then right-click your panel → **Applets** (or **Menu → Applets**), find
-**Phosphor Scope**, and add it. If you reinstall over a running copy, remove
-and re-add it (or reload Cinnamon with `Ctrl+Alt+Esc`) to pick up changes.
+then add **"Phosphor Scope"** from Menu → Applets (or restart
+Cinnamon with Alt-F2 `r` if it was already added).
 
-## Use
+## How it works — one engine, zero bundled code
 
-- **In the panel:** a live mini scope. Silence shows a faint resting dot.
-- **Hover:** a larger scope pops up, with mode buttons and actions.
-- **Click:** toggles that popup.
-- **Open Phosphor:** launches the full app.
-- **Pin floating preview:** opens the always-on-top mini player (`phosphor --mini`).
+The applet contains **no signal engine at all**. It spawns
 
-## Settings
+```
+phosphor feed
+```
 
-Right-click the applet → *Configure*:
+and draws the beam-segment stream that arrives on stdout (NDJSON,
+the locked v3 protocol). All the math — capture, oversampling, kit
+chains — happens in the same Rust engine the main app uses, so the
+panel and the window can never disagree. If the capture dies (device
+unplugged, stream ends), the feed re-resolves the default output
+once a second and reconnects; the applet just keeps drawing.
 
-- **Trace colour** — *Follow panel theme* (blends in like a system monitor) or
-  a fixed *Phosphor colour*.
-- **Phosphor colour** — which preset to use when not following the theme.
-- **Scope background** — transparent, AMOLED black, or a tint of the trace.
-- **At login, the display starts** — always on, always off, or remembering
-  its last state (the ⏻ CRT toggle in the right-click menu).
-- **Scope mode** — XY, goniometer, XY dots, waveform, spectrum, or radial
-  spectrum (also switchable from the hover popup).
-- **Width in the panel** / **Refresh rate** — size and fps (up to 480;
-  match your monitor).
+Requires `phosphor` ≥ 4.0 on the PATH (the .deb/.rpm put it there).
 
-## How it finds the helper
+## Desktop support, honestly
 
-The installer bundles `phosphor_applet_feed.py` (and the `phosphor_audio` /
-`phosphor_signal` / `phosphor_core` modules it imports, plus the native
-`libphosphor_core.so` when built) into the applet directory, so it is
-self-contained. If those aren't present it falls back to a `.deb` install at
-`/usr/lib/phosphor/`.
+| Desktop | Status |
+|---|---|
+| Cinnamon 6.0 – 6.6 | ✅ this applet |
+| GNOME / KDE / anything else | ❌ the applet uses Cinnamon's applet API (`imports.ui.applet`, St) and cannot load there. **The main `phosphor` app runs fine on any desktop** — this folder is only the panel widget. |
+
+The main app needs no applet and the applet is optional sugar; they
+share nothing but the `phosphor` binary.
+
+## Files
+
+- `phosphor-scope@phosphor/applet.js` — the drawing + menus (GJS)
+- `phosphor-scope@phosphor/metadata.json` — Cinnamon manifest
+- `phosphor-scope@phosphor/settings-schema.json` — refresh rate,
+  size, theme, power
+- `install.sh` — user-level install/refresh

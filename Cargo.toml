@@ -1,18 +1,16 @@
-# Phosphor v4 workspace — one engine, no fallbacks (see V4PLAN.md).
-# core/ is deliberately EXCLUDED: it is v3's cdylib with its own release
-# profile, and v3 must stay runnable (and packagable) untouched until the
-# parity checklist passes and one commit deletes the Python tree.
+# Phosphor v4 workspace — one engine, no fallbacks. The Python tree
+# and v3's core/ cdylib are gone (the 4.0.0 purge); tests/golden holds
+# their frozen ground truth (docs/dev/GOLDEN.md).
 
 [workspace]
 resolver = "2"
 members = ["crates/*"]
-exclude = ["core"]
 
 [workspace.package]
-version = "4.0.0-dev"
+version = "4.0.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/2bmb/phosphor"
+repository = "https://github.com/RamenFast/phosphor"
 
 # Central version table; member crates opt in with `dep.workspace = true`
 # as their wave lands. Do not sprinkle stray versions in member manifests.
