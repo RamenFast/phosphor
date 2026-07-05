@@ -13,7 +13,7 @@ set -euo pipefail
 project_directory="$(cd "$(dirname "$0")/.." && pwd)"
 packaging_directory="$project_directory/packaging"
 package_name="phosphor"
-VERSION="4.0.0~wave2.6"
+VERSION="4.0.0~wave3.1"
 
 # The binary: build fresh, package a stripped copy.
 (cd "$project_directory" && cargo build --release --quiet -p phosphor-app)

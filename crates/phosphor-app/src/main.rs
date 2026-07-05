@@ -7,16 +7,17 @@
 //! `--render`, `--mini`, `--screensaver`, `--visitor`.
 //! All agent-grade: `--output json`, exit codes 0/2/3/4.
 //!
-//! State after waves 1–2.6: the GUI (default command), `render`, and
-//! `bench` are real; `probe`/`tap`/`ctl`/`feed`/`kit` land with wave 3
-//! and `studio` with wave 4 — until then those arms exit 2 with a
-//! short directive message (never a silent success — no fallback
-//! paths in v4).
+//! State after waves 1–2.6: the GUI (default command), `render`,
+//! `bench`, and `feed` (the Cinnamon-applet panel feed) are real;
+//! `probe`/`tap`/`ctl`/`kit` land with wave 3 and `studio` with
+//! wave 4 — until then those arms exit 2 with a short directive
+//! message (never a silent success — no fallback paths in v4).
 
 use std::process::ExitCode;
 
 mod bench;
 mod chrome;
+mod feed;
 mod compose;
 mod exports;
 mod keyboard;
@@ -27,8 +28,7 @@ mod shell;
 mod theme;
 mod signals;
 
-const PENDING: &[&str] = &["probe", "tap", "ctl", "feed", "kit",
-                           "studio"];
+const PENDING: &[&str] = &["probe", "tap", "ctl", "kit", "studio"];
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
@@ -46,6 +46,7 @@ fn main() -> ExitCode {
             render::run(&rest)
         }
         Some("bench") => bench::run(&arguments[1..]),
+        Some("feed") => feed::run(&arguments[1..]),
         Some(name) if PENDING.contains(&name) => {
             eprintln!("phosphor {name}: not built yet (v4 wave in \
                        progress; see V4PLAN.md)");

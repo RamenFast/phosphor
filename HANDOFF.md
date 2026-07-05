@@ -17,9 +17,10 @@ The phosphor4-era user-level side-by-side artifacts (~/.local/bin
 symlink, phosphor4.desktop, user icons) are removed — one entry, one
 command. STILL PENDING FOR WAVE 4: deleting the Python tree from the
 REPO (tests/test_native_parity.py + capture_golden.py still reference
-it; goldens themselves are captured and safe), and the v3-era Cinnamon
-applet on Ben's panel (bundles its own engine, keeps working
-standalone; wave 3's GJS rewrite replaces it). phosphor-studio is
+it; goldens themselves are captured and safe). The v3-era Cinnamon
+applet that bundled its own engine is REPLACED — wave 3.1 shipped the
+engine-free applet 2.0.0 fed by `phosphor feed` (issue #3, below).
+phosphor-studio is
 uninstalled with v3 — the studio returns in Rust in wave 4.
 
 **Wave 2.6 — compose + the confidence pass (branch `v4-wave2.6`).**
@@ -129,12 +130,16 @@ Settings: FULL key set, foreign keys preserved on write-back (test).
 theorize (pw-top found the RT_PROCESS miss; a busctl receipt found
 actions starving while quiet-asleep — drains now happen at tick level).
 
-**NEXT SESSION STARTS WITH [APPLET-PLAN.md](APPLET-PLAN.md)** — the
-full execution plan for issue #3 (`phosphor feed` subcommand +
-engine-free applet), written self-contained for an Opus 4.8 executor:
-verbatim protocol constants, a detailed feed.rs stub, the exact
-applet diff, receipts, recorded transport decision. The wave-3 gap
-ledger lives in GitHub issues #1–#8 (label `v4-gap`).
+**ISSUE #3 IS DONE (wave 3.1, branch `v4-applet`).** The `phosphor
+feed` subcommand shipped: stdio NDJSON, protocol verbatim from v3's
+`phosphor_applet_feed.py`, with ONE deliberate deviation — on capture
+death it re-resolves the default output monitor once per second and
+reconnects (v3's feed just went dark). The Cinnamon applet is 2.0.0:
+it spawns `["phosphor","feed"]` and bundles ZERO engine code (no
+`phosphor_core.py`/`.so`). deb is `4.0.0~wave3.1`. Locked transport
+decision: stdio NDJSON now; a Unix control-socket feed can still come
+with issue #4. The wave-3 gap ledger lives in GitHub issues #1–#8
+(label `v4-gap`); APPLET-PLAN.md was the execution plan and is spent.
 
 **Fold into wave 3 (from Ben's install-night drive):** a CPU-raster
 worker thread — chrome currently shares the render thread with the
@@ -147,12 +152,14 @@ async). Also note: v3 profiles may carry `renderer=cairo` (chosen for
 the pre-2.5 washout) — the GPU renderer is the intended default and
 runs 480-locked where cairo sags to 52.
 
-**Wave 3 (V4PLAN steps 10–14): agents & the panel.** Control socket
-(Unix NDJSON): `ctl`/`tap`/`feed` + `probe --at`; kit
-validate/inspect CLI + shipped JSON schemas (Ben's bedtime law: a 7B
-model repairs its kit in one round-trip); applet GJS rewrite (ZERO
-bundled engine — draws from `phosphor feed`); 4-panel icon; docs
-rewrite (MANUAL.md is 4+ releases stale; "pantomime" gets its home).
+**Wave 3 (V4PLAN steps 10–14): agents & the panel.** DONE so far: the
+engine-free applet fed by `phosphor feed` (issue #3, wave 3.1).
+REMAINING: **#4** control socket (Unix NDJSON `ctl`/`tap`/`probe
+--at`; the applet can migrate off stdio onto it), **#5** the CPU-raster
+worker thread (below), **#6** the mixing UI, **#7** the docs rewrite
+(MANUAL.md is 4+ releases stale; "pantomime" gets its home). Kit
+validate/inspect CLI + shipped JSON schemas still owed (Ben's bedtime
+law: a 7B model repairs its kit in one round-trip).
 Also fold in PARITY.md's deferrals: kit EDITOR dialog, cover-art
 display, postcard-export dialog, window position restore, corner-drag
 mini resize. v3 stays installed until wave 4's checklist deletes it.
