@@ -21,12 +21,26 @@ a colored glow that lingers.
 > The animation above is a real Phosphor capture, exported straight from
 > the app's own clip recorder.
 
-> **v4 status (July 2026):** a full-Rust rewrite (egui + wgpu + native
-> PipeWire, one engine, ≥2× fps on both renderers) lives in `crates/`
-> and is daily-drivable — build it with `cargo build --release`. The
-> Python v3 app below remains what the released `.deb` installs until
-> the v4.0.0 release replaces it. Screenshots and the manual describe
-> v3 for now.
+> **v4 status (July 2026):** Phosphor is now the full-Rust rewrite —
+> egui + wgpu + native PipeWire, one engine, far past v3's frame
+> ceiling. The Python v3 app is retired; `packaging/build-deb.sh`
+> builds the compiled `.deb` (`4.0.0~wave2.6`). Screenshots and
+> MANUAL.md still show v3 pending the wave-3 docs pass.
+>
+> **Not yet in v4 (honest ledger vs v3.5)** — each tracked as a
+> GitHub issue:
+> - **`phosphor-studio` scene compiler** (scenes → oscilloscope
+>   audio) was retired with v3; it returns in Rust in wave 4.
+> - **Render-ahead precompute** was deliberately not ported — the v4
+>   engine reconstructs in realtime (GPU path); rationale + revisit
+>   criteria live in PARITY.md.
+> - **The Cinnamon applet** still runs its bundled v3-era engine;
+>   the GJS rewrite on `phosphor feed` lands in wave 3.
+> - **Agent CLI** (`probe`/`tap`/`ctl`/`feed`/`kit validate|inspect`)
+>   are exit-2 stubs until wave 3.
+> - **Multi-app mixing** exists in the audio engine but has no UI yet.
+> - **MANUAL.md** describes v3 until the wave-3 docs rewrite; v4
+>   ships a `phosphor(1)` manpage meanwhile.
 
 ## Drawn by sound
 

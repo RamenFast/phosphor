@@ -51,6 +51,11 @@ install -m 644 "$packaging_directory/phosphor.desktop" \
 install -m 644 "$project_directory/LICENSE" \
     "$staging_directory/usr/share/doc/phosphor/copyright"
 
+# Manpage (scdoc is a build-time dependency, like the v3 packaging)
+install -d "$staging_directory/usr/share/man/man1"
+scdoc < "$project_directory/docs/phosphor.1.scd" \
+    | gzip -9n > "$staging_directory/usr/share/man/man1/phosphor.1.gz"
+
 installed_size_kb="$(du -sk "$staging_directory/usr" | cut -f1)"
 cat > "$staging_directory/DEBIAN/control" <<CONTROL
 Package: $package_name
