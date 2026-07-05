@@ -154,6 +154,17 @@ convention). Receipts live in the merge commit.
 Deferrals now: {`studio` compiler + `probe --at` (wave 4), compose
 studio-panel integration (wave 4), timeline (wave 4)}.
 
+## Wave 3.3 — the second feel wave (2026-07-04, Ben's feedback list)
+
+| Item | State | Receipt |
+|---|---|---|
+| **Blossom Dark** palette (wine-plum warm dark, sakura resting accent, `accent_follows_beam` — the blossom×dark×afterglow fusion Ben asked for); 7 palettes now, combo auto-lists | ✅ | blossom-dark-final.png; A/B against cool `dark`; set as Ben's active ui_style |
+| More defined buttons, all themes (rest stroke → line_strong, raised-stone face lerp, hover accent stroke + expansion; bevels stay the carved-primary privilege; corners stay sharp) | ✅ | same screenshot; equal-care audit noted in merge commit |
+| Animations: `style.animation_time` 0.12 s eased hover/active everywhere; **theme-switch crossfade** (180 ms smoothstep over every token incl. glass alpha); carved toggles ease via `animate_bool` | ✅ | theme-crossfade-mid.png caught mid-lerp |
+| Glass tint at **1 %** steps with a percent readout (`step_by(0.01)` + formatter/parser) | ✅ | "5%" visible in the settings receipt |
+| Mini resize: full **8-zone** edge+corner hit-test (26 px corners, 8 px edges, pure fn + unit tests) with live resize-cursor hints | ✅ | 5 new shell tests; square law preserved |
+| Mini glitchiness, three root causes: xprop-per-settle → 30 s workarea cache; mid-drag resquare churn → drag-aware deferral (one resquare+snap at settle); set_mini_mode burst → 400 ms entry grace | ✅ | mini_square.png; WM-grab paths flagged for Ben's live pass (Xvfb has no WM) |
+
 ## The one receipt that matters
 
 Ben daily-drives it for an evening: capture, vacuum, media keys,

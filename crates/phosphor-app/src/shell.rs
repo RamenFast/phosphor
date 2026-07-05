@@ -198,6 +198,17 @@ pub struct Shell {
     pub(crate) text_focus_ids: std::collections::HashSet<egui::Id>,
     /// pending square-enforcement side after a mini corner resize
     mini_resquare: Option<i64>,
+    /// cached _NET_WORKAREA (x, y, w, h) + when it was queried — the
+    /// settle path reads this instead of shelling out to xprop every
+    /// tick (a moved panel is rare; 30 s staleness is fine)
+    workarea_cache: Option<((i32, i32, i32, i32), Instant)>,
+    /// a WM move/resize drag of the mini is live — while set, defer the
+    /// square-enforcing request_inner_size so it can't fight the drag
+    mini_drag_active: bool,
+    /// set when set_mini_mode enters mini; a 400 ms grace during which
+    /// the Resized burst we caused ourselves must NOT be read as a
+    /// user corner-drag skew (would schedule a spurious re-square)
+    mini_entering: Option<Instant>,
     cursor_position: (f64, f64),
     /// pointer over the scope widget last frame (egui occlusion-aware:
     /// false under chrome, panels, or floating dialogs) — the wheel
@@ -305,6 +316,9 @@ impl Shell {
             quit_requested: false,
             text_focus_ids: std::collections::HashSet::new(),
             mini_resquare: None,
+            workarea_cache: None,
+            mini_drag_active: false,
+            mini_entering: None,
             cursor_position: (0.0, 0.0),
             scope_hovered: false,
             mini_last_click: None,
@@ -1166,16 +1180,21 @@ impl Shell {
                 window.inner_size(),
                 window.outer_position().ok(),
             ));
+            // order to minimise the Resized/Moved thrash: decorations
+            // off first, then position, then ONE request_inner_size.
+            // The grace stamps NOW so the burst these calls provoke is
+            // read as ours, not a user corner-drag skew.
+            self.mini_entering = Some(Instant::now());
             window.set_decorations(false);
-            let size = self.settings.mini_size.clamp(140, 1000) as u32;
-            let _ = window.request_inner_size(
-                winit::dpi::PhysicalSize::new(size, size));
             if let (Some(x), Some(y)) =
                 (self.settings.mini_x, self.settings.mini_y)
             {
                 window.set_outer_position(
                     winit::dpi::PhysicalPosition::new(x as i32, y as i32));
             }
+            let size = self.settings.mini_size.clamp(140, 1000) as u32;
+            let _ = window.request_inner_size(
+                winit::dpi::PhysicalSize::new(size, size));
         } else {
             // remember where the mini lived (v3 persists on leave)
             if let Ok(position) = window.outer_position() {
@@ -1216,11 +1235,25 @@ impl Shell {
         }
     }
 
+    /// The work area, served from the 30 s cache — shells out to xprop
+    /// only when the cache is empty or stale. Called on the event-loop
+    /// thread at every settle, so the subprocess must NOT run per tick.
+    fn workarea_cached(&mut self) -> Option<(i32, i32, i32, i32)> {
+        let fresh = self.workarea_cache
+            .is_some_and(|(_, at)| workarea_cache_fresh(at.elapsed()));
+        if !fresh
+            && let Some(area) = Self::workarea()
+        {
+            self.workarea_cache = Some((area, Instant::now()));
+        }
+        self.workarea_cache.map(|(area, _)| area)
+    }
+
     /// v3 _snap_mini_to_edges: within 32 px of a work-area edge →
     /// flush to it; position persisted.
     fn snap_mini_to_edges(&mut self, graphics: &Graphics) {
         const SNAP: i32 = 32;
-        let Some((area_x, area_y, area_w, area_h)) = Self::workarea()
+        let Some((area_x, area_y, area_w, area_h)) = self.workarea_cached()
         else { return };
         let window = &graphics.window;
         let Ok(position) = window.outer_position() else { return };
@@ -2085,9 +2118,15 @@ impl ApplicationHandler<()> for Shell {
                 // re-square once the drag settles (shares the
                 // magnetism settle timer)
                 if self.is_mini {
+                    let entering = self.mini_entering.is_some_and(|t| {
+                        t.elapsed() < Duration::from_millis(400)
+                    });
                     let side = size.width.max(size.height)
                         .clamp(140, 1000) as i64;
-                    if size.width != size.height {
+                    // a skew only counts as a user corner-drag when it
+                    // is NOT part of the set_mini_mode entry burst —
+                    // otherwise our own request_inner_size loops
+                    if size.width != size.height && !entering {
                         self.mini_resquare = Some(side);
                     }
                     self.settings.mini_size = side;
@@ -2097,6 +2136,21 @@ impl ApplicationHandler<()> for Shell {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_position = (position.x, position.y);
+                // hover hint: advertise the mini resize zones so the
+                // edges/corners are discoverable (Default in the move
+                // interior). Cheap — only while mini.
+                if self.is_mini
+                    && let Some(graphics) = &self.graphics
+                {
+                    let size = graphics.window.inner_size();
+                    let icon = mini_resize_zone(
+                        position.x, position.y,
+                        size.width as f64, size.height as f64,
+                    )
+                    .map(resize_cursor)
+                    .unwrap_or(winit::window::CursorIcon::Default);
+                    graphics.window.set_cursor(icon);
+                }
             }
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Pressed,
@@ -2126,16 +2180,42 @@ impl ApplicationHandler<()> for Shell {
                     } else {
                         let size = graphics.window.inner_size();
                         let (x, y) = self.cursor_position;
-                        let in_corner = x > (size.width as f64 - 26.0)
-                            && y > (size.height as f64 - 26.0);
-                        let _ = if in_corner {
-                            graphics.window.drag_resize_window(
-                                winit::window::ResizeDirection::SouthEast)
-                        } else {
-                            graphics.window.drag_window()
-                        };
+                        // full 8-zone hit-test: corners/edges → WM
+                        // resize, interior → WM move (drag never orbits)
+                        match mini_resize_zone(x, y, size.width as f64,
+                                               size.height as f64) {
+                            Some(dir) => {
+                                let _ = graphics.window
+                                    .drag_resize_window(dir);
+                            }
+                            None => {
+                                let _ = graphics.window.drag_window();
+                            }
+                        }
+                        // a WM drag is now live: defer square-enforcing
+                        // re-squares until it ends (kills the mid-drag
+                        // resize→resquare→Resized feedback loop)
+                        self.mini_drag_active = true;
                     }
                 }
+            }
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Released,
+                button: winit::event::MouseButton::Left, ..
+            } if self.is_mini => {
+                // the WM drag grab ends on button-up (winit gives no
+                // dedicated drag-end event); clear the defer flag and
+                // re-arm the settle so ONE re-square + ONE snap lands
+                if self.mini_drag_active {
+                    self.mini_drag_active = false;
+                    self.mini_settle = Some(
+                        Instant::now() + Duration::from_millis(180));
+                }
+            }
+            WindowEvent::CursorLeft { .. } if self.is_mini => {
+                // pointer left the window: any WM drag is over, and the
+                // resize hint no longer applies
+                self.mini_drag_active = false;
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 // v3 law: the window handles keys unless a text entry
@@ -2295,17 +2375,30 @@ impl ApplicationHandler<()> for Shell {
         if let Some(due) = self.mini_settle
             && Instant::now() >= due
         {
-            self.mini_settle = None;
-            if let Some(graphics) = self.graphics.take() {
-                // square first (a corner drag may have skewed it),
-                // then snap to the work-area edges
-                if let Some(side) = self.mini_resquare.take() {
-                    let _ = graphics.window.request_inner_size(
-                        winit::dpi::PhysicalSize::new(
-                            side as u32, side as u32));
+            if self.mini_drag_active {
+                // A WM drag is still marked live and no button-release
+                // or cursor-leave cleared it (winit gives no drag-end
+                // event, and some WMs swallow the release). Re-squaring
+                // now would fight the WM's active grab, so DON'T — clear
+                // the flag (belt-and-braces) and defer the single
+                // re-square to the next quiet settle.
+                self.mini_drag_active = false;
+                self.mini_settle = Some(
+                    Instant::now() + Duration::from_millis(180));
+            } else {
+                self.mini_settle = None;
+                if let Some(graphics) = self.graphics.take() {
+                    // square first (a corner/edge drag may have skewed
+                    // it), then snap to the work-area edges — ONE of
+                    // each, now that the drag has truly ended
+                    if let Some(side) = self.mini_resquare.take() {
+                        let _ = graphics.window.request_inner_size(
+                            winit::dpi::PhysicalSize::new(
+                                side as u32, side as u32));
+                    }
+                    self.snap_mini_to_edges(&graphics);
+                    self.graphics = Some(graphics);
                 }
-                self.snap_mini_to_edges(&graphics);
-                self.graphics = Some(graphics);
             }
         }
         let mut wake_at = self.mini_settle;
@@ -2354,6 +2447,70 @@ fn load_window_icon() -> Option<winit::window::Icon> {
     winit::window::Icon::from_rgba(rgba, info.width, info.height).ok()
 }
 
+/// Mini resize hit-test (PURE). Corners win a 26 px box at each corner;
+/// edges take an 8 px margin; the interior is a move zone → None.
+/// Corners take precedence over edges (a corner box overlaps two edge
+/// margins). Coordinates are physical pixels inside the mini window.
+fn mini_resize_zone(x: f64, y: f64, width: f64, height: f64)
+    -> Option<winit::window::ResizeDirection> {
+    use winit::window::ResizeDirection;
+    const CORNER: f64 = 26.0;
+    const EDGE: f64 = 8.0;
+    let left = x <= CORNER;
+    let right = x >= width - CORNER;
+    let top = y <= CORNER;
+    let bottom = y >= height - CORNER;
+    // corners first (they overlap the edge margins)
+    if top && left {
+        return Some(ResizeDirection::NorthWest);
+    }
+    if top && right {
+        return Some(ResizeDirection::NorthEast);
+    }
+    if bottom && left {
+        return Some(ResizeDirection::SouthWest);
+    }
+    if bottom && right {
+        return Some(ResizeDirection::SouthEast);
+    }
+    // then edges
+    if x <= EDGE {
+        return Some(ResizeDirection::West);
+    }
+    if x >= width - EDGE {
+        return Some(ResizeDirection::East);
+    }
+    if y <= EDGE {
+        return Some(ResizeDirection::North);
+    }
+    if y >= height - EDGE {
+        return Some(ResizeDirection::South);
+    }
+    None
+}
+
+/// The winit cursor icon that advertises a resize zone (hover hint).
+fn resize_cursor(dir: winit::window::ResizeDirection)
+    -> winit::window::CursorIcon {
+    use winit::window::{CursorIcon, ResizeDirection};
+    match dir {
+        ResizeDirection::North => CursorIcon::NResize,
+        ResizeDirection::South => CursorIcon::SResize,
+        ResizeDirection::East => CursorIcon::EResize,
+        ResizeDirection::West => CursorIcon::WResize,
+        ResizeDirection::NorthEast => CursorIcon::NeResize,
+        ResizeDirection::NorthWest => CursorIcon::NwResize,
+        ResizeDirection::SouthEast => CursorIcon::SeResize,
+        ResizeDirection::SouthWest => CursorIcon::SwResize,
+    }
+}
+
+/// Work-area cache TTL decision (PURE): true → the cached value is
+/// still usable, false → re-query xprop. 30 s: a panel rarely moves.
+fn workarea_cache_fresh(age: Duration) -> bool {
+    age < Duration::from_secs(30)
+}
+
 /// Scale a chrome color's alpha for the fading toast.
 fn with_toast_alpha(color: egui::Color32, alpha: u8) -> egui::Color32 {
     let a = (color.a() as u16 * alpha as u16 / 255) as u8;
@@ -2386,5 +2543,65 @@ pub fn run(arguments: &[String]) -> i32 {
             eprintln!("phosphor: {error}");
             4
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{mini_resize_zone, workarea_cache_fresh};
+    use std::time::Duration;
+    use winit::window::ResizeDirection as R;
+
+    // A representative mini window; the corners are 26 px boxes and the
+    // edges an 8 px margin.
+    const W: f64 = 400.0;
+    const H: f64 = 400.0;
+
+    #[test]
+    fn each_corner() {
+        assert_eq!(mini_resize_zone(1.0, 1.0, W, H), Some(R::NorthWest));
+        assert_eq!(mini_resize_zone(399.0, 1.0, W, H), Some(R::NorthEast));
+        assert_eq!(mini_resize_zone(1.0, 399.0, W, H), Some(R::SouthWest));
+        assert_eq!(mini_resize_zone(399.0, 399.0, W, H), Some(R::SouthEast));
+        // exactly on the 26 px corner boundary still counts as corner
+        assert_eq!(mini_resize_zone(26.0, 26.0, W, H), Some(R::NorthWest));
+    }
+
+    #[test]
+    fn each_edge() {
+        // mid-span of each edge, inside the 8 px margin but clear of the
+        // 26 px corner boxes
+        assert_eq!(mini_resize_zone(200.0, 2.0, W, H), Some(R::North));
+        assert_eq!(mini_resize_zone(200.0, 398.0, W, H), Some(R::South));
+        assert_eq!(mini_resize_zone(398.0, 200.0, W, H), Some(R::East));
+        assert_eq!(mini_resize_zone(2.0, 200.0, W, H), Some(R::West));
+    }
+
+    #[test]
+    fn interior_is_move() {
+        assert_eq!(mini_resize_zone(200.0, 200.0, W, H), None);
+        assert_eq!(mini_resize_zone(50.0, 50.0, W, H), None);
+        // just inside every margin
+        assert_eq!(mini_resize_zone(9.0, 200.0, W, H), None);
+        assert_eq!(mini_resize_zone(200.0, 9.0, W, H), None);
+    }
+
+    #[test]
+    fn corner_beats_edge() {
+        // (25,25): within both the North and West edge margins? No — it
+        // is >8 from either edge, but it IS inside the 26 px corner box,
+        // so it must resolve to the NW corner, never an edge.
+        assert_eq!(mini_resize_zone(25.0, 25.0, W, H), Some(R::NorthWest));
+        // a point hard on the left edge but far down the side is West,
+        // not a corner (task's x=3,y=300 case)
+        assert_eq!(mini_resize_zone(3.0, 300.0, W, H), Some(R::West));
+    }
+
+    #[test]
+    fn workarea_cache_ttl() {
+        assert!(workarea_cache_fresh(Duration::from_secs(0)));
+        assert!(workarea_cache_fresh(Duration::from_secs(29)));
+        assert!(!workarea_cache_fresh(Duration::from_secs(30)));
+        assert!(!workarea_cache_fresh(Duration::from_secs(120)));
     }
 }

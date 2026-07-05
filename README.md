@@ -24,7 +24,7 @@ a colored glow that lingers.
 > **v4 status (July 2026):** Phosphor is now the full-Rust rewrite —
 > egui + wgpu + native PipeWire, one engine, far past v3's frame
 > ceiling. The Python v3 app is retired; `packaging/build-deb.sh`
-> builds the compiled `.deb` (`4.0.0~wave3.2`). Screenshots and
+> builds the compiled `.deb` (`4.0.0~wave3.3`). Screenshots and
 > MANUAL.md still show v3 pending the wave-3 docs pass.
 >
 > **Not yet in v4 (honest ledger vs v3.5)** — each tracked as a

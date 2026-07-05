@@ -159,6 +159,18 @@ the CPU-raster worker thread (below), **#6** the mixing UI, **#7** the
 docs rewrite (MANUAL.md is 4+ releases stale; "pantomime" gets its
 home).
 
+**Wave 3.3 shipped (Ben's second feedback list, same night).**
+Blossom Dark palette (wine-plum × sakura × beam-following accent — the
+blossom-dark-afterglow fusion; NOW BEN'S ACTIVE ui_style, was basalt),
+more defined buttons all themes (line_strong rest stroke, raised-stone
+face, hover accent+expansion; sharp corners law intact), animations
+(0.12 s eased interactions, 180 ms theme-switch crossfade, eased
+carved toggles), glass tint 1 % steps with percent readout, mini
+8-zone edge+corner resize with cursor hints, mini glitch root causes
+killed (xprop→30 s workarea cache, drag-aware resquare deferral,
+400 ms entry grace). deb 4.0.0~wave3.3 installed. Ben's live-WM pass
+still owed on the edge-resize feel (Xvfb has no WM to receipt grabs).
+
 **Wave 3.2 shipped (issue #4).** The agent CLI is live: `probe`
 (live status one-shot, `--json`, `running:false` when no GUI; `--at`
 still a stub → studio wave), `ctl <verb>` (play/pause/toggle/stop/

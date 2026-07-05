@@ -49,8 +49,9 @@ const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color32 {
     Color32::from_rgba_premultiplied(r, g, b, a)
 }
 
-/// All six, in menu order. Blossom first = the default.
-pub const PALETTES: [Palette; 6] = [
+/// All seven, in menu order. Blossom first = the default; Blossom
+/// Dark sits right after it (the wanted dark default).
+pub const PALETTES: [Palette; 7] = [
     // ── Blossom — warm sakura, rice-paper, ink (skill default) ──
     Palette {
         id: "blossom", label: "Blossom", dark: false,
@@ -63,6 +64,25 @@ pub const PALETTES: [Palette; 6] = [
         stone: rgb(0xe7, 0xda, 0xd9), stone_hi: rgb(0xff, 0xfa, 0xfa),
         stone_lo: rgb(0xc9, 0xb6, 0xb8),
         accent_follows_beam: false,
+    },
+    // ── Blossom Dark — warm wine-plum ground, sakura-rose accent
+    //    that breathes with the live beam (afterglow fusion). This
+    //    is deliberately WARM (wine/plum), not the cool plum-black
+    //    of `dark`. The wanted dark default. ──
+    Palette {
+        id: "blossom_dark", label: "Blossom Dark", dark: true,
+        plane: rgb(0x1c, 0x10, 0x16), surface: rgb(0x28, 0x18, 0x21),
+        surface_2: rgb(0x33, 0x21, 0x2c),
+        ink: rgb(0xf5, 0xea, 0xef), ink_2: rgb(0xc9, 0xb0, 0xbc),
+        muted: rgb(0x91, 0x79, 0x86),
+        line: rgba(244, 233, 238, 36), line_strong: rgba(244, 233, 238, 82),
+        // brighter, warmer sakura than the cool `dark` (which it must
+        // not read like); it also breathes with the live beam
+        accent: rgb(0xec, 0x8f, 0xac), on_accent: rgb(0x1a, 0x0e, 0x14),
+        // carved wine-stone: warm catch-light, deep plum shadow
+        stone: rgb(0x3b, 0x26, 0x31), stone_hi: rgb(0x55, 0x39, 0x48),
+        stone_lo: rgb(0x1d, 0x11, 0x17),
+        accent_follows_beam: true,
     },
     // ── Light — cool neutral instrument ──
     Palette {
@@ -182,10 +202,16 @@ impl Palette {
         visuals.selection.bg_fill = self.accent;
         visuals.selection.stroke = egui::Stroke::new(1.0, self.on_accent);
 
-        // Flat, hairline-framed widgets by default — depth is reserved
-        // for the few carved controls (drawn manually in chrome.rs).
+        // Flat, hairline-framed widgets — but more *defined* than a bare
+        // hairline: resting buttons carry a line_strong frame and read as
+        // faintly raised stone vs the recessed panel; hover pulls an
+        // accent-tinted frame; active goes full accent. Depth (bevels)
+        // stays reserved for the few carved controls (chrome.rs) — these
+        // stay flat-tier, only their surface and frame move.
         let hairline = egui::Stroke::new(1.0, self.line);
         let hairline_strong = egui::Stroke::new(1.0, self.line_strong);
+        // a faintly-raised stone face so buttons separate from panels
+        let button_face = lerp(self.surface_2, self.stone, 0.35);
         let widgets = &mut visuals.widgets;
         for w in [&mut widgets.noninteractive, &mut widgets.inactive,
                   &mut widgets.hovered, &mut widgets.active,
@@ -197,22 +223,25 @@ impl Palette {
         widgets.noninteractive.bg_stroke = hairline;
         widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, self.ink_2);
 
-        widgets.inactive.bg_fill = self.surface_2;
+        widgets.inactive.bg_fill = button_face;
         widgets.inactive.weak_bg_fill = self.surface_2;
-        widgets.inactive.bg_stroke = hairline;
+        widgets.inactive.bg_stroke = hairline_strong;
         widgets.inactive.fg_stroke = egui::Stroke::new(1.0, self.ink);
 
-        widgets.hovered.bg_fill = lerp(self.surface_2, self.accent, 0.14);
+        widgets.hovered.bg_fill = lerp(button_face, self.accent, 0.14);
         widgets.hovered.weak_bg_fill =
             lerp(self.surface_2, self.accent, 0.14);
-        widgets.hovered.bg_stroke = hairline_strong;
+        widgets.hovered.bg_stroke =
+            egui::Stroke::new(1.0, lerp(self.line_strong, self.accent, 0.5));
         widgets.hovered.fg_stroke = egui::Stroke::new(1.0, self.ink);
+        widgets.hovered.expansion = 1.0;
 
         widgets.active.bg_fill = lerp(self.surface_2, self.accent, 0.30);
         widgets.active.weak_bg_fill =
             lerp(self.surface_2, self.accent, 0.30);
         widgets.active.bg_stroke = egui::Stroke::new(1.0, self.accent);
         widgets.active.fg_stroke = egui::Stroke::new(1.0, self.ink);
+        widgets.active.expansion = -0.5;
 
         widgets.open.bg_fill = self.surface_2;
         widgets.open.bg_stroke = hairline_strong;
@@ -222,6 +251,9 @@ impl Palette {
         // Spacing + the mono data face: install a Style with tightened,
         // consistent spacing (breathing room without sprawl).
         let mut style = (*ctx.style()).clone();
+        // free eased hover/active crossfades on every widget (restrained,
+        // ~120 ms — the house-style "beautiful but purposeful" motion).
+        style.animation_time = 0.12;
         style.spacing.button_padding = egui::vec2(8.0, 4.0);
         style.spacing.item_spacing = egui::vec2(7.0, 5.0);
         style.spacing.window_margin = egui::Margin::same(8);
@@ -232,17 +264,19 @@ impl Palette {
         ctx.set_style(style);
     }
 
-    /// Paint a carved, dimensional control background into `rect`
-    /// (the "stone" treatment — bevel light top-left, shadow
-    /// bottom-right; pressed = it sinks). For the FEW important
-    /// controls only. `active` = toggled-on state (accent-tinted face).
-    pub fn carve(&self, painter: &egui::Painter, rect: egui::Rect,
-                 pressed: bool, active: bool) {
-        let face = if active {
-            lerp(self.stone, self.accent, 0.34)
-        } else {
-            self.stone
-        };
+    /// Paint a carved, dimensional control background into `rect` (the
+    /// "stone" treatment — bevel light top-left, shadow bottom-right;
+    /// pressed = it sinks). For the FEW important controls only. The
+    /// toggled-on look eases in via `face_mix`
+    /// (0 = resting stone, 1 = fully accent-tinted "on"). The face color
+    /// and accent rim fade with `face_mix`; the bevel strokes stay
+    /// instant (tactile). Callers pass an animated bool for a smooth,
+    /// non-snapping press/active transition.
+    pub fn carve_with_face(&self, painter: &egui::Painter, rect: egui::Rect,
+                           pressed: bool, face_mix: f32) {
+        let t = face_mix.clamp(0.0, 1.0);
+        let on_face = lerp(self.stone, self.accent, 0.34);
+        let face = lerp(self.stone, on_face, t);
         painter.rect_filled(rect, 0.0, face);
         let hi = egui::Stroke::new(1.0, self.stone_hi);
         let lo = egui::Stroke::new(1.0, self.stone_lo);
@@ -254,12 +288,38 @@ impl Palette {
             [rect.left_bottom(), rect.right_bottom()], bottom_right);
         painter.line_segment(
             [rect.right_top(), rect.right_bottom()], bottom_right);
-        if active {
-            // a hairline accent rim marks it "on"
+        if t > 0.003 {
+            // a hairline accent rim marks it "on" — fades with the face
+            let rim = self.accent.gamma_multiply(t);
             painter.rect_stroke(
                 rect.shrink(1.0), 0.0,
-                egui::Stroke::new(1.0, self.accent),
+                egui::Stroke::new(1.0, rim),
                 egui::StrokeKind::Inside);
+        }
+    }
+
+    /// Blend every color token from `self` toward `other` by `t`
+    /// (0 = self, 1 = other). Used for the theme-switch crossfade;
+    /// non-color identity fields (`id`/`label`/`dark`/beam flag) take
+    /// the destination (`other`).
+    pub fn lerp_to(&self, other: &Palette, t: f32) -> Palette {
+        let l = |a: Color32, b: Color32| lerp(a, b, t);
+        Palette {
+            id: other.id, label: other.label, dark: other.dark,
+            plane: l(self.plane, other.plane),
+            surface: l(self.surface, other.surface),
+            surface_2: l(self.surface_2, other.surface_2),
+            ink: l(self.ink, other.ink),
+            ink_2: l(self.ink_2, other.ink_2),
+            muted: l(self.muted, other.muted),
+            line: lerp_rgba(self.line, other.line, t),
+            line_strong: lerp_rgba(self.line_strong, other.line_strong, t),
+            accent: l(self.accent, other.accent),
+            on_accent: l(self.on_accent, other.on_accent),
+            stone: l(self.stone, other.stone),
+            stone_hi: l(self.stone_hi, other.stone_hi),
+            stone_lo: l(self.stone_lo, other.stone_lo),
+            accent_follows_beam: other.accent_follows_beam,
         }
     }
 }
@@ -279,15 +339,56 @@ fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
                       mix(a.b(), b.b()))
 }
 
+/// Lerp including the (premultiplied) alpha channel — for the hairline
+/// `line`/`line_strong` tokens, which carry a low opacity.
+fn lerp_rgba(a: Color32, b: Color32, t: f32) -> Color32 {
+    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
+    Color32::from_rgba_premultiplied(mix(a.r(), b.r()), mix(a.g(), b.g()),
+                                     mix(a.b(), b.b()), mix(a.a(), b.a()))
+}
+
+/// Public RGB lerp for callers easing a text/ink color (chrome.rs).
+pub fn lerp_ink(a: Color32, b: Color32, t: f32) -> Color32 {
+    lerp(a, b, t)
+}
+
+/// Smoothstep ease for the theme crossfade (t·t·(3−2t)).
+pub fn smoothstep(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn six_palettes_blossom_first() {
-        assert_eq!(PALETTES.len(), 6);
+    fn seven_palettes_blossom_first() {
+        assert_eq!(PALETTES.len(), 7);
         assert_eq!(PALETTES[0].id, "blossom");
         assert!(!PALETTES[0].dark, "blossom is a warm light theme");
+        // Blossom Dark sits right after blossom (the wanted dark default)
+        assert_eq!(PALETTES[1].id, "blossom_dark");
+    }
+
+    #[test]
+    fn blossom_dark_is_warm_afterglow_and_unique() {
+        let bd = palette("blossom_dark");
+        assert_eq!(bd.id, "blossom_dark");
+        assert!(bd.dark, "blossom_dark is a dark theme");
+        assert!(bd.accent_follows_beam,
+                "blossom_dark breathes with the live beam");
+        // the accent must actually move with the beam
+        assert_ne!(bd.accent, bd.with_beam([0.2, 1.0, 0.4]).accent);
+        // distinctly WARMer ground than the cool `dark` (more red than blue)
+        assert!(bd.plane.r() > bd.plane.b(),
+                "blossom_dark ground is warm wine, not cool plum-black");
+        // all ids unique across the table
+        let mut ids: Vec<&str> = PALETTES.iter().map(|p| p.id).collect();
+        let n = ids.len();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), n, "palette ids must be unique");
     }
 
     #[test]
