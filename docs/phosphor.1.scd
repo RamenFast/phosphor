@@ -9,7 +9,13 @@ phosphor - CRT-style XY oscilloscope for desktop audio
 *phosphor* [_file_]++
 *phosphor* *render* _input_ _output.mp4_ [*--rate* _N_]++
 *phosphor* *bench*++
-*phosphor* [*--mini*] [*--visitor*]
+*phosphor* *probe* [*--json*] [*--at* _ts_]++
+*phosphor* *ctl* _verb_ [_args_]++
+*phosphor* *tap*++
+*phosphor* *feed*++
+*phosphor* *kit* *validate*|*inspect* _file_++
+*phosphor* *schema*++
+*phosphor* [*--mini*] [*--visitor*] [*--background*]
 
 # DESCRIPTION
 
@@ -37,12 +43,57 @@ installs and activates it.
 	The performance regression gate: uncapped fixture renders,
 	JSON results, exit 1 on a miss.
 
-*probe*, *tap*, *ctl*, *feed*, *kit*, *studio*
-	Not built yet: these exit 2 with a short message. The agent
-	control surface (probe/tap/ctl/feed, kit validate|inspect)
-	lands in wave 3; the studio scene compiler returns in wave 4
-	(its v3 Python form was retired with v3). Track progress in
-	the GitHub issues.
+*probe* [*--json*] [*--at* _ts_]
+	One-shot live status of a running instrument: theme, mode,
+	capture state, beam. Prints *running: false* (exit 0) when no
+	GUI is up. Output is JSON on a pipe or under *--json*, human
+	text on a terminal. *--at* a past timestamp is a stub (exit 2)
+	until the studio wave.
+
+*ctl* _verb_ [_args_]
+	Drive a running instrument over its control socket
+	(_$XDG_RUNTIME_DIR/phosphor/ctl.sock_, NDJSON). Verbs:
+	*play*, *pause*, *toggle*, *stop*, *next*, *previous*, *seek*,
+	*volume*, *mode*, *theme*, *ui*, *capture* *on*|*off*,
+	*target*, *snapshot*, *clip*, *quit*. *snapshot*/*clip* return
+	the written file path.
+
+*tap*
+	Stream the live beam as NDJSON: a *hello* greeting, *frame*
+	objects (ts, mode, segments, bbox, centroid, peak, polyline,
+	trace size), and a *tick* heartbeat. Pipe it to _jq_.
+
+*feed*
+	The applet feed: stdio NDJSON, protocol verbatim from v3 (the
+	one documented exception to the envelope — no *event* field).
+	The engine-free Cinnamon applet draws from it.
+
+*kit* *validate*|*inspect* _file_
+	Check or introspect a _.phoskit_ without launching the GUI.
+	Errors are short and name the fix so a small model can repair
+	its kit in one round-trip.
+
+*schema*
+	Print the strict JSON schemas and enums for the agent surface
+	(also shipped as _docs/phoskit.schema.json_).
+
+*studio*
+	Not built yet: exits 2 with a short message. The studio scene
+	compiler returns in wave 4 (its v3 Python form was retired
+	with v3). Track progress in the GitHub issues.
+
+All agent verbs share one envelope (*status*, *tool*, *version*,
+*ts*), errors that carry a *fix*, and exit codes 0/2/3/4.
+
+# BACKGROUND MODE
+
+*phosphor --background* runs the full instrument on a private Xvfb
+display: it renders, captures, and serves the control socket, tap,
+and feed, but never maps a window on your screen and never steals
+focus (game-safe). Drive it with *ctl*/*probe*/*tap* and stop it with
+*phosphor ctl quit*. Needs _xvfb-run_ (package *xvfb*); exits 2 with
+that hint when missing. Works the same launched by hand or by an
+agent.
 
 # KEYS
 
@@ -69,10 +120,11 @@ _~/Pictures/Phosphor_, _~/Music/Phosphor_
 
 The v3 Python app shipped a *phosphor-studio* scene compiler and a
 render-ahead precompute cache; neither is in this build. The studio
-returns (in Rust) in wave 4. Precompute was retired deliberately: the
-v4 engine reconstructs in realtime on the GPU path; the decision and
-its revisit criteria are recorded in PARITY.md. The Cinnamon panel
-applet still runs its bundled v3-era engine until the wave-3 rewrite.
+is the one remaining stub — it returns (in Rust) in wave 4.
+Precompute was retired deliberately: the v4 engine reconstructs in
+realtime on the GPU path; the decision and its revisit criteria are
+recorded in PARITY.md. The Cinnamon panel applet is now engine-free
+(2.0.0): it draws from *phosphor feed* and bundles no engine code.
 
 # LICENSE
 

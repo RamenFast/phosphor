@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://phosphor.local/phoskit.schema.json",
+  "title": "phoskit",
+  "description": "A shareable Phosphor transform chain. Stages run in order; each op reads only its own keys and every value is clamped to the range below on load. Unknown ops and non-numeric params are rejected with a directive error naming the exact JSON path.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["stages"],
+  "properties": {
+    "phoskit": {
+      "description": "Format version.",
+      "const": 1
+    },
+    "name": {
+      "type": "string"
+    },
+    "author": {
+      "type": "string"
+    },
+    "stages": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": { "$ref": "#/$defs/stage" }
+    }
+  },
+  "$defs": {
+    "stage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["op"],
+      "properties": {
+        "op": {
+          "enum": ["chandelay", "matrix", "midside", "ringmod", "rotate", "wobble"]
+        },
+        "hz": { "type": "number" },
+        "angle": { "type": "number" },
+        "width": { "type": "number" },
+        "depth": { "type": "number" },
+        "a": { "type": "number" },
+        "b": { "type": "number" },
+        "c": { "type": "number" },
+        "d": { "type": "number" },
+        "ms": { "type": "number" },
+        "channel": { "type": "number" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "op": { "const": "rotate" } } },
+          "then": {
+            "properties": {
+              "hz": { "type": "number", "minimum": -4.0, "maximum": 4.0, "default": 0.05 },
+              "angle": { "type": "number", "minimum": -3.14159, "maximum": 3.14159, "default": 0.0 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "op": { "const": "midside" } } },
+          "then": {
+            "properties": {
+              "width": { "type": "number", "minimum": 0.0, "maximum": 4.0, "default": 1.4 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "op": { "const": "ringmod" } } },
+          "then": {
+            "properties": {
+              "hz": { "type": "number", "minimum": 0.0, "maximum": 30.0, "default": 3.0 },
+              "depth": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 0.2 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "op": { "const": "wobble" } } },
+          "then": {
+            "properties": {
+              "hz": { "type": "number", "minimum": 0.0, "maximum": 8.0, "default": 0.7 },
+              "depth": { "type": "number", "minimum": 0.0, "maximum": 1.5, "default": 0.35 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "op": { "const": "matrix" } } },
+          "then": {
+            "properties": {
+              "a": { "type": "number", "minimum": -2.0, "maximum": 2.0, "default": 1.0 },
+              "b": { "type": "number", "minimum": -2.0, "maximum": 2.0, "default": 0.0 },
+              "c": { "type": "number", "minimum": -2.0, "maximum": 2.0, "default": 0.0 },
+              "d": { "type": "number", "minimum": -2.0, "maximum": 2.0, "default": 1.0 }
+            }
+          }
+        },
+        {
+          "if": { "properties": { "op": { "const": "chandelay" } } },
+          "then": {
+            "properties": {
+              "ms": { "type": "number", "minimum": 0.0, "maximum": 50.0, "default": 5.0 },
+              "channel": { "type": "number", "minimum": 0.0, "maximum": 1.0, "default": 1.0 }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

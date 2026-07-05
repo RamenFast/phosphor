@@ -152,14 +152,28 @@ async). Also note: v3 profiles may carry `renderer=cairo` (chosen for
 the pre-2.5 washout) — the GPU renderer is the intended default and
 runs 480-locked where cairo sags to 52.
 
-**Wave 3 (V4PLAN steps 10–14): agents & the panel.** DONE so far: the
-engine-free applet fed by `phosphor feed` (issue #3, wave 3.1).
-REMAINING: **#4** control socket (Unix NDJSON `ctl`/`tap`/`probe
---at`; the applet can migrate off stdio onto it), **#5** the CPU-raster
-worker thread (below), **#6** the mixing UI, **#7** the docs rewrite
-(MANUAL.md is 4+ releases stale; "pantomime" gets its home). Kit
-validate/inspect CLI + shipped JSON schemas still owed (Ben's bedtime
-law: a 7B model repairs its kit in one round-trip).
+**Wave 3 (V4PLAN steps 10–14): agents & the panel.** DONE: the
+engine-free applet fed by `phosphor feed` (issue #3, wave 3.1) AND
+**#4** the control socket + agent CLI (wave 3.2). REMAINING: **#5**
+the CPU-raster worker thread (below), **#6** the mixing UI, **#7** the
+docs rewrite (MANUAL.md is 4+ releases stale; "pantomime" gets its
+home).
+
+**Wave 3.2 shipped (issue #4).** The agent CLI is live: `probe`
+(live status one-shot, `--json`, `running:false` when no GUI; `--at`
+still a stub → studio wave), `ctl <verb>` (play/pause/toggle/stop/
+next/previous/seek/volume/mode/theme/ui/capture/target/snapshot/clip/
+quit), `tap` (NDJSON: hello, frame, tick heartbeat), `kit validate|
+inspect`, `schema` (strict schemas + enums; `docs/phoskit.schema.json`).
+Envelope `{status,tool,version,ts}`, fix-bearing errors, exit 0/2/3/4,
+isatty auto-switch. Control socket at `$XDG_RUNTIME_DIR/phosphor/
+ctl.sock` (NDJSON). Two patterns worth remembering: an **EventLoopProxy
+wake** so `ctl` reaches the GUI even when it's quiet-asleep (zero-GPU
+tick state), and a **deferred-reply** for `snapshot`/`clip` — the
+socket reply waits until the offline render writes the file, then
+returns its path. `feed` stays the locked v3-verbatim applet protocol
+(documented exception: no `event` field). Kit-repair law kept: a 7B
+model fixes its kit in one round-trip.
 Also fold in PARITY.md's deferrals: kit EDITOR dialog, cover-art
 display, postcard-export dialog, window position restore, corner-drag
 mini resize. v3 stays installed until wave 4's checklist deletes it.
