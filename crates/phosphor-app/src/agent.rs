@@ -176,6 +176,58 @@ fn request(stream: UnixStream, message: &Value, timeout: Duration)
 }
 
 // ---------------------------------------------------------------------------
+// single-instance forward (called from main before spawning a window)
+// ---------------------------------------------------------------------------
+
+/// A plain GUI launch while an instance is live becomes a focus (+ an
+/// `open` when a file was passed). `None` = no live instance, launch
+/// normally. `Some(code)` = handled here, exit with it.
+pub fn forward_to_running_instance(play_path: Option<&str>) -> Option<i32> {
+    let stream = connect().ok()?;
+    let raise = request(
+        stream,
+        &json!({"op": "ctl", "verb": "raise"}),
+        Duration::from_secs(3),
+    );
+    match raise {
+        Ok(reply)
+            if reply.get("status").and_then(Value::as_str) == Some("ok") =>
+        {
+            if let Some(path) = play_path {
+                // canonicalize client-side: the running instance has a
+                // different cwd, so a relative path would miss
+                let absolute = std::fs::canonicalize(path)
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|_| path.to_string());
+                if let Ok(stream) = connect() {
+                    let _ = request(
+                        stream,
+                        &json!({"op": "ctl", "verb": "open",
+                                "args": {"path": absolute}}),
+                        Duration::from_secs(5),
+                    );
+                }
+            }
+            eprintln!(
+                "phosphor: already running — focused the existing window"
+            );
+            Some(0)
+        }
+        _ => {
+            // A socket answered but raise didn't: hung or ancient
+            // build. Spawning a second window on top would be worse —
+            // say what to do instead.
+            eprintln!(
+                "phosphor: an instance is already running but did not \
+                 respond\n  fix: focus it manually, or `phosphor ctl \
+                 quit` and relaunch"
+            );
+            Some(2)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // probe
 // ---------------------------------------------------------------------------
 
@@ -308,6 +360,7 @@ usage: phosphor ctl <verb> [value] [--json]
   seek <±seconds>    volume <0..1>
   mode <name>        theme <name>        ui <style>
   capture on|off     target <id>
+  open <path>        raise
   snapshot           clip                quit";
 
 /// Map a positional CLI verb + args to the frozen wire message
@@ -320,7 +373,13 @@ fn build_ctl_message(verb: &str, rest: &[&str]) -> Result<Value, String> {
             None => json!({}),
         },
         "pause" | "toggle" | "stop" | "next" | "previous" | "snapshot"
-        | "clip" | "quit" => json!({}),
+        | "clip" | "raise" | "quit" => json!({}),
+        "open" => {
+            let path = rest
+                .first()
+                .ok_or("open needs a path, e.g. `open /music/song.flac`")?;
+            json!({ "path": path })
+        }
         "seek" => {
             let seconds = rest
                 .first()
@@ -489,7 +548,7 @@ fn print_ctl_confirmation(verb: &str, rest: &[&str], reply: &Value) {
     }
     match verb {
         "seek" | "volume" | "mode" | "theme" | "ui" | "capture" | "target"
-        | "play" => {
+        | "play" | "open" => {
             if let Some(value) = rest.first() {
                 println!("{verb} → {value}");
             } else {
@@ -594,6 +653,10 @@ fn schema_document() -> Value {
             "on": {"type": "boolean"},
             "target_id": {"type": ["integer", "string", "null"]},
         })),
+        "source": strict_object(json!({
+            "kind": {"enum": ["capture", "mix", "player", "silent"]},
+            "detail": {"type": ["string", "null"]},
+        })),
         "player": strict_object(json!({
             "track": {"type": ["string", "null"]},
             "title": {"type": ["string", "null"]},
@@ -680,6 +743,9 @@ fn schema_document() -> Value {
                     "ui": {"args": {"name": "string (see enums.ui_styles)"}},
                     "capture": {"args": {"on": "bool"}},
                     "target": {"args": {"id": "integer|string"}},
+                    "raise": {"args": {}, "note": "focus + deiconify the window"},
+                    "open": {"args": {"path": "audio file path"},
+                             "note": "load into the player and focus"},
                     "snapshot": {"args": {}, "note": "reply deferred until PNG lands"},
                     "clip": {"args": {}, "note": "reply deferred until mp4 lands"},
                     "quit": {"args": {}},

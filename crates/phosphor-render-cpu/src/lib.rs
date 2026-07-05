@@ -49,6 +49,10 @@ pub struct CpuRenderer {
     pub grid_enabled: bool,
     pub grid_spacing_fraction: f32,
     pub scope_alpha: f32,
+    /// Display px per logical point × the live resolution fraction.
+    /// σ carries it so the on-screen beam width equals `beam_focus`
+    /// logical px at any DPI/resolution (v3 law); offline stays 1.0.
+    pub display_scale: f32,
     /// Emit premultiplied alpha (for compositors that want it).
     pub premultiplied: bool,
 }
@@ -76,6 +80,7 @@ impl CpuRenderer {
             grid_enabled: true,
             grid_spacing_fraction: 0.1125,
             scope_alpha: 1.0,
+            display_scale: 1.0,
             premultiplied: false,
         }
     }
@@ -126,7 +131,9 @@ impl CpuRenderer {
             return;
         }
         let pixel_scale = self.supersample as f32;
-        let sigma = beam_sigma(self.beam_focus, pixel_scale);
+        // positions are in trace px — only σ carries the display scale
+        let sigma = beam_sigma(self.beam_focus,
+                               pixel_scale * self.display_scale.max(0.1));
         let radius = beam_radius(sigma);
         let normalization = beam_normalization(self.beam_focus);
 

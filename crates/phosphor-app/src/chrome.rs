@@ -129,23 +129,31 @@ impl Shell {
 
             // pack_end order, right → left
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let kind_icon = match self.settings.target_id.as_deref() {
-                    Some(id) if id.starts_with("app:") => icon::MUSIC_NOTE,
-                    Some(id) if id.ends_with(".monitor") => icon::SPEAKER_HIGH,
-                    Some(_) => icon::MICROPHONE,
-                    None => icon::SPEAKER_HIGH,
+                // icon + label render the LIVE beam source, not the
+                // remembered target id — the two drifted once (the
+                // "Spotify still selected" bug) and never again
+                use crate::shell::BeamSource;
+                let kind_icon = match &self.beam_source {
+                    BeamSource::Player { .. } => icon::PLAY,
+                    BeamSource::Mix { .. } => icon::STACK,
+                    BeamSource::Capture { combo_id } => {
+                        if combo_id.starts_with("app:") {
+                            icon::MUSIC_NOTE
+                        } else if combo_id.ends_with(".monitor") {
+                            icon::SPEAKER_HIGH
+                        } else {
+                            icon::MICROPHONE
+                        }
+                    }
+                    BeamSource::Silent => icon::SPEAKER_X,
                 };
                 ui.label(kind_icon);
 
-                let selected_label = self
-                    .target_cache
-                    .iter()
-                    .find(|t| Some(t.combo_id()) == self.settings.target_id)
-                    .map(|t| t.label.clone())
-                    .unwrap_or_else(|| {
-                        self.settings.target_id.clone()
-                            .unwrap_or_else(|| "—".into())
-                    });
+                let selected_label = self.beam_source.combo_label(|id| {
+                    self.target_cache.iter()
+                        .find(|t| t.combo_id() == id)
+                        .map(|t| t.label.clone())
+                });
                 egui::ComboBox::from_id_salt("target")
                     .width(240.0)
                     .selected_text(selected_label)
@@ -153,8 +161,12 @@ impl Shell {
                         let mut clicked = None;
                         for target in &self.target_cache {
                             let id = target.combo_id();
-                            let checked =
-                                Some(&id) == self.settings.target_id.as_ref();
+                            // the check marks what actually FEEDS the
+                            // beam — nothing is checked while a file
+                            // plays (that was the ghost-selection bug)
+                            let checked = matches!(&self.beam_source,
+                                BeamSource::Capture { combo_id }
+                                    if *combo_id == id);
                             if ui.selectable_label(checked, &target.label)
                                 .clicked()
                             {
@@ -946,7 +958,28 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
 
     /// The context menu (§5.1 tree; items land as their passes do).
     pub(crate) fn ui_context_menu(&mut self, response: &egui::Response) {
-        response.context_menu(|ui| {
+        // In mini the window is a 200–520 px square: the full menu
+        // overflows it, so the mini menu is COMPACT (watching controls
+        // only) and scrolls inside the window instead of spilling out.
+        let compact = self.is_mini;
+        let max_height = (self.scope_rect.height() - 24.0).max(120.0);
+        let opened = response
+            .context_menu(|ui| {
+                if compact {
+                    ui.set_max_width(230.0);
+                    egui::ScrollArea::vertical()
+                        .max_height(max_height)
+                        .show(ui, |ui| self.context_menu_items(ui, true));
+                } else {
+                    self.context_menu_items(ui, false);
+                }
+            })
+            .is_some();
+        self.context_menu_open = opened;
+    }
+
+    fn context_menu_items(&mut self, ui: &mut egui::Ui, compact: bool) {
+        {
             let capture_label = if self.capture_on {
                 "Pause capture"
             } else {
@@ -974,7 +1007,7 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                     ui.close();
                 }
             }
-            if ui.button("Play audio file…  (O)").clicked() {
+            if !compact && ui.button("Play audio file…  (O)").clicked() {
                 self.actions.push(UiAction::OpenFile);
                 ui.close();
             }
@@ -1036,7 +1069,7 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                     .is_some_and(|p| p.extension()
                         .and_then(|e| e.to_str())
                         .is_some_and(|e| e.eq_ignore_ascii_case("phos")));
-                if !is_phos
+                if !compact && !is_phos
                     && ui.button("Export signal postcard…").clicked()
                 {
                     self.actions.push(UiAction::OpenPostcard);
@@ -1066,7 +1099,7 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                 self.actions.push(UiAction::SaveSnapshot);
                 ui.close();
             }
-            if ui.button("Save last 10 s  (C)").clicked() {
+            if !compact && ui.button("Save last 10 s  (C)").clicked() {
                 self.actions.push(UiAction::SaveClip);
                 ui.close();
             }
@@ -1094,21 +1127,23 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                     }
                 }
             });
-            if ui.checkbox(&mut self.settings.grid_enabled, "Grid  (G)")
-                .clicked()
-            {
-                self.actions.push(UiAction::RenderTuning);
-                ui.close();
-            }
-            if ui.checkbox(&mut self.settings.show_fps, "Show FPS  (F)")
-                .clicked()
-            {
-                ui.close();
-            }
-            if ui.checkbox(&mut self.settings.auto_gain,
-                           "Auto gain — fit to screen").clicked() {
-                self.actions.push(UiAction::SignalTuning);
-                ui.close();
+            if !compact {
+                if ui.checkbox(&mut self.settings.grid_enabled, "Grid  (G)")
+                    .clicked()
+                {
+                    self.actions.push(UiAction::RenderTuning);
+                    ui.close();
+                }
+                if ui.checkbox(&mut self.settings.show_fps, "Show FPS  (F)")
+                    .clicked()
+                {
+                    ui.close();
+                }
+                if ui.checkbox(&mut self.settings.auto_gain,
+                               "Auto gain — fit to screen").clicked() {
+                    self.actions.push(UiAction::SignalTuning);
+                    ui.close();
+                }
             }
             if ui.checkbox(&mut self.settings.scope_glass,
                            "Glass scope — transparent background")
@@ -1117,10 +1152,12 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                 self.actions.push(UiAction::RenderTuning);
                 ui.close();
             }
-            let mut pinned = self.settings.pinned;
-            if ui.checkbox(&mut pinned, "Pin above  (P)").clicked() {
-                self.actions.push(UiAction::PinToggle);
-                ui.close();
+            if !compact {
+                let mut pinned = self.settings.pinned;
+                if ui.checkbox(&mut pinned, "Pin above  (P)").clicked() {
+                    self.actions.push(UiAction::PinToggle);
+                    ui.close();
+                }
             }
             ui.separator();
             if self.is_mini {
@@ -1170,7 +1207,7 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                 self.actions.push(UiAction::Quit);
                 ui.close();
             }
-        });
+        }
     }
 
     /// Refresh the toolbar's target list (§4.3 semantics: rebuild,

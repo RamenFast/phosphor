@@ -17,9 +17,10 @@ const OPS_FIX: &str = "see docs/phoskit.schema.json; ops: rotate, midside, \
                        ringmod, wobble, matrix, chandelay";
 
 const USAGE: &str = "\
-usage: phosphor kit <validate|inspect> <file.phoskit> [--json]
+usage: phosphor kit <validate|inspect> <file.phoskit>… [--json]
   validate   is this a well-formed kit?  (ok | error+fix)
-  inspect    list its stages, params, and what each op does";
+  inspect    list its stages, params, and what each op does
+  several files: each is reported; exit reflects the worst";
 
 fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -80,22 +81,31 @@ pub fn run(args: &[String]) -> i32 {
             return 3;
         }
     };
-    let file = match positional.get(1) {
-        Some(file) => *file,
-        None => {
-            eprintln!("phosphor kit: {verb} needs a file\n{USAGE}");
-            return 3;
-        }
+    let files = &positional[1..];
+    if files.is_empty() {
+        eprintln!("phosphor kit: {verb} needs a file\n{USAGE}");
+        return 3;
+    }
+
+    let apply = |file: &str| match verb {
+        "validate" => Ok(validate(Path::new(file), json)),
+        "inspect" => Ok(inspect(Path::new(file), json)),
+        other => Err(other.to_string()),
     };
 
-    match verb {
-        "validate" => validate(Path::new(file), json),
-        "inspect" => inspect(Path::new(file), json),
-        other => {
-            eprintln!("phosphor kit: unknown verb '{other}'\n{USAGE}");
-            3
+    // Every named file is processed (it used to silently take the
+    // first); the exit code is the worst one seen.
+    let mut worst = 0;
+    for file in files {
+        match apply(file) {
+            Ok(code) => worst = worst.max(code),
+            Err(other) => {
+                eprintln!("phosphor kit: unknown verb '{other}'\n{USAGE}");
+                return 3;
+            }
         }
     }
+    worst
 }
 
 /// exit 3 if the file is missing/unreadable (usage-grade), else 4 if it
