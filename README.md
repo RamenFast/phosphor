@@ -21,6 +21,13 @@ a colored glow that lingers.
 > The animation above is a real Phosphor capture, exported straight from
 > the app's own clip recorder.
 
+> **v4 status (July 2026):** a full-Rust rewrite (egui + wgpu + native
+> PipeWire, one engine, ≥2× fps on both renderers) lives in `crates/`
+> and is daily-drivable — build it with `cargo build --release`. The
+> Python v3 app below remains what the released `.deb` installs until
+> the v4.0.0 release replaces it. Screenshots and the manual describe
+> v3 for now.
+
 ## Drawn by sound
 
 Each shape below is just a stereo audio file, traced live by the beam —

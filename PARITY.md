@@ -84,6 +84,34 @@ header + playback), window position restore. Aero-coupling retired
 **Deferrals now: {compose → studio panel (wave 4), applet (wave 3),
 timeline (wave 4)}.** Everything else from Ben's list is done.
 
+## Wave 2.6 — compose + the confidence pass (2026-07-04)
+
+Ben pulled compose forward from the wave-4 deferral; the rest is the
+audit-driven polish wave. Receipts (all live, scratch HOME, XTEST):
+
+| Item | State | Receipt |
+|---|---|---|
+| Compose mode (draw → hear, full v3 semantics) | ✅ | square drawn via XTEST redraws EXACTLY in place (preview + playback screenshots align); loop WAV = 1 s whole cycles at 96 k; toolbar ✏ status verbatim |
+| Compose math in phosphor-dsp (studio reuses it) | ✅ | 8 unit tests: constant-speed on a square (edge lengths exact to 1e-12), closure, clamp 20–400, 16-sample floor, smoothing centroid-invariant |
+| Scroll-retune (×1.06/notch, 300 ms debounce) | ✅ | status 80→161 Hz; wav bytes re-pinned: detected cycle 596 = 161.07 Hz |
+| **Scope wheel was DEAD (wave-2 regression)** | ✅ fixed | `wants_pointer_input()` counts the CentralPanel → over_ui always true → gain/dolly/mini-resize/retune wheels all dead. Now gated on the scope response's own occlusion-aware `hovered()`. Receipt: gain 15%→35% by wheel over Attack Vector |
+| **Space during playback = pause (v3 law)** | ✅ fixed | v4 started device capture OVER the playing track (double-feed chaos — found on Ben's "use the real songs" receipt). Now capture-toggle while a track is loaded is play/pause: froze at 0:08, resumed to 0:10 |
+| Auto-gain AGC (was checkbox-only, no AGC ran) | ✅ | 0.1-amplitude circle fills at the 6.0 clamp (~6× measured); Attack Vector (peak 1.0) correctly untouched; slider greys |
+| .phoskit drag-drop import (v3.2 parity, was a stub toast) | ✅ | validate → install to user kits dir → activate; broken kit toasts its error, never lands |
+| Crash-proofing | ✅ | kit-save toast unwrap, theme-fallback unwrap, broken-kit now warns (stderr + KitChanged toast), clip-export ffmpeg stderr tail captured, vacuum pactl return codes checked (the v3 law) |
+| Snapshot + clip on real content | ✅ | snapshot toast while composing; 10.00 s clip of Attack Vector's cube tunnel (6.5 MB mp4, audio muxed) via the new stderr-piped encoder |
+| Test coverage | ✅ | keyboard map/Konami/escape-cascade pinned (5 tests), engine vacuum sweep parse + metadata parse (3 tests); workspace 74 passed, clippy silent |
+| Permanent gates | ✅ | bench ALL PASS (144.2/25.4/1602.4 vs 79/6/326 on the reduced set run); vacuum gate.sh 12/12 |
+
+Deferral note: the context-menu "Export drawing as WAV (10 s)" item
+ships and renders (screenshot receipt); its click handler is three
+lines into the export machinery proven live by the snapshot toast —
+the literal menu click could not be XTEST-verified (menu automation
+raced Ben's live mouse). First human use will receipt it.
+
+**Deferrals now: {compose studio-panel integration (wave 4), applet
+(wave 3), timeline (wave 4)}.**
+
 ## The one receipt that matters
 
 Ben daily-drives it for an evening: capture, vacuum, media keys,

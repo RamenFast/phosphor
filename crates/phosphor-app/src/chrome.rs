@@ -735,6 +735,44 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
         }
     }
 
+    /// Drag-dropped .phoskit: validate, install into the user kit
+    /// directory, activate, and light the switch (v3
+    /// phosphor_kit.install — a broken kit never lands).
+    pub(crate) fn import_kit_file(&mut self, source: &std::path::Path) {
+        let basename = source.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| source.to_string_lossy().to_string());
+        if let Err(error) = phosphor_proto::phoskit::load(source) {
+            self.toast_now(format!(
+                "kit import failed: {basename} — {error}"));
+            return;
+        }
+        let home = std::env::var_os("HOME").unwrap_or_default();
+        let directory = std::path::PathBuf::from(home)
+            .join(".local/share/phosphor/kits");
+        let destination = directory.join(&basename);
+        let result = std::fs::create_dir_all(&directory)
+            .and_then(|()| {
+                if source.canonicalize().ok()
+                    != destination.canonicalize().ok()
+                {
+                    std::fs::copy(source, &destination)?;
+                }
+                Ok(())
+            });
+        if let Err(error) = result {
+            self.toast_now(format!(
+                "kit import failed: {basename} — {error}"));
+            return;
+        }
+        self.settings.kit_path =
+            Some(destination.to_string_lossy().to_string());
+        self.settings.kit_enabled = true;
+        self.actions.push(UiAction::KitChanged);
+        self.actions.push(UiAction::SaveSettings);
+        self.toast_now(format!("kit installed: {basename}"));
+    }
+
     fn editor_working_path() -> std::path::PathBuf {
         let home = std::env::var_os("HOME").unwrap_or_default();
         std::path::PathBuf::from(home)
@@ -772,8 +810,11 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                 self.settings.kit_enabled = true;
                 self.actions.push(UiAction::KitChanged);
                 self.actions.push(UiAction::SaveSettings);
-                self.toast_now(format!("saved {}",
-                    path.file_name().unwrap().to_string_lossy()));
+                let name = path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| path.to_string_lossy()
+                        .to_string());
+                self.toast_now(format!("saved {name}"));
             }
             Err(error) => self.toast_now(error),
         }
@@ -931,6 +972,13 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
             if !self.is_mini {
                 if ui.button("Compose · draw a shape  (D)").clicked() {
                     self.actions.push(UiAction::ComposeToggle);
+                    ui.close();
+                }
+                if self.composing && self.compose_loop_points.is_some()
+                    && ui.button("Export drawing as WAV  (10 s)")
+                        .clicked()
+                {
+                    self.actions.push(UiAction::ExportDrawing);
                     ui.close();
                 }
                 let mut panel = self.player.panel_open;

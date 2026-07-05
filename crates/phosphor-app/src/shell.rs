@@ -117,6 +117,8 @@ pub(crate) enum UiAction {
     PlayerVacuumToggled,
     GaplessRequeue,
     ComposeToggle,
+    /// context menu while composing: the 10 s shareable WAV
+    ExportDrawing,
     MiniToggle,
     PinToggle,
     FullscreenToggle,
@@ -140,7 +142,7 @@ pub struct Shell {
     renderer_choice: RendererChoice,
 
     graphics: Option<Graphics>,
-    scope_rect: egui::Rect,
+    pub(crate) scope_rect: egui::Rect,
     pub(crate) actions: Vec<UiAction>,
     pub(crate) target_cache: Vec<phosphor_audio::CaptureTarget>,
     pub(crate) settings_panel_open: bool,
@@ -164,6 +166,22 @@ pub struct Shell {
     pub(crate) camera_dolly: f64,
     pub(crate) orbit_last_interaction: Instant,
     pub(crate) composing: bool,
+    /// pointer currently down, stroke in progress (compose mode)
+    pub(crate) compose_drawing: bool,
+    /// the in-progress stroke, egui logical coords (absolute)
+    pub(crate) compose_stroke: Vec<egui::Pos2>,
+    /// finished shape in signal space — what the loop replays
+    pub(crate) compose_loop_points: Option<Vec<(f64, f64)>>,
+    /// scroll-retune debounce deadline (300 ms, v3 law)
+    pub(crate) compose_retune_due: Option<Instant>,
+    /// AGC: the gain actually driving the computer (v3 _effective_gain
+    /// — equals settings.gain unless auto-gain is gliding it)
+    pub(crate) effective_gain: f32,
+    /// AGC peak tracker: instant attack, slow release (v3 law)
+    auto_gain_peak: f32,
+    /// gain the graticule was last derived at (re-derive on >2% moves
+    /// only, so auto-gain's tiny per-frame glides stay free — v3 law)
+    grid_gain: f32,
     pub(crate) is_mini: bool,
     pub(crate) is_fullscreen: bool,
     /// (size, position) to restore when leaving mini
@@ -181,11 +199,20 @@ pub struct Shell {
     /// pending square-enforcement side after a mini corner resize
     mini_resquare: Option<i64>,
     cursor_position: (f64, f64),
+    /// pointer over the scope widget last frame (egui occlusion-aware:
+    /// false under chrome, panels, or floating dialogs) — the wheel
+    /// gate. `wants_pointer_input()` was WRONG here: the CentralPanel
+    /// counts as an egui area, so it was true over the bare scope and
+    /// silently killed every scope-wheel behavior (found live by the
+    /// compose-retune receipt; gain/dolly/mini-resize wheels rode the
+    /// same dead branch).
+    scope_hovered: bool,
     mini_last_click: Option<Instant>,
     /// the Konami visitor swim (verbatim v3 turtle)
     visitor_started: Option<Instant>,
-    exporting: bool,
-    export_results: Option<mpsc::Receiver<Result<std::path::PathBuf, String>>>,
+    pub(crate) exporting: bool,
+    pub(crate) export_results:
+        Option<mpsc::Receiver<Result<std::path::PathBuf, String>>>,
     mpris: Option<crate::mpris::MprisHandle>,
 
     // quiet law state
@@ -197,7 +224,7 @@ pub struct Shell {
     monitor_hz: f64,
     next_frame_due: Option<Instant>,
     next_frame_anchor: Option<Instant>,
-    chrome_dirty: bool,
+    pub(crate) chrome_dirty: bool,
     last_frame_time: Option<Instant>,
     started: Instant,
     fps_frames: u32,
@@ -223,6 +250,7 @@ impl Shell {
 
         let computer = build_computer(&settings, settings.scope_sample_rate)
             .map_err(|(_, message)| message)?;
+        let initial_gain = settings.gain;
         let renderer_choice = if settings.renderer == "cairo" {
             RendererChoice::Cpu
         } else {
@@ -255,6 +283,13 @@ impl Shell {
             camera_dolly: 3.2,
             orbit_last_interaction: Instant::now(),
             composing: false,
+            compose_drawing: false,
+            compose_stroke: Vec::new(),
+            compose_loop_points: None,
+            compose_retune_due: None,
+            effective_gain: initial_gain,
+            auto_gain_peak: 0.0,
+            grid_gain: initial_gain,
             is_mini: false,
             is_fullscreen: false,
             normal_geometry: None,
@@ -265,6 +300,7 @@ impl Shell {
             text_focus_ids: std::collections::HashSet::new(),
             mini_resquare: None,
             cursor_position: (0.0, 0.0),
+            scope_hovered: false,
             mini_last_click: None,
             visitor_started: None,
             exporting: false,
@@ -434,6 +470,24 @@ impl Shell {
         for action in actions {
             match action {
                 UiAction::CaptureOn => {
+                    if self.player.playing.is_some() {
+                        // v3 law (phosphor.py capture-toggle): while a
+                        // track is loaded the toggle is PLAY/PAUSE —
+                        // Space muscle memory. Starting device capture
+                        // over the playing track double-feeds the ring
+                        // (found live: the Attack Vector receipt drew
+                        // both streams at once).
+                        let paused = !self.player.paused;
+                        self.engine.set_playback_paused(paused);
+                        self.player.paused = paused;
+                        self.set_mpris_status(
+                            if paused { "Paused" } else { "Playing" });
+                        self.wake_render_loop();
+                        continue;
+                    }
+                    // starting capture leaves compose; the new stream
+                    // replaces the loop, no explicit stop (v3 law)
+                    self.exit_compose(false);
                     self.start_capture_from_settings();
                 }
                 UiAction::CaptureOff => {
@@ -444,6 +498,11 @@ impl Shell {
                 UiAction::TargetPicked(combo_id) => {
                     // switching away restores the sound (v3 law)
                     self.engine.vacuum_release();
+                    if self.composing {
+                        // picking a target while composing only
+                        // records it — the loop keeps playing (v3)
+                        continue;
+                    }
                     if self.engine.is_playing_file() {
                         self.engine.stop_playback();
                     }
@@ -473,6 +532,16 @@ impl Shell {
                         self.computer = computer;
                         self.push_camera();
                     }
+                    // a broken kit renders plain, never silently: the
+                    // user just picked it — say so (audit: the CLI
+                    // path warns on stderr, the GUI needs a toast)
+                    if self.settings.kit_enabled
+                        && let Some(path) = &self.settings.kit_path
+                        && let Err(error) = phosphor_proto::phoskit::load(
+                            std::path::Path::new(path))
+                    {
+                        self.toast_now(format!("kit ignored: {error}"));
+                    }
                     self.settings.save(&default_path()).ok();
                 }
                 UiAction::ModeChanged => {
@@ -484,8 +553,15 @@ impl Shell {
                     self.settings.save(&default_path()).ok();
                 }
                 UiAction::SignalTuning => {
-                    self.computer.gain = self.settings.gain;
                     self.computer.beam_energy = self.settings.beam_energy;
+                    if self.settings.auto_gain {
+                        // re-measure from the next sound (v3 law);
+                        // the glide picks up from wherever it was
+                        self.auto_gain_peak = 0.0;
+                    } else {
+                        self.effective_gain = self.settings.gain;
+                        self.computer.gain = self.settings.gain;
+                    }
                 }
                 UiAction::RenderTuning => {
                     self.apply_render_settings(graphics);
@@ -586,8 +662,14 @@ impl Shell {
                 }
                 UiAction::GaplessRequeue => self.queue_gapless_next(),
                 UiAction::ComposeToggle => {
-                    self.status_line =
-                        "compose mode lands in chrome pass iv".into();
+                    if self.composing {
+                        self.exit_compose(true);
+                    } else {
+                        self.enter_compose();
+                    }
+                }
+                UiAction::ExportDrawing => {
+                    self.export_compose_drawing();
                 }
                 UiAction::MiniToggle => {
                     let enable = !self.is_mini;
@@ -1061,6 +1143,23 @@ impl Shell {
         }
     }
 
+    /// Autosize: scale the trace to fill the screen (v3
+    /// _update_auto_gain, constants verbatim). The tracked peak
+    /// attacks instantly (nothing clips off-screen) and releases
+    /// slowly, and the applied gain glides so the picture breathes
+    /// rather than jumping between loud and quiet passages.
+    fn update_auto_gain(&mut self, peak: f32) {
+        if !self.settings.auto_gain {
+            return;
+        }
+        self.auto_gain_peak = peak.max(self.auto_gain_peak * 0.999);
+        let target = (0.92 / self.auto_gain_peak.max(0.01))
+            .clamp(0.1, 6.0);
+        self.effective_gain +=
+            (target - self.effective_gain) * 0.05;
+        self.computer.gain = self.effective_gain;
+    }
+
     fn start_capture_from_settings(&mut self) {
         let target = self
             .settings
@@ -1140,9 +1239,25 @@ impl Shell {
                     targets_dirty = true;
                 }
                 AudioEvent::PlaybackEnded => {
+                    if self.composing {
+                        // the drawn loop repeats forever; if its
+                        // decoder dies it was killed externally —
+                        // just invite another stroke (v3 law)
+                        self.status_line =
+                            "✏ loop stopped — draw to start again"
+                                .into();
+                        self.chrome_dirty = true;
+                        continue;
+                    }
                     self.handle_track_finished();
                 }
                 AudioEvent::TrackStarted { path } => {
+                    if self.composing {
+                        // the compose loop is not a track: no player
+                        // bookkeeping, no overlay, no MPRIS
+                        self.chrome_dirty = true;
+                        continue;
+                    }
                     // gapless splice moved us forward: sync the index
                     if let Some(index) = self.player.playlist
                         .iter().position(|p| p == &path)
@@ -1231,7 +1346,12 @@ impl Shell {
             self.push_camera();
         }
 
-        // ---- samples + quiet law (visitor overrides the sleep) ----
+        // ---- compose: debounced scroll-retune regenerates the loop ----
+        self.service_compose_retune();
+
+        // ---- samples + quiet law (visitor overrides the sleep; a
+        // stroke in progress previews as segments and drains any
+        // still-playing loop audio so it can't burst in later) ----
         let samples = self.engine.take_stereo_samples();
         let visitor_active = self
             .visitor_started
@@ -1245,6 +1365,7 @@ impl Shell {
             let peak = samples
                 .iter()
                 .fold(0.0f32, |peak, s| peak.max(s.abs()));
+            self.update_auto_gain(peak);
             let is_quiet = peak < QUIET_PEAK_THRESHOLD;
             self.quiet_frame_count =
                 if is_quiet { self.quiet_frame_count + 1 } else { 0 };
@@ -1256,7 +1377,7 @@ impl Shell {
         } else {
             self.render_loop_active = false;
             false
-        } || visitor_active;
+        } || visitor_active || self.compose_drawing;
 
         let Some(mut graphics) = self.graphics.take() else {
             return false;
@@ -1330,9 +1451,37 @@ impl Shell {
             (scope_width, scope_height)
         };
         if advancing {
-            let mut segments: Vec<[f32; 5]> = self.computer.compute(
-                samples, trace_w as f32, trace_h as f32)
-                .to_vec();
+            // the graticule tracks gain (volts/div); re-derive it only
+            // on real movement so auto-gain's per-frame glides and the
+            // wheel's small steps stay free (v3: 2% threshold)
+            let live_gain = if self.settings.auto_gain {
+                self.effective_gain
+            } else {
+                self.settings.gain
+            };
+            if (live_gain - self.grid_gain).abs()
+                > self.grid_gain.abs() * 0.02
+            {
+                self.grid_gain = live_gain;
+                let fraction =
+                    phosphor_beam::grid_spacing_fraction(live_gain);
+                if let Some(gpu) = graphics.scope_gpu.as_mut() {
+                    gpu.grid_spacing_fraction = fraction;
+                }
+                if let Some(cpu) = graphics.scope_cpu.as_mut() {
+                    cpu.renderer.grid_spacing_fraction = fraction;
+                }
+            }
+            let mut segments: Vec<[f32; 5]> = if self.compose_drawing {
+                // the stroke in progress previews directly as
+                // segments (the audio was already drained this tick)
+                self.compose_preview_segments(
+                    trace_w as f32, trace_h as f32)
+            } else {
+                self.computer.compute(
+                    samples, trace_w as f32, trace_h as f32)
+                    .to_vec()
+            };
             // the visitor swims OVER whatever the audio draws
             if let Some(started) = self.visitor_started {
                 segments.extend(crate::exports::visitor_segments(
@@ -1424,9 +1573,15 @@ impl Shell {
                 let scope_response = ui.interact(
                     scope_rect_out, ui.id().with("scope"),
                     egui::Sense::click_and_drag());
+                self.scope_hovered = scope_response.hovered();
                 self.ui_context_menu(&scope_response);
                 if scope_response.double_clicked() && self.is_mini {
                     self.actions.push(UiAction::MiniToggle);
+                }
+                // compose: the pointer draws (desktop only, like v3);
+                // compose forces XY so orbit-drag can't collide
+                if self.composing && !self.is_mini {
+                    self.compose_pointer(ui, &scope_response);
                 }
                 // drag-to-orbit (3D, desktop only — mini blocks drag,
                 // the v3 asymmetry; wheel-dolly still works in mini)
@@ -1707,6 +1862,15 @@ impl ApplicationHandler for Shell {
             WindowEvent::MouseInput {
                 state: winit::event::ElementState::Pressed,
                 button: winit::event::MouseButton::Left, ..
+            } if self.composing && !self.is_mini => {
+                // the render loop may be asleep between strokes; a
+                // press must wake it or egui never sees the drag
+                // start (v3: press itself started the render loop)
+                self.wake_render_loop();
+            }
+            WindowEvent::MouseInput {
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left, ..
             } if self.is_mini => {
                 // Mini owns left-press: corner 26 px = WM resize, a
                 // quick second click = restore, anywhere else = WM
@@ -1766,10 +1930,12 @@ impl ApplicationHandler for Shell {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                let over_ui = self.graphics.as_ref()
-                    .map(|g| g.egui_ctx.wants_pointer_input())
-                    .unwrap_or(false);
-                if !over_ui {
+                // scope-wheel gate: the scope widget's own hover state
+                // (occlusion-aware, from the last egui pass). NOT
+                // wants_pointer_input() — the CentralPanel is an egui
+                // area, so that was true over the bare scope and every
+                // scope-wheel behavior silently died.
+                if self.scope_hovered {
                     let notches = match delta {
                         winit::event::MouseScrollDelta::LineDelta(_, y) =>
                             y as f64,
@@ -1793,6 +1959,10 @@ impl ApplicationHandler for Shell {
                             (self.camera_dolly * factor).clamp(1.6, 8.0);
                         self.push_camera();
                         self.mark_orbit_interaction();
+                    } else if self.composing && !self.is_mini {
+                        // scroll while composing = pitch (v3: ×1.06
+                        // per notch, 20–400 Hz, regenerate debounced)
+                        self.retune_compose(notches);
                     } else {
                         // wheel on the scope = gain — MULTIPLICATIVE
                         // so steps feel even across 0.1..6.0 (linear
@@ -1830,12 +2000,11 @@ impl ApplicationHandler for Shell {
             }
             WindowEvent::DroppedFile(path) => {
                 // whole-window drop target (v3 §1.5): .phoskit files
-                // import (pass iv); audio files become the playlist
-                // verbatim and the first one plays
+                // validate → install → activate; audio files become
+                // the playlist verbatim and the first one plays
                 let lower = path.to_string_lossy().to_lowercase();
                 if lower.ends_with(".phoskit") {
-                    self.status_line =
-                        "kit import lands in chrome pass iv".into();
+                    self.import_kit_file(&path);
                 } else if crate::player::is_audio_path(&path)
                     && path.exists()
                 {
