@@ -614,6 +614,11 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
             .on_hover_text(
                 "Frame rate cap — Monitor follows the display's refresh \
                  rate;\npick a preset or type any rate up to 1000.");
+        ui.checkbox(&mut self.settings.show_fps_detail,
+                    "Nerd HUD (frame ms, drops)")
+            .on_hover_text(
+                "With Show FPS on: cpu/gpu frame times, p99, \
+                 dropped frames, segment and rate counts (F cycles)");
         if ui.checkbox(&mut self.settings.show_fps, "Show FPS")
             .changed()
         {}

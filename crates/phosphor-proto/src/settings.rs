@@ -54,6 +54,8 @@ pub struct Settings {
     pub cairo_resolution: f32,
     pub show_pin_button: bool,
     pub show_fps: bool,
+    /// the nerd HUD: frame ms (cpu+gpu), p99, drops, segments, rates
+    pub show_fps_detail: bool,
     pub max_fps: i64,
     // capture & player
     pub target_id: Option<String>,
@@ -106,6 +108,7 @@ impl Default for Settings {
             cairo_resolution: 1.0,
             show_pin_button: true,
             show_fps: false,
+            show_fps_detail: false,
             max_fps: 0,
             target_id: None,
             pinned: false,
@@ -160,7 +163,8 @@ const OWNED_KEYS: &[&str] = &[
     "custom_grid_color", "amoled_background", "grid_enabled",
     "scope_glass", "glass_tint", "glass_tints", "ui_style", "kit_path",
     "kit_enabled", "renderer", "gl_supersample", "cairo_resolution",
-    "show_pin_button", "show_fps", "max_fps", "target_id", "pinned",
+    "show_pin_button", "show_fps", "show_fps_detail", "max_fps",
+    "target_id", "pinned",
     "show_now_playing", "playback_volume", "shuffle", "repeat_mode",
     "playlist_panel_open", "postcard_credit", "vacuum_enabled",
 ];
@@ -249,6 +253,8 @@ impl Settings {
         take!("show_pin_button", settings.show_pin_button,
               serde_json::Value::as_bool);
         take!("show_fps", settings.show_fps,
+              serde_json::Value::as_bool);
+        take!("show_fps_detail", settings.show_fps_detail,
               serde_json::Value::as_bool);
         take!("max_fps", settings.max_fps,
               |value: &serde_json::Value| value.as_i64()
@@ -348,6 +354,8 @@ impl Settings {
         map.insert("show_pin_button".into(),
                    self.show_pin_button.into());
         map.insert("show_fps".into(), self.show_fps.into());
+        map.insert("show_fps_detail".into(),
+                   self.show_fps_detail.into());
         map.insert("max_fps".into(), self.max_fps.into());
         map.insert("target_id".into(), opt_string(&self.target_id));
         map.insert("pinned".into(), self.pinned.into());
