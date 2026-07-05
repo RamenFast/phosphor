@@ -133,10 +133,26 @@ it spawns `["phosphor","feed"]` and draws the beam-segment stream.
 | Deliberate deviation: capture-death recovery | ✅ | on capture death, re-resolves the default output monitor once/second and reconnects — v3's feed just went dark |
 | Applet 2.0.0, engine-free | ✅ | no bundled `phosphor_core.py`/`.so`; native-fed via `applet/install.sh` against deb `4.0.0~wave3.1` |
 
-Issue #4 still owes the control-socket transport (Unix NDJSON
-`ctl`/`tap`/`probe`); the applet can migrate off stdio onto that socket
-when it lands. Deferrals now: {compose studio-panel integration (wave
-4), timeline (wave 4)}.
+Issue #4 owed the control-socket transport (Unix NDJSON
+`ctl`/`tap`/`probe`); shipped in wave 3.2 (below).
+
+## Wave 3.2 — the agent CLI + control socket (2026-07-04)
+
+Issue #4 closed. Phosphor speaks the station convention natively;
+zero convention retrofit (its exit-code scheme predated the
+convention). Receipts live in the merge commit.
+
+| Item | State | Receipt |
+|---|---|---|
+| Agent CLI: `probe`/`ctl`/`tap`/`kit`/`schema` (envelope, fix-bearing errors, exit 0/2/3/4, isatty auto-switch + `--json` force) | ✅ | receipts in the wave-3.2 merge commit |
+| `probe` live status one-shot (`running:false` when no GUI; `--at` a past ts stubbed → studio wave, exit 2) | ✅ | probe against a live GUI and a dead one |
+| Control socket `$XDG_RUNTIME_DIR/phosphor/ctl.sock` (NDJSON) with **EventLoopProxy wake** (reaches the GUI while quiet-asleep) + **deferred reply** for snapshot/clip (returns the written path) | ✅ | `ctl mode`/`theme`/`snapshot` round-trips; wake verified against zero-GPU tick state |
+| `tap` NDJSON stream (hello, frame{ts,mode,segments,bbox,centroid,peak,polyline,trace_size}, tick heartbeat) | ✅ | `tap \| jq` receipt in the merge commit |
+| Kit schemas shipped: `kit validate\|inspect` + `schema` + `docs/phoskit.schema.json` | ✅ | kit-repair law: a 7B model fixes its kit in one round-trip |
+| `feed` unchanged: locked v3-verbatim applet protocol (documented envelope exception: no `event` field) | ✅ | applet 2.0.0 still byte-compatible |
+
+Deferrals now: {`studio` compiler + `probe --at` (wave 4), compose
+studio-panel integration (wave 4), timeline (wave 4)}.
 
 ## The one receipt that matters
 

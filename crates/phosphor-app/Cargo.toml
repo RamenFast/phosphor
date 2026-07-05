@@ -17,6 +17,7 @@ phosphor-beam.workspace = true
 phosphor-audio.workspace = true
 phosphor-render-cpu = { path = "../phosphor-render-cpu" }
 phosphor-render-gpu = { path = "../phosphor-render-gpu" }
+serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 # the shell (wave 2): promoted from the wave-1 spike surface

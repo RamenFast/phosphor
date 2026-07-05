@@ -214,6 +214,12 @@ pub struct Shell {
     pub(crate) export_results:
         Option<mpsc::Receiver<Result<std::path::PathBuf, String>>>,
     mpris: Option<crate::mpris::MprisHandle>,
+    /// the control socket (None headless / when the bind failed)
+    control: Option<crate::control::ControlHandle>,
+    /// a deferred snapshot/clip reply: the export runs on a thread, so
+    /// the control reply is held until its result lands. (kind, sender)
+    control_export_reply:
+        Option<(&'static str, mpsc::Sender<serde_json::Value>)>,
 
     // quiet law state
     quiet_frame_count: u32,
@@ -306,6 +312,10 @@ impl Shell {
             exporting: false,
             export_results: None,
             mpris: crate::mpris::spawn(),
+            // the control socket is bound in run() once the event loop
+            // (and its wake proxy) exist
+            control: None,
+            control_export_reply: None,
             quiet_frame_count: 0,
             fade_out_frames_remaining: FADE_OUT_FRAMES,
             render_loop_active: true,
@@ -784,7 +794,6 @@ impl Shell {
     fn service_mpris(&mut self) {
         let Some(mpris) = &self.mpris else { return };
         // live position + step capability
-        let playing = self.player.playing.is_some();
         mpris.shared.position_micros.store(
             (self.engine.playback_position_seconds() * 1e6) as i64,
             std::sync::atomic::Ordering::Relaxed);
@@ -796,71 +805,252 @@ impl Shell {
             commands.push(command);
         }
         for command in commands {
-            use crate::mpris::MprisCommand;
-            match command {
-                MprisCommand::Next => {
-                    if playing { self.actions.push(UiAction::PlayerNext); }
-                }
-                MprisCommand::Previous => {
-                    if playing {
-                        self.actions.push(UiAction::PlayerPrevious);
-                    }
-                }
-                MprisCommand::PlayPause => {
-                    if playing {
-                        self.actions.push(UiAction::PlayerTogglePause);
-                    }
-                }
-                MprisCommand::Play => {
-                    if playing && self.player.paused {
-                        self.actions.push(UiAction::PlayerTogglePause);
-                    }
-                }
-                MprisCommand::Pause => {
-                    if playing && !self.player.paused {
-                        self.actions.push(UiAction::PlayerTogglePause);
-                    }
-                }
-                MprisCommand::Stop => {
-                    // v4 fix: Stop actually stops (v3 aliased Pause)
-                    self.engine.stop_playback();
-                    self.player.playing = None;
-                    self.player.duration = None;
-                    self.set_mpris_status("Stopped");
-                }
-                MprisCommand::SeekRelative(offset_micros) => {
-                    let target = (self.engine.playback_position_seconds()
-                                  + offset_micros as f64 / 1e6).max(0.0);
-                    self.player.seek_debounce =
-                        Some((target, Instant::now()
-                              - Duration::from_millis(250)));
-                }
-                MprisCommand::SetPosition(position_micros) => {
-                    let target = (position_micros as f64 / 1e6).max(0.0);
-                    self.player.seek_debounce =
-                        Some((target, Instant::now()
-                              - Duration::from_millis(250)));
-                }
-                MprisCommand::OpenUri(uri) => {
-                    let path = uri.strip_prefix("file://")
-                        .unwrap_or(&uri).to_string();
-                    let path = std::path::PathBuf::from(path);
-                    if crate::player::is_audio_path(&path) && path.exists() {
-                        self.actions.push(UiAction::PlayPath(path));
-                    }
-                }
-                MprisCommand::Raise => {
-                    if let Some(graphics) = &self.graphics {
-                        graphics.window.focus_window();
-                    }
-                }
-                MprisCommand::SetVolume(volume) => {
-                    self.settings.playback_volume = volume as f32;
-                    self.engine.set_volume(
-                        crate::player::cubic_volume(volume as f32));
+            self.apply_external_command(command);
+        }
+    }
+
+    /// The one code path every external controller (MPRIS media keys AND
+    /// the control socket's transport verbs) funnels through — reuse,
+    /// not fork.
+    pub(crate) fn apply_external_command(
+        &mut self, command: crate::mpris::MprisCommand) {
+        use crate::mpris::MprisCommand;
+        let playing = self.player.playing.is_some();
+        match command {
+            MprisCommand::Next => {
+                if playing { self.actions.push(UiAction::PlayerNext); }
+            }
+            MprisCommand::Previous => {
+                if playing {
+                    self.actions.push(UiAction::PlayerPrevious);
                 }
             }
+            MprisCommand::PlayPause => {
+                if playing {
+                    self.actions.push(UiAction::PlayerTogglePause);
+                }
+            }
+            MprisCommand::Play => {
+                if playing && self.player.paused {
+                    self.actions.push(UiAction::PlayerTogglePause);
+                }
+            }
+            MprisCommand::Pause => {
+                if playing && !self.player.paused {
+                    self.actions.push(UiAction::PlayerTogglePause);
+                }
+            }
+            MprisCommand::Stop => {
+                // v4 fix: Stop actually stops (v3 aliased Pause)
+                self.engine.stop_playback();
+                self.player.playing = None;
+                self.player.duration = None;
+                self.set_mpris_status("Stopped");
+            }
+            MprisCommand::SeekRelative(offset_micros) => {
+                let target = (self.engine.playback_position_seconds()
+                              + offset_micros as f64 / 1e6).max(0.0);
+                self.player.seek_debounce =
+                    Some((target, Instant::now()
+                          - Duration::from_millis(250)));
+            }
+            MprisCommand::SetPosition(position_micros) => {
+                let target = (position_micros as f64 / 1e6).max(0.0);
+                self.player.seek_debounce =
+                    Some((target, Instant::now()
+                          - Duration::from_millis(250)));
+            }
+            MprisCommand::OpenUri(uri) => {
+                let path = uri.strip_prefix("file://")
+                    .unwrap_or(&uri).to_string();
+                let path = std::path::PathBuf::from(path);
+                if crate::player::is_audio_path(&path) && path.exists() {
+                    self.actions.push(UiAction::PlayPath(path));
+                }
+            }
+            MprisCommand::Raise => {
+                if let Some(graphics) = &self.graphics {
+                    graphics.window.focus_window();
+                }
+            }
+            MprisCommand::SetVolume(volume) => {
+                self.settings.playback_volume = volume as f32;
+                self.engine.set_volume(
+                    crate::player::cubic_volume(volume as f32));
+            }
         }
+    }
+
+    /// Drain control-socket requests: apply each verb and reply. Sits
+    /// beside service_mpris in the tick (woken by the proxy). Every
+    /// error reply names its fix (station convention).
+    fn service_control(&mut self) {
+        use serde_json::json;
+        let Some(control) = &self.control else { return };
+        let mut requests = Vec::new();
+        while let Ok(request) = control.requests.try_recv() {
+            requests.push(request);
+        }
+        for request in requests {
+            use crate::control::ControlVerb;
+            let reply: serde_json::Value = match request.verb {
+                ControlVerb::Transport(command) => {
+                    self.apply_external_command(command);
+                    json!({"status": "ok", "verb": "transport"})
+                }
+                ControlVerb::Mode(name) => {
+                    match name.parse::<phosphor_dsp::Mode>() {
+                        Ok(_) => {
+                            self.settings.display_mode = name.clone();
+                            self.actions.push(UiAction::ModeChanged);
+                            json!({"status": "ok", "verb": "mode",
+                                   "result": {"mode": name}})
+                        }
+                        Err(message) => json!({
+                            "status": "error", "error": message,
+                            "fix": format!("one of: {}",
+                                phosphor_dsp::Mode::ALL
+                                    .map(phosphor_dsp::Mode::name)
+                                    .join(", ")),
+                        }),
+                    }
+                }
+                ControlVerb::Theme(name) => {
+                    if crate::chrome::THEME_NAMES.contains(&name.as_str()) {
+                        self.settings.theme_name = name.clone();
+                        self.actions.push(UiAction::SaveSettings);
+                        self.chrome_dirty = true;
+                        json!({"status": "ok", "verb": "theme",
+                               "result": {"theme": name}})
+                    } else {
+                        json!({
+                            "status": "error",
+                            "error": format!("unknown theme '{name}'"),
+                            "fix": format!("one of: {}",
+                                crate::chrome::THEME_NAMES.join(", ")),
+                        })
+                    }
+                }
+                ControlVerb::UiStyle(name) => {
+                    if crate::theme::PALETTES.iter()
+                        .any(|p| p.id == name)
+                    {
+                        self.settings.ui_style = name.clone();
+                        self.actions.push(UiAction::SaveSettings);
+                        self.chrome_dirty = true;
+                        json!({"status": "ok", "verb": "ui",
+                               "result": {"ui_style": name}})
+                    } else {
+                        let ids: Vec<&str> = crate::theme::PALETTES
+                            .iter().map(|p| p.id).collect();
+                        json!({
+                            "status": "error",
+                            "error": format!("unknown ui style '{name}'"),
+                            "fix": format!("one of: {}", ids.join(", ")),
+                        })
+                    }
+                }
+                ControlVerb::Capture(on) => {
+                    self.actions.push(if on {
+                        UiAction::CaptureOn
+                    } else {
+                        UiAction::CaptureOff
+                    });
+                    json!({"status": "ok", "verb": "capture",
+                           "result": {"on": on}})
+                }
+                ControlVerb::Target(id) => {
+                    self.actions.push(UiAction::TargetPicked(id.clone()));
+                    json!({"status": "ok", "verb": "target",
+                           "result": {"id": id}})
+                }
+                verb @ (ControlVerb::Snapshot | ControlVerb::Clip) => {
+                    let (kind, action) =
+                        if matches!(verb, ControlVerb::Snapshot) {
+                            ("snapshot", UiAction::SaveSnapshot)
+                        } else {
+                            ("clip", UiAction::SaveClip)
+                        };
+                    if self.exporting {
+                        json!({
+                            "status": "error",
+                            "error": "export already running",
+                            "fix": "wait for the current export",
+                        })
+                    } else {
+                        self.actions.push(action);
+                        // reply is deferred until the export thread lands
+                        self.control_export_reply =
+                            Some((kind, request.reply));
+                        continue;
+                    }
+                }
+                ControlVerb::Quit => {
+                    // reply first, THEN ask to quit
+                    let _ = request.reply.send(
+                        json!({"status": "ok", "verb": "quit"}));
+                    self.actions.push(UiAction::Quit);
+                    continue;
+                }
+            };
+            let _ = request.reply.send(reply);
+            // keep the served status consistent with the ack we just
+            // sent: a follow-up `status` on a fresh connection must not
+            // race the end-of-tick refresh and read the stale frame.
+            self.update_control_snapshot();
+        }
+    }
+
+    /// Refresh the status snapshot the control socket serves (cheap;
+    /// once per tick). `status` replies read this instantly, no wake.
+    fn update_control_snapshot(&self) {
+        let Some(control) = &self.control else { return };
+        let metadata = self.engine.current_track_metadata()
+            .unwrap_or_default();
+        let snapshot = crate::control::StatusSnapshot {
+            running: true,
+            pid: std::process::id(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            mode: self.settings.display_mode.clone(),
+            theme: self.settings.theme_name.clone(),
+            ui_style: self.settings.ui_style.clone(),
+            capture: crate::control::CaptureStatus {
+                on: self.capture_on,
+                target_id: self.settings.target_id.clone(),
+            },
+            player: crate::control::PlayerStatus {
+                track: self.player.playing.as_ref()
+                    .map(|p| p.to_string_lossy().to_string()),
+                title: metadata.title,
+                artist: metadata.artist,
+                position_seconds: self.engine.playback_position_seconds(),
+                duration_seconds: self.player.duration,
+                paused: self.player.paused,
+            },
+            volume: self.settings.playback_volume,
+            gain: crate::control::GainStatus {
+                setting: self.settings.gain,
+                effective: self.effective_gain,
+                auto: self.settings.auto_gain,
+            },
+            kit: crate::control::KitStatus {
+                enabled: self.settings.kit_enabled,
+                path: self.settings.kit_path.clone(),
+            },
+            window: crate::control::WindowStatus {
+                mini: self.is_mini,
+                fullscreen: self.is_fullscreen,
+            },
+            vacuum: crate::control::VacuumStatus {
+                file: self.settings.vacuum_enabled,
+                app: self.app_vacuum.clone(),
+            },
+            quiet: crate::control::QuietStatus {
+                render_active: self.render_loop_active,
+            },
+            fps: self.last_fps,
+        };
+        *control.shared.status.lock().unwrap() = snapshot;
     }
 
     pub(crate) fn set_mpris_status(&self, status: &'static str) {
@@ -1316,6 +1506,8 @@ impl Shell {
 
         // ---- MPRIS: media keys arrive as Player method calls ----
         self.service_mpris();
+        // ---- control socket: CLI status/ctl/tap over the Unix socket ----
+        self.service_control();
 
         // ---- export results ----
         if let Some(receiver) = &self.export_results
@@ -1323,6 +1515,20 @@ impl Shell {
         {
             self.export_results = None;
             self.exporting = false;
+            // answer a deferred control snapshot/clip request, if any
+            if let Some((kind, reply)) = self.control_export_reply.take() {
+                let value = match &result {
+                    Ok(path) => serde_json::json!({
+                        "status": "ok", "verb": kind,
+                        "result": {"path": path.to_string_lossy()},
+                    }),
+                    Err(error) => serde_json::json!({
+                        "status": "error", "error": error,
+                        "fix": "check ~/Pictures/Phosphor is writable",
+                    }),
+                };
+                let _ = reply.send(value);
+            }
             let message = match result {
                 Ok(path) => {
                     let name = path.file_name()
@@ -1412,6 +1618,9 @@ impl Shell {
             self.fps_frames = 0;
             self.fps_window_start = Instant::now();
         }
+
+        // ---- control socket: refresh the status the CLI reads ----
+        self.update_control_snapshot();
         keep_going
     }
 
@@ -1489,6 +1698,27 @@ impl Shell {
                     trace_w as f32, trace_h as f32));
             }
             let segments = &segments[..];
+            // ---- tap: broadcast a cheap frame observation to any
+            // `phosphor tap` subscribers (skip everything when none) ----
+            if let Some(control) = &self.control {
+                let mut taps = control.shared.taps.lock().unwrap();
+                if !taps.is_empty() {
+                    let peak = samples
+                        .iter()
+                        .fold(0.0f32, |peak, s| peak.max(s.abs()));
+                    let ts_ms = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis())
+                        .unwrap_or(0);
+                    let event = crate::control::build_frame_event(
+                        segments, self.computer.mode.name(), peak,
+                        trace_w as f32, trace_h as f32, ts_ms);
+                    // prune subscribers whose pipe has closed
+                    taps.retain(|sender| sender
+                        .send(crate::control::TapEvent::Frame(event.clone()))
+                        .is_ok());
+                }
+            }
             if let Some(gpu) = graphics.scope_gpu.as_mut() {
                 if let Err(error) = gpu.resize(scope_width, scope_height) {
                     eprintln!("phosphor: scope resize: {error}");
@@ -1803,10 +2033,19 @@ impl Shell {
     }
 }
 
-impl ApplicationHandler for Shell {
+impl ApplicationHandler<()> for Shell {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.graphics.is_none() {
             self.init_graphics(event_loop);
+        }
+    }
+
+    /// The control socket's wake: a queued request is waiting. Request a
+    /// redraw so the next tick drains it (mirrors wake_render_loop's
+    /// window poke, without disturbing the quiet-law counters).
+    fn user_event(&mut self, _event_loop: &ActiveEventLoop, _event: ()) {
+        if let Some(graphics) = &self.graphics {
+            graphics.window.request_redraw();
         }
     }
 
@@ -2130,13 +2369,17 @@ pub fn run(arguments: &[String]) -> i32 {
             return 4;
         }
     };
-    let event_loop = match EventLoop::new() {
+    // with_user_event: the control socket's server thread pokes an
+    // EventLoopProxy to wake the (otherwise ControlFlow::Wait) loop so
+    // it drains and answers a queued command.
+    let event_loop = match EventLoop::<()>::with_user_event().build() {
         Ok(event_loop) => event_loop,
         Err(error) => {
             eprintln!("phosphor: event loop: {error}");
             return 4;
         }
     };
+    shell.control = crate::control::spawn(event_loop.create_proxy());
     match event_loop.run_app(&mut shell) {
         Ok(()) => 0,
         Err(error) => {
