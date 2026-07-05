@@ -13,22 +13,11 @@
 
 use std::path::PathBuf;
 
-/// Send/replace a track notification. Returns the notification id to
-/// pass back next time (0 on failure — a failed toast never bothers
-/// the beam).
-pub fn notify_track(title: &str, artist: &str, source: &str,
-                    art_url: Option<&str>, replaces: u32) -> u32 {
-    let art_path = art_url.and_then(cache_art);
-    let body = if artist.is_empty() {
-        format!("via {source}")
-    } else {
-        format!("{artist} · via {source}")
-    };
-    send(title, &body, art_path.as_deref(), replaces)
-}
-
-/// Same, for a locally-written art file (the built-in player's
-/// embedded cover, already on disk).
+/// Send/replace a track notification with a local art file (own
+/// tracks: the embedded cover written to the runtime dir; external
+/// players: the client thread's cached fetch). Returns the id to pass
+/// back next time (0 on failure — a failed toast never bothers the
+/// beam).
 pub fn notify_track_with_file(title: &str, artist: &str, source: &str,
                               art_path: Option<&std::path::Path>,
                               replaces: u32) -> u32 {
@@ -74,7 +63,8 @@ fn send(summary: &str, body: &str, art: Option<&std::path::Path>,
 
 /// Resolve an MPRIS artUrl to a local file: file:// and plain paths
 /// pass through; http(s) is fetched via `curl` into the runtime dir.
-fn cache_art(url: &str) -> Option<PathBuf> {
+/// Blocking (up to 4 s on a cold fetch) — call from worker threads.
+pub(crate) fn cache_art(url: &str) -> Option<PathBuf> {
     if let Some(path) = url.strip_prefix("file://") {
         let path = PathBuf::from(path);
         return path.exists().then_some(path);

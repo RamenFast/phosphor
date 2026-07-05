@@ -28,6 +28,10 @@ pub struct ExternalPlayer {
     pub artist: Option<String>,
     pub album: Option<String>,
     pub art_url: Option<String>,
+    /// artUrl resolved to a LOCAL file (fetched on this thread — the
+    /// overlay and the notification both read it; the chrome thread
+    /// never waits on a download)
+    pub art_local: Option<std::path::PathBuf>,
     pub can_control: bool,
 }
 
@@ -140,7 +144,13 @@ fn client_loop(connection: &zbus::blocking::Connection,
         }
         ticks_since_refresh = 0;
 
-        let roster = refresh_players(connection);
+        let mut roster = refresh_players(connection);
+        // resolve art HERE (blocking curl is fine on this thread):
+        // file:// instantly, https via the cache — once per url
+        for player in &mut roster {
+            player.art_local = player.art_url.as_deref()
+                .and_then(crate::notify::cache_art);
+        }
         // external track-change → desktop notification (with art)
         if notify_enabled.load(Ordering::Relaxed) {
             for player in &roster {
@@ -155,12 +165,13 @@ fn client_loop(connection: &zbus::blocking::Connection,
                     && previous.as_deref() != Some(signature.as_str())
                     && player.status == "Playing"
                 {
-                    notification_id = crate::notify::notify_track(
-                        title,
-                        player.artist.as_deref().unwrap_or(""),
-                        &player.identity,
-                        player.art_url.as_deref(),
-                        notification_id);
+                    notification_id =
+                        crate::notify::notify_track_with_file(
+                            title,
+                            player.artist.as_deref().unwrap_or(""),
+                            &player.identity,
+                            player.art_local.as_deref(),
+                            notification_id);
                 }
             }
         } else {
@@ -244,6 +255,7 @@ fn read_player(connection: &zbus::blocking::Connection, bus: &str)
         artist: string_of("xesam:artist"),
         album: string_of("xesam:album"),
         art_url: string_of("mpris:artUrl"),
+        art_local: None, // resolved by the caller (client_loop)
         can_control,
     })
 }

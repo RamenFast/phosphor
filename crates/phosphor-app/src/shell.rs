@@ -228,6 +228,10 @@ pub struct Shell {
     pub(crate) postcard_dialog: Option<crate::chrome::PostcardState>,
     /// decoded cover-art texture for the playing track + its source path
     pub(crate) cover_texture: Option<(std::path::PathBuf, egui::TextureHandle)>,
+    /// art for the corner now-playing overlay (left of the title —
+    /// Ben's last-polish ask); set at flash time from the embedded
+    /// cover (own tracks) or the client's cached fetch (external)
+    pub(crate) overlay_art: Option<egui::TextureHandle>,
     pub(crate) player: crate::player::PlayerState,
     /// paths picked in the threaded native dialog
     file_dialog: Option<mpsc::Receiver<Option<std::path::PathBuf>>>,
@@ -400,6 +404,7 @@ impl Shell {
             kit_editor: None,
             postcard_dialog: None,
             cover_texture: None,
+            overlay_art: None,
             player: Default::default(),
             file_dialog: None,
             konami_progress: 0,
@@ -1907,6 +1912,12 @@ impl Shell {
                     self.queue_gapless_next();
                     self.mpris_track_changed();
                     self.load_cover_art(&path);
+                    // the overlay wears the cover too (left of the
+                    // title) — None when the track carries no art so
+                    // the previous track's art never lingers
+                    self.overlay_art = self.cover_texture.as_ref()
+                        .filter(|(source, _)| *source == path)
+                        .map(|(_, texture)| texture.clone());
                     // the systemwide toast with the album art (Ben's
                     // ask) — embedded cover written to the runtime
                     // dir for the image-path hint
@@ -1964,6 +1975,25 @@ impl Shell {
                             "{artist}  ·  via {}", external.identity)),
                         None => Some(format!("via {}", external.identity)),
                     };
+                    // the cached art (fetched on the client thread)
+                    // becomes the overlay thumbnail — decode is a
+                    // few ms once per track change
+                    self.overlay_art = external.art_local.as_deref()
+                        .and_then(|art_path| {
+                            let graphics = self.graphics.as_ref()?;
+                            let bytes = std::fs::read(art_path).ok()?;
+                            let decoded =
+                                image::load_from_memory(&bytes).ok()?;
+                            let thumb =
+                                decoded.thumbnail(96, 96).to_rgba8();
+                            let size = [thumb.width() as usize,
+                                        thumb.height() as usize];
+                            Some(graphics.egui_ctx.load_texture(
+                                "overlay-art",
+                                egui::ColorImage::from_rgba_unmultiplied(
+                                    size, &thumb),
+                                Default::default()))
+                        });
                     self.player.flash_now_playing(
                         title, subtitle.as_deref());
                     self.chrome_dirty = true;
@@ -2357,13 +2387,34 @@ impl Shell {
                         egui::Color32::WHITE);
                 }
                 // now-playing overlay: top-left, 12 px margins (v3 §9)
+                // — with the album art left of the title (the last
+                // missing polish), fading on the same curve
                 if let Some((title, subtitle, opacity)) =
                     self.player.overlay_visible()
                 {
                     let alpha = (opacity * 255.0) as u8;
-                    let position = scope_rect_out.min
+                    let mut position = scope_rect_out.min
                         + egui::vec2(12.0, 12.0);
                     let painter = ui.painter();
+                    if let Some(art) = &self.overlay_art {
+                        let side = 44.0;
+                        let art_rect = egui::Rect::from_min_size(
+                            position, egui::vec2(side, side));
+                        painter.image(
+                            art.id(), art_rect,
+                            egui::Rect::from_min_max(
+                                egui::pos2(0.0, 0.0),
+                                egui::pos2(1.0, 1.0)),
+                            egui::Color32::from_white_alpha(alpha));
+                        painter.rect_stroke(
+                            art_rect, 0.0,
+                            egui::Stroke::new(
+                                1.0,
+                                self.active_palette.line
+                                    .gamma_multiply(opacity)),
+                            egui::StrokeKind::Inside);
+                        position.x += side + 10.0;
+                    }
                     let title_id = painter.text(
                         position, egui::Align2::LEFT_TOP,
                         title,

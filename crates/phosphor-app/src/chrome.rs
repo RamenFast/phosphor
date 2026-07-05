@@ -613,9 +613,9 @@ impl Shell {
                  player the beam is scoping");
         if ui.checkbox(&mut self.settings.show_now_playing, "Track info")
             .on_hover_text(
-                "Fade the artist/title into the corner when the song \
-                 changes —\nfor files Phosphor plays and for other \
-                 players (MPRIS)")
+                "Fade the album art + artist/title into the corner \
+                 when the song\nchanges — for files Phosphor plays \
+                 and for the player the beam\nis scoping (MPRIS)")
             .changed()
         {}
     }
