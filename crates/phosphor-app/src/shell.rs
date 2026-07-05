@@ -286,6 +286,15 @@ pub struct Shell {
     /// settle NEVER re-squares/snaps (the window moving under an open
     /// menu was Ben's "right click glitches out a ton")
     pub(crate) context_menu_open: bool,
+    /// pointer was over the open menu last frame (dismiss logic)
+    pub(crate) context_menu_hovered: bool,
+    /// a click outside the menu asked it to close (honored inside the
+    /// menu closure next frame — reliable even when a WM grab or the
+    /// fullscreen surface swallows the release egui would need)
+    pub(crate) close_menu_request: bool,
+    /// external now-playing signature (title|artist of the linked
+    /// player) — flashes the corner overlay on change (v3 watcher law)
+    last_external_signature: Option<String>,
     cursor_position: (f64, f64),
     /// pointer over the scope widget last frame (egui occlusion-aware:
     /// false under chrome, panels, or floating dialogs) — the wheel
@@ -419,6 +428,9 @@ impl Shell {
             mini_drag_active: false,
             mini_entering: None,
             context_menu_open: false,
+            context_menu_hovered: false,
+            close_menu_request: false,
+            last_external_signature: None,
             cursor_position: (0.0, 0.0),
             scope_hovered: false,
             mini_last_click: None,
@@ -1044,6 +1056,29 @@ impl Shell {
     pub(crate) fn apply_external_command(
         &mut self, command: crate::mpris::MprisCommand) {
         use crate::mpris::MprisCommand;
+        // Transport verbs follow THE BEAM (Ben's patch list): while
+        // capture scopes a linked player — even with a local track
+        // loaded-and-paused underneath — play/pause/next/previous
+        // drive that player. The local file keeps Space (the beam
+        // arbiter) and the playlist panel.
+        if matches!(command,
+                    MprisCommand::Next | MprisCommand::Previous
+                    | MprisCommand::PlayPause | MprisCommand::Play
+                    | MprisCommand::Pause)
+            && let Some(external) = self.linked_external_player()
+            && let Some(client) = &self.mpris_client
+        {
+            use crate::mpris_client::ClientCommand;
+            let bus = external.bus_name;
+            let _ = client.commands.send(match command {
+                MprisCommand::Next => ClientCommand::Next(bus),
+                MprisCommand::Previous => ClientCommand::Previous(bus),
+                MprisCommand::Play => ClientCommand::Play(bus),
+                MprisCommand::Pause => ClientCommand::Pause(bus),
+                _ => ClientCommand::PlayPause(bus),
+            });
+            return;
+        }
         let playing = self.player.playing.is_some();
         match command {
             MprisCommand::Next => {
@@ -1906,6 +1941,38 @@ impl Shell {
             self.chrome_dirty = true;
         }
 
+        // ---- external now-playing: the corner overlay follows the
+        // linked player's track changes (the v3 watcher law — Ben:
+        // "name of song didn't show when the spotify song changed") ----
+        if let Some(external) = self.linked_external_player() {
+            let signature = external.title.as_deref().map(|title| {
+                format!("{title}|{}",
+                        external.artist.as_deref().unwrap_or(""))
+            });
+            if signature.is_some()
+                && signature != self.last_external_signature
+            {
+                let was_first = self.last_external_signature.is_none();
+                self.last_external_signature = signature;
+                // announce CHANGES while listening, not the state we
+                // walked in on (mirrors the notification law)
+                if !was_first && self.settings.show_now_playing
+                    && let Some(title) = &external.title
+                {
+                    let subtitle = match &external.artist {
+                        Some(artist) => Some(format!(
+                            "{artist}  ·  via {}", external.identity)),
+                        None => Some(format!("via {}", external.identity)),
+                    };
+                    self.player.flash_now_playing(
+                        title, subtitle.as_deref());
+                    self.chrome_dirty = true;
+                }
+            }
+        } else {
+            self.last_external_signature = None;
+        }
+
         // ---- MPRIS: media keys arrive as Player method calls ----
         self.service_mpris();
         // ---- control socket: CLI status/ctl/tap over the Unix socket ----
@@ -2229,8 +2296,10 @@ impl Shell {
                     self.ui_transport(ui);
                 });
                 self.ui_settings_panel(ctx);
-                self.ui_playlist_panel(ctx);
             }
+            // the playlist opens EVERYWHERE (L) — floating window in
+            // mini/fullscreen, docked panel otherwise
+            self.ui_playlist_panel(ctx);
             // dialogs float above chrome, hidden only in fullscreen
             if !self.is_fullscreen {
                 self.ui_kit_editor(ctx);
@@ -2249,6 +2318,15 @@ impl Shell {
                     scope_rect_out, ui.id().with("scope"),
                     egui::Sense::click_and_drag());
                 self.scope_hovered = scope_response.hovered();
+                // left-press outside an open menu dismisses it — the
+                // normal-view behavior, made to work in fullscreen and
+                // mini too (Ben's patch list)
+                if self.context_menu_open
+                    && !self.context_menu_hovered
+                    && ui.ctx().input(|i| i.pointer.primary_pressed())
+                {
+                    self.close_menu_request = true;
+                }
                 self.ui_context_menu(&scope_response);
                 if scope_response.double_clicked() && self.is_mini {
                     self.actions.push(UiAction::MiniToggle);
@@ -2642,6 +2720,15 @@ impl ApplicationHandler<()> for Shell {
                 state: winit::event::ElementState::Pressed,
                 button: winit::event::MouseButton::Left, ..
             } if self.is_mini => {
+                // With the context menu open, left-press DISMISSES it
+                // — never starts a WM drag. The WM grab used to
+                // swallow the release egui needed, so the menu could
+                // not be clicked away in mini (Ben's patch list).
+                if self.context_menu_open {
+                    self.close_menu_request = true;
+                    self.wake_render_loop();
+                    return;
+                }
                 // Mini owns left-press: corner 26 px = WM resize, a
                 // quick second click = restore, anywhere else = WM
                 // move (v3: drag moves the mini; drag never orbits).

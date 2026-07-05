@@ -261,12 +261,17 @@ impl Shell {
         }
     }
 
-    /// The transport row (§4.2): the built-in player when a file is
-    /// loaded, else the EXTERNAL player the beam is scoping — Ben:
-    /// "if music is coming from spotify, [the controls] control that".
+    /// The transport row (§4.2) follows THE BEAM: while capture scopes
+    /// a linked player, its controls drive that player — even if a
+    /// local track sits loaded-and-paused underneath (Ben's patch:
+    /// "intelligently recognize what is playing"). The built-in row
+    /// renders when the player session owns the beam.
     pub(crate) fn ui_transport(&mut self, ui: &mut egui::Ui) {
-        let Some(playing) = self.player.playing.clone() else {
+        if self.linked_external_player().is_some() {
             self.ui_external_transport(ui);
+            return;
+        }
+        let Some(playing) = self.player.playing.clone() else {
             return;
         };
         ui.horizontal(|ui| {
@@ -441,6 +446,26 @@ impl Shell {
         if !self.player.panel_open {
             return;
         }
+        // Normal view: a docked side panel. Mini/fullscreen: the same
+        // list as a floating window — L works EVERYWHERE now (it used
+        // to be gated behind hide_chrome, so the key silently did
+        // nothing exactly where you'd want a quick track hop).
+        if self.is_mini || self.is_fullscreen {
+            let mut open = true;
+            egui::Window::new("Playlist")
+                .collapsible(false)
+                .resizable(true)
+                .default_width(240.0)
+                .max_height(
+                    (self.scope_rect.height() - 40.0).max(120.0))
+                .open(&mut open)
+                .show(ctx, |ui| self.playlist_rows(ui));
+            if !open {
+                self.player.panel_open = false;
+                self.settings.playlist_panel_open = false;
+            }
+            return;
+        }
         egui::SidePanel::left("playlist")
             .default_width(240.0)
             .show(ctx, |ui| {
@@ -460,26 +485,30 @@ impl Shell {
                         });
                 });
                 ui.separator();
-                let mut clicked: Option<PathBuf> = None;
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for (index, path) in
-                        self.player.playlist.iter().enumerate()
-                    {
-                        let name = path.file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default();
-                        let current =
-                            index == self.player.playlist_index
-                            && self.player.playing.is_some();
-                        if ui.selectable_label(current, name).clicked() {
-                            clicked = Some(path.clone());
-                        }
-                    }
-                });
-                if let Some(path) = clicked {
-                    self.actions.push(UiAction::PlayPath(path));
-                }
+                self.playlist_rows(ui);
             });
+    }
+
+    fn playlist_rows(&mut self, ui: &mut egui::Ui) {
+        let mut clicked: Option<PathBuf> = None;
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for (index, path) in
+                self.player.playlist.iter().enumerate()
+            {
+                let name = path.file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let current =
+                    index == self.player.playlist_index
+                    && self.player.playing.is_some();
+                if ui.selectable_label(current, name).clicked() {
+                    clicked = Some(path.clone());
+                }
+            }
+        });
+        if let Some(path) = clicked {
+            self.actions.push(UiAction::PlayPath(path));
+        }
     }
 
     /// 250 ms after the slider went still: the real seek (v3 law).

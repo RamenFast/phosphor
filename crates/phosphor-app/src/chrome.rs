@@ -1078,10 +1078,22 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                          `phosphor probe`, `ctl`, `tap` — see \
                          `phosphor schema` or docs/AGENTS.md. The \
                          full manual with every setting explained:");
-                    ui.hyperlink_to(
-                        "MANUAL.md on GitHub",
-                        "https://github.com/RamenFast/phosphor/blob/\
-                         master/docs/MANUAL.md");
+                    // xdg-open via subprocess — egui's own OpenUrl
+                    // output goes nowhere on this stack (Ben clicked,
+                    // nothing happened; the subprocess law never lies)
+                    let link = egui::RichText::new("MANUAL.md on GitHub")
+                        .color(self.active_palette.accent)
+                        .underline();
+                    if ui.add(egui::Label::new(link)
+                            .sense(egui::Sense::click()))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .clicked()
+                    {
+                        let _ = std::process::Command::new("xdg-open")
+                            .arg("https://github.com/RamenFast/phosphor\
+                                  /blob/master/docs/MANUAL.md")
+                            .spawn();
+                    }
                     ui.add_space(8.0);
                 });
             });
@@ -1358,8 +1370,19 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
         // only) and scrolls inside the window instead of spilling out.
         let compact = self.is_mini;
         let max_height = (self.scope_rect.height() - 24.0).max(120.0);
+        let mut hovered = false;
         let opened = response
             .context_menu(|ui| {
+                // a click that landed OUTSIDE the menu asked it to
+                // close — honored here because ui.close() is the one
+                // dismissal that works even when a WM grab or the
+                // fullscreen surface eats the release egui waits for
+                if self.close_menu_request {
+                    self.close_menu_request = false;
+                    ui.close();
+                    return;
+                }
+                hovered = ui.ui_contains_pointer();
                 if compact {
                     ui.set_max_width(230.0);
                     egui::ScrollArea::vertical()
@@ -1371,6 +1394,10 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
             })
             .is_some();
         self.context_menu_open = opened;
+        self.context_menu_hovered = hovered;
+        if !opened {
+            self.close_menu_request = false;
+        }
     }
 
     fn context_menu_items(&mut self, ui: &mut egui::Ui, compact: bool) {

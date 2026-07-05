@@ -33,6 +33,8 @@ pub struct ExternalPlayer {
 
 pub enum ClientCommand {
     PlayPause(String),
+    Play(String),
+    Pause(String),
     Next(String),
     Previous(String),
 }
@@ -114,6 +116,8 @@ fn client_loop(connection: &zbus::blocking::Connection,
             Ok(command) => {
                 let (bus, method) = match &command {
                     ClientCommand::PlayPause(bus) => (bus, "PlayPause"),
+                    ClientCommand::Play(bus) => (bus, "Play"),
+                    ClientCommand::Pause(bus) => (bus, "Pause"),
                     ClientCommand::Next(bus) => (bus, "Next"),
                     ClientCommand::Previous(bus) => (bus, "Previous"),
                 };
