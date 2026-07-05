@@ -8,6 +8,30 @@
 use crate::shell::{Shell, UiAction};
 use egui_phosphor::regular as icon;
 
+/// Theme-switch crossfade state (thread-local — egui runs the chrome on
+/// one thread). When `ui_style` changes we lerp EVERY palette token from
+/// the palette on screen toward the new one over ~180 ms (smoothstep),
+/// glass panel-alpha included. Kept here (not on the Shell) so the whole
+/// animation lives in the chrome layer.
+struct ThemeXfade {
+    last_id: Option<String>,
+    from: Option<crate::theme::Palette>,
+    from_alpha: u8,
+    last_alpha: u8,
+    started: Option<std::time::Instant>,
+}
+
+thread_local! {
+    static THEME_XFADE: std::cell::RefCell<ThemeXfade> =
+        const { std::cell::RefCell::new(ThemeXfade {
+            last_id: None, from: None,
+            from_alpha: 255, last_alpha: 255, started: None,
+        }) };
+}
+
+/// Duration of the theme-switch crossfade.
+const THEME_XFADE_SECS: f32 = 0.18;
+
 /// v3 DISPLAY_MODES, id → label, exact order.
 pub const DISPLAY_MODES: [(&str, &str); 11] = [
     ("xy", "XY (scope art)"),
@@ -396,7 +420,13 @@ impl Shell {
             .unwrap_or(&self.settings.glass_tint);
         ui.add_enabled_ui(self.settings.scope_glass, |ui| {
             if ui.add(egui::Slider::new(&mut tint, 0.0..=0.95)
-                      .step_by(0.05).text("Glass tint"))
+                      .step_by(0.01)
+                      .custom_formatter(|v, _| format!("{:.0}%", v * 100.0))
+                      .custom_parser(|s| {
+                          s.trim().trim_end_matches('%').trim().parse::<f64>()
+                              .ok().map(|p| p / 100.0)
+                      })
+                      .text("Glass tint"))
                 .on_hover_text(
                     "How dark the glass smokes the desktop behind the \
                      scope —\nfully clear on the left, nearly opaque on \
@@ -580,15 +610,54 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
     /// Apply the UI style's egui visuals (data table above). Aero and
     /// glass make the chrome slightly translucent over the desktop.
     pub(crate) fn apply_ui_style(&mut self, ctx: &egui::Context) {
-        // afterglow's chrome samples the live beam color; every theme
-        // reads its tokens from the palette table (theme.rs).
+        // afterglow / blossom_dark chrome samples the live beam color;
+        // every theme reads its tokens from the palette table (theme.rs).
         let beam = crate::render::build_theme(&self.settings).beam_color;
-        let palette = crate::theme::palette(&self.settings.ui_style)
+        let target = crate::theme::palette(&self.settings.ui_style)
             .with_beam(beam);
         // glass floats the chrome over the desktop → dim the panels
-        let panel_alpha = if self.settings.scope_glass { 210 } else { 255 };
-        palette.apply(ctx, panel_alpha);
-        self.active_palette = palette;
+        let target_alpha = if self.settings.scope_glass { 210 } else { 255 };
+        let cur_id = self.settings.ui_style.clone();
+        let shown_before = self.active_palette;
+
+        // Crossfade on a theme switch: lerp every token from what is on
+        // screen toward the new palette over THEME_XFADE_SECS (smoothstep).
+        let (shown, alpha) = THEME_XFADE.with(|cell| {
+            let mut st = cell.borrow_mut();
+            if st.last_id.as_deref() != Some(cur_id.as_str()) {
+                if st.last_id.is_some() {
+                    // begin the fade from whatever is currently painted
+                    st.from = Some(shown_before);
+                    st.from_alpha = st.last_alpha;
+                    st.started = Some(std::time::Instant::now());
+                }
+                st.last_id = Some(cur_id.clone());
+            }
+            let (shown, alpha) = match (st.from, st.started) {
+                (Some(from), Some(started)) => {
+                    let raw = (started.elapsed().as_secs_f32()
+                               / THEME_XFADE_SECS).clamp(0.0, 1.0);
+                    if raw >= 1.0 {
+                        st.from = None;
+                        st.started = None;
+                        (target, target_alpha)
+                    } else {
+                        ctx.request_repaint();
+                        let t = crate::theme::smoothstep(raw);
+                        let a = (st.from_alpha as f32
+                                 + (target_alpha as f32 - st.from_alpha as f32)
+                                   * t) as u8;
+                        (from.lerp_to(&target, t), a)
+                    }
+                }
+                _ => (target, target_alpha),
+            };
+            st.last_alpha = alpha;
+            (shown, alpha)
+        });
+
+        shown.apply(ctx, alpha);
+        self.active_palette = shown;
     }
 
     /// A carved, dimensional toggle for a PRIMARY control (Live, the
@@ -604,13 +673,15 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
         let (rect, response) =
             ui.allocate_exact_size(desired, egui::Sense::click());
         let pressed = response.is_pointer_button_down_on();
+        // ease the toggled-on face between stone and the accent tint;
+        // the bevel strokes stay instant (tactile). animation_time (0.12 s)
+        // sets the duration.
+        let face_mix = ui.ctx().animate_bool(response.id, active);
         if ui.is_rect_visible(rect) {
-            self.active_palette.carve(ui.painter(), rect, pressed, active);
-            let text_color = if active {
-                self.active_palette.ink
-            } else {
-                self.active_palette.ink_2
-            };
+            self.active_palette.carve_with_face(
+                ui.painter(), rect, pressed, face_mix);
+            let text_color = crate::theme::lerp_ink(
+                self.active_palette.ink_2, self.active_palette.ink, face_mix);
             ui.painter().text(
                 rect.center(), egui::Align2::CENTER_CENTER, label, font,
                 text_color);
