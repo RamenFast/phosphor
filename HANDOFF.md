@@ -129,6 +129,13 @@ Settings: FULL key set, foreign keys preserved on write-back (test).
 theorize (pw-top found the RT_PROCESS miss; a busctl receipt found
 actions starving while quiet-asleep — drains now happen at tick level).
 
+**NEXT SESSION STARTS WITH [APPLET-PLAN.md](APPLET-PLAN.md)** — the
+full execution plan for issue #3 (`phosphor feed` subcommand +
+engine-free applet), written self-contained for an Opus 4.8 executor:
+verbatim protocol constants, a detailed feed.rs stub, the exact
+applet diff, receipts, recorded transport decision. The wave-3 gap
+ledger lives in GitHub issues #1–#8 (label `v4-gap`).
+
 **Fold into wave 3 (from Ben's install-night drive):** a CPU-raster
 worker thread — chrome currently shares the render thread with the
 scope, so a slow CPU raster drags the whole UI (Ben: "the UI slows
