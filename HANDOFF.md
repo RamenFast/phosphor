@@ -2,6 +2,26 @@
 
 ## WAVES 1, 2, 2.5, 2.6 ARE DONE (July 4, 2026). Wave 3 is next: agents & the panel.
 
+**V3 IS OFF THE SYSTEM (July 4, evening — Ben's call: "I don't want it
+anymore"). `phosphor` now IS v4**, installed from a real compiled deb:
+`packaging/build-deb.sh` was reworked (wave-4 step 19's deb half,
+pulled forward) → `phosphor_4.0.0~wave2.6_amd64.deb` (stripped binary,
+Depends just libpipewire-0.3-0/libc6/libgcc-s1, Recommends ffmpeg;
+ships the 4-panel icon as hicolor `phosphor-scope`, the three starter
+kits at /usr/share/phosphor/kits — chrome now scans that dir — and a
+desktop file with `%f` + audio MimeTypes so "Open with Phosphor"
+works). The `~wave2.6` version sorts before 4.0.0, so wave debs
+upgrade cleanly into the real release. Verified on Ben's REAL profile:
+White theme, Q2U target, geometry, glow taste all migrated untouched.
+The phosphor4-era user-level side-by-side artifacts (~/.local/bin
+symlink, phosphor4.desktop, user icons) are removed — one entry, one
+command. STILL PENDING FOR WAVE 4: deleting the Python tree from the
+REPO (tests/test_native_parity.py + capture_golden.py still reference
+it; goldens themselves are captured and safe), and the v3-era Cinnamon
+applet on Ben's panel (bundles its own engine, keeps working
+standalone; wave 3's GJS rewrite replaces it). phosphor-studio is
+uninstalled with v3 — the studio returns in Rust in wave 4.
+
 **Wave 2.6 — compose + the confidence pass (branch `v4-wave2.6`).**
 Ben's ask: "open feature requests/polish, double check things, raise
 confidence." He pulled COMPOSE forward from the wave-4 deferral; the

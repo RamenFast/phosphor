@@ -496,6 +496,9 @@ impl Shell {
         let home = std::env::var_os("HOME").unwrap_or_default();
         scan(std::path::PathBuf::from(&home)
              .join(".local/share/phosphor/kits"));
+        // the deb's starter kits (v3 shipped these too); the relative
+        // dir keeps repo-cwd development working
+        scan(std::path::PathBuf::from("/usr/share/phosphor/kits"));
         scan(std::path::PathBuf::from("kits"));
         kits.sort();
         let selected = self.settings.kit_path.clone();
