@@ -129,6 +129,17 @@ Settings: FULL key set, foreign keys preserved on write-back (test).
 theorize (pw-top found the RT_PROCESS miss; a busctl receipt found
 actions starving while quiet-asleep — drains now happen at tick level).
 
+**Fold into wave 3 (from Ben's install-night drive):** a CPU-raster
+worker thread — chrome currently shares the render thread with the
+scope, so a slow CPU raster drags the whole UI (Ben: "the UI slows
+down when the visual does… can't we multi thread it?"). Design:
+worker owns the CPU renderer, publishes a double-buffered RGBA frame;
+the chrome thread uploads the latest texture and never blocks. GPU
+path already effectively decoupled (compute is cheap, passes are
+async). Also note: v3 profiles may carry `renderer=cairo` (chosen for
+the pre-2.5 washout) — the GPU renderer is the intended default and
+runs 480-locked where cairo sags to 52.
+
 **Wave 3 (V4PLAN steps 10–14): agents & the panel.** Control socket
 (Unix NDJSON): `ctl`/`tap`/`feed` + `probe --at`; kit
 validate/inspect CLI + shipped JSON schemas (Ben's bedtime law: a 7B

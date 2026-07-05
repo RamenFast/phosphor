@@ -57,6 +57,16 @@ timeline + recorded deferrals** (bottom section).
   Rationale: the engine holds 384 k live at 26.5 fps CPU-noise (worst
   case) and GPU 1873 fps-eq; realtime reconstruction never drops on
   this hardware. Revisit only if a real workload sags.
+  **Postscript (2.6 install night):** a real workload DID sag — Ben's
+  profile carried v3's `renderer=cairo` choice (made when v3's GPU
+  looked washed; the 2.5 sRGB fix removed that reason), and cairo at
+  full res ran 52–65 fps on Attack Vector while the SAME settings on
+  the GPU renderer lock 480.0 (his cap). Precompute would not have
+  helped: it caches SEGMENTS, and the cairo cost is per-frame
+  RASTERIZATION. Decision stands. The real follow-up is Ben's
+  observation that chrome shares the scope's thread — a CPU-raster
+  worker (double-buffered frame texture, chrome never blocks) is
+  queued for wave 3.
 - **Playlist panel DnD reorder** — v3 had no reorder either; drops
   replace the list verbatim (parity, not a gap).
 
