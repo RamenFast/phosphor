@@ -1,19 +1,18 @@
 #!/usr/bin/env bash
-# Build the Debian package for Phosphor v4 (the compiled Rust binary)
+# Build the Debian package for Phosphor (the compiled Rust binary)
 # straight from the working tree.
 #
 #   packaging/build-deb.sh          -> packaging/dist/phosphor_<version>_<arch>.deb
 #
-# Version: bump VERSION below per wave; the ~ suffix sorts BEFORE the
-# final 4.0.0, so wave debs upgrade cleanly into the real release.
-# (The v3 python-tree packaging this replaced lives in git history —
-# last shipped as phosphor_3.5.0_amd64.deb.)
+# Pre-release builds append a ~ suffix (sorts BEFORE the release, so
+# wave debs upgraded cleanly into 4.0.0). The v3 python-tree packaging
+# lives in git history — last shipped as phosphor_3.5.0_amd64.deb.
 set -euo pipefail
 
 project_directory="$(cd "$(dirname "$0")/.." && pwd)"
 packaging_directory="$project_directory/packaging"
 package_name="phosphor"
-VERSION="4.0.0~wave3.3"
+VERSION="4.0.0"
 
 # The binary: build fresh, package a stripped copy.
 (cd "$project_directory" && cargo build --release --quiet -p phosphor-app)

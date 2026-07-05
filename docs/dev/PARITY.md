@@ -216,3 +216,14 @@ studio-panel integration (wave 4), timeline (wave 4)}.
 Ben daily-drives it for an evening: capture, vacuum, media keys,
 glass, mini, and now — do the themes have soul, is the chrome no
 longer laggy. HANDOFF law: the heart emoji is the acceptance test.
+
+## Wave 4.0-immaculate — the purge (2026-07-05)
+
+| Item | State | Receipt |
+|---|---|---|
+| ZERO Python: 17 root `phosphor_*.py` + 8 test generators deleted; `core/` (v3 cdylib) deleted; v3 icon svg gone | ✅ | `git ls-files '*.py'` → 0; workspace builds + 20 suites green with nothing referencing the tree |
+| Goldens kept + provenance recorded | ✅ | docs/dev/GOLDEN.md (generators live at tag v3.5.0; fixtures are frozen ground truth) |
+| Version is REAL: workspace 4.0.0, `--version` prints `phosphor 4.0.0 (v4)`, deb builds `phosphor_4.0.0_amd64.deb` | ✅ | build receipt above |
+| Repo identity: Cargo repository → RamenFast/phosphor (was 2bmb) | ✅ | Cargo.toml |
+| Root tidy: planning-era docs → docs/dev/ (V4PLAN, APPLET-PLAN, SPIKES, BENCH, PARITY, NEXUS-FORM-STATION, PHOSPHOR-STATION, the v4 prompt, FUTURE) — root is README/LICENSE/HANDOFF + code | ✅ | `ls` receipt |
+| FUTURE.md rewritten to the post-4.0 road; applet/README rewritten (engine-free truth + honest GNOME/KDE table) | ✅ | this commit |
