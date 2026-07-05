@@ -167,6 +167,9 @@ pub fn build_playlist(path: &Path) -> (Vec<PathBuf>, usize) {
 
 impl Shell {
     pub(crate) fn play_file(&mut self, path: &Path, rebuild_playlist: bool) {
+        // a track replaces the compose loop; no explicit stop needed —
+        // start_file below stops the previous stream (v3 law)
+        self.exit_compose(false);
         if rebuild_playlist {
             let (playlist, index) = build_playlist(path);
             self.player.playlist = playlist;

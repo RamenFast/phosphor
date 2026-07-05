@@ -30,7 +30,7 @@ fn pictures_directory() -> PathBuf {
     PathBuf::from(home).join("Pictures/Phosphor")
 }
 
-fn timestamp() -> String {
+pub(crate) fn timestamp() -> String {
     // %Y%m%d-%H%M%S without a chrono dep
     let output = std::process::Command::new("date")
         .arg("+%Y%m%d-%H%M%S")
@@ -49,7 +49,9 @@ fn timestamp() -> String {
 
 /// Minimal RIFF/WAVE writer: f32 stereo → 16-bit PCM (what the clip
 /// muxer wants and what postcards use anyway).
-fn write_wav(path: &Path, samples: &[f32], rate: u32) -> std::io::Result<()> {
+pub(crate) fn write_wav(path: &Path, samples: &[f32], rate: u32)
+    -> std::io::Result<()>
+{
     let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
     let data_bytes = (samples.len() * 2) as u32;
     file.write_all(b"RIFF")?;
@@ -153,7 +155,7 @@ pub fn save_clip(history: Vec<f32>, settings: Settings, rate: u32)
                "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"])
         .arg(&out_path)
         .stdin(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("ffmpeg: {e}"))?;
     let mut stdin = encoder.stdin.take().ok_or("ffmpeg stdin")?;
@@ -167,10 +169,15 @@ pub fn save_clip(history: Vec<f32>, settings: Settings, rate: u32)
         }
     }
     drop(stdin);
+    let encode_error = crate::render::stderr_tail(&mut encoder);
     let status = encoder.wait().map_err(|e| e.to_string())?;
     let _ = std::fs::remove_file(&wav_path);
     if !status.success() {
-        return Err("clip encode failed".into());
+        return Err(if encode_error.is_empty() {
+            "clip encode failed".into()
+        } else {
+            format!("clip encode failed: {encode_error}")
+        });
     }
     Ok(out_path)
 }

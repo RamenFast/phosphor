@@ -492,9 +492,7 @@ impl AudioEngine {
             let _ = reply_receiver.recv_timeout(Duration::from_secs(2));
         }
         if let Some(module_id) = self.vacuum_module.lock().unwrap().take() {
-            let _ = std::process::Command::new("pactl")
-                .args(["unload-module", &module_id])
-                .status();
+            unload_vacuum_module(&module_id);
         }
     }
 
@@ -512,10 +510,25 @@ impl Drop for AudioEngine {
             let _ = thread.join();
         }
         if let Some(module_id) = self.vacuum_module.lock().unwrap().take() {
-            let _ = std::process::Command::new("pactl")
-                .args(["unload-module", &module_id])
-                .status();
+            unload_vacuum_module(&module_id);
         }
+    }
+}
+
+/// The vacuum law: pactl is silent on success — check return codes,
+/// not stdout. A failed unload isn't fatal (the next-launch sweep
+/// rescues), but it must never be invisible.
+fn unload_vacuum_module(module_id: &str) {
+    match std::process::Command::new("pactl")
+        .args(["unload-module", module_id])
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        Ok(status) => eprintln!(
+            "phosphor: pactl unload-module {module_id} exited {status} \
+             (the launch sweep will rescue)"),
+        Err(error) => eprintln!(
+            "phosphor: pactl unload-module {module_id}: {error}"),
     }
 }
 
@@ -1115,24 +1128,39 @@ fn sweep_stale_pulse_modules() -> usize {
     }
     let listing = String::from_utf8_lossy(&output.stdout);
     let mut removed = 0;
-    for line in listing.lines() {
-        let mut parts = line.split('\t');
-        let (Some(module_id), Some(module_name)) = (parts.next(), parts.next()) else {
-            continue;
-        };
-        let arguments = parts.next().unwrap_or("");
-        if module_name == "module-null-sink" && arguments.contains(crate::VACUUM_SINK_NAME) {
-            let unloaded = std::process::Command::new("pactl")
-                .args(["unload-module", module_id])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if unloaded {
-                removed += 1;
-            }
+    for module_id in stale_vacuum_module_ids(&listing) {
+        let unloaded = std::process::Command::new("pactl")
+            .args(["unload-module", module_id])
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if unloaded {
+            removed += 1;
         }
     }
     removed
+}
+
+/// Which modules in a `pactl list short modules` listing (tab-separated
+/// `id \t name \t arguments`) are phosphor vacuum sinks. Only
+/// module-null-sink whose ARGUMENTS name the vacuum qualifies — other
+/// people's null-sinks are not ours to unload.
+fn stale_vacuum_module_ids(listing: &str) -> Vec<&str> {
+    listing
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\t');
+            let (Some(module_id), Some(module_name)) =
+                (parts.next(), parts.next())
+            else {
+                return None;
+            };
+            let arguments = parts.next().unwrap_or("");
+            (module_name == "module-null-sink"
+             && arguments.contains(crate::VACUUM_SINK_NAME))
+                .then_some(module_id)
+        })
+        .collect()
 }
 
 /// `default.audio.sink` metadata value is JSON: `{"name":"sink-name"}`.
@@ -1443,4 +1471,40 @@ fn build_playback_stream(
         stream,
         _listener: listener,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stale_sweep_matches_only_our_null_sinks() {
+        let listing = concat!(
+            "1\tmodule-alsa-card\tdevice_id=0\n",
+            "23\tmodule-null-sink\tsink_name=phosphor_vacuum ",
+            "sink_properties=device.description=Phosphor\\ Vacuum\n",
+            "24\tmodule-null-sink\tsink_name=someone_elses_sink\n",
+            "25\tmodule-loopback\tsink_name=phosphor_vacuum\n",
+            "26\tmodule-null-sink\tsink_name=phosphor_vacuum\n",
+        );
+        assert_eq!(stale_vacuum_module_ids(listing), vec!["23", "26"]);
+    }
+
+    #[test]
+    fn stale_sweep_survives_malformed_lines() {
+        assert!(stale_vacuum_module_ids("").is_empty());
+        assert!(stale_vacuum_module_ids("garbage with no tabs\n\n")
+                .is_empty());
+        // a null-sink line with no arguments column: not ours
+        assert!(stale_vacuum_module_ids("9\tmodule-null-sink")
+                .is_empty());
+    }
+
+    #[test]
+    fn metadata_name_parses_json_only() {
+        assert_eq!(parse_metadata_name(r#"{"name":"alsa_output.pci"}"#),
+                   Some("alsa_output.pci".to_string()));
+        assert_eq!(parse_metadata_name("not json"), None);
+        assert_eq!(parse_metadata_name(r#"{"other":"x"}"#), None);
+    }
 }

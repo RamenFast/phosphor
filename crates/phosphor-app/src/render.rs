@@ -180,7 +180,7 @@ fn spawn_encoder(input: &Path, output: &Path, width: u32, height: u32,
         .spawn()
 }
 
-fn stderr_tail(child: &mut Child) -> String {
+pub(crate) fn stderr_tail(child: &mut Child) -> String {
     let mut text = String::new();
     if let Some(mut stderr) = child.stderr.take() {
         let _ = stderr.read_to_string(&mut text);
@@ -202,15 +202,21 @@ pub fn build_computer(settings: &Settings, rate: u32)
     computer.set_sample_rate(rate, 1);
     if settings.kit_enabled
         && let Some(path) = &settings.kit_path {
-            // a broken kit shouldn't kill an export; render it plain
-            if let Ok(kit) = phoskit::load(Path::new(path)) {
-                let stages: Vec<(KitOp, [f64; 4])> = kit.stages.iter()
-                    .filter_map(|(op, parameters)| {
-                        KitOp::from_name(op)
-                            .map(|op| (op, *parameters))
-                    })
-                    .collect();
-                computer.set_kit(&stages);
+            // a broken kit shouldn't kill an export; render it plain —
+            // but never silently (the GUI toasts on KitChanged too)
+            match phoskit::load(Path::new(path)) {
+                Ok(kit) => {
+                    let stages: Vec<(KitOp, [f64; 4])> = kit.stages
+                        .iter()
+                        .filter_map(|(op, parameters)| {
+                            KitOp::from_name(op)
+                                .map(|op| (op, *parameters))
+                        })
+                        .collect();
+                    computer.set_kit(&stages);
+                }
+                Err(error) => eprintln!(
+                    "phosphor: kit ignored ({path}): {error}"),
             }
         }
     Ok(computer)
@@ -223,7 +229,7 @@ pub fn build_theme(settings: &Settings) -> Theme {
                       settings.custom_grid_color)
     } else {
         Theme::preset(&settings.theme_name)
-            .unwrap_or_else(|| Theme::preset("P7 Green").unwrap())
+            .unwrap_or_else(|| phosphor_beam::THEME_PRESETS[0].1)
     };
     if settings.amoled_background {
         theme = theme.with_amoled();

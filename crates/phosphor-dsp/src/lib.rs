@@ -27,6 +27,7 @@
 use std::str::FromStr;
 
 mod camera;
+pub mod compose;
 mod fft;
 mod kit;
 mod modes;

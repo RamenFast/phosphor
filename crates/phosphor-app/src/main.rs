@@ -7,14 +7,17 @@
 //! `--render`, `--mini`, `--screensaver`, `--visitor`.
 //! All agent-grade: `--output json`, exit codes 0/2/3/4.
 //!
-//! Wave-1 state: `render` and `bench` are real; the remaining arms
-//! land with their waves and until then exit 2 with a short directive
-//! message (never a silent success — no fallback paths in v4).
+//! State after waves 1–2.6: the GUI (default command), `render`, and
+//! `bench` are real; `probe`/`tap`/`ctl`/`feed`/`kit` land with wave 3
+//! and `studio` with wave 4 — until then those arms exit 2 with a
+//! short directive message (never a silent success — no fallback
+//! paths in v4).
 
 use std::process::ExitCode;
 
 mod bench;
 mod chrome;
+mod compose;
 mod exports;
 mod keyboard;
 mod mpris;

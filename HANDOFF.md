@@ -1,6 +1,38 @@
 # Handoff — next session starts here
 
-## WAVES 1, 2, 2.5 ARE DONE (July 4, 2026). Wave 3 is next: agents & the panel.
+## WAVES 1, 2, 2.5, 2.6 ARE DONE (July 4, 2026). Wave 3 is next: agents & the panel.
+
+**Wave 2.6 — compose + the confidence pass (branch `v4-wave2.6`).**
+Ben's ask: "open feature requests/polish, double check things, raise
+confidence." He pulled COMPOSE forward from the wave-4 deferral; the
+rest was an audit-driven polish pass. Shipped: compose mode complete
+(math in `phosphor-dsp::compose` — studio reuses it, one engine rule;
+state machine in `phosphor-app/src/compose.rs`; draw→hear verified
+XTEST-live: the square redraws EXACTLY in place, retune 80→161 Hz
+pinned in the wav bytes). THREE real bugs found by receipts, all
+fixed with root causes: (1) **the scope wheel was dead since wave 2**
+— egui's `wants_pointer_input()` counts the CentralPanel as an egui
+area, so `over_ui` was always true and gain/dolly/mini-resize wheels
+never fired; the gate is now the scope response's occlusion-aware
+`hovered()` (stored per frame). (2) **Space during playback started
+device capture OVER the playing track** (double-feed chaos on screen)
+— v3's law says capture-toggle while a track is loaded is PLAY/PAUSE;
+ported into the CaptureOn arm so Space, the LIVE button, and the
+context menu all inherit it. Found because Ben said "use our actual
+wav songs for testing" — Attack Vector's complex scenes surface what
+synthetic squares don't; keep that habit. (3) **auto-gain was
+checkbox-only** — no AGC ever ran; v3's `_update_auto_gain` ported
+(instant attack, 0.999 release, 0.92 target, 0.05 glide; receipt: a
+0.1-amplitude circle fills at the 6.0 clamp; full-scale masters
+correctly untouched). Plus: .phoskit drag-drop import (a missed v3.2
+parity feature, was a stub toast), broken-kit warnings (stderr +
+toast, never silent), clip-export ffmpeg stderr captured, vacuum
+pactl return codes checked, kit-save/theme unwraps removed, keyboard
+map + Konami + escape cascade pinned by tests, vacuum sweep parse
+tested. Workspace: 74 tests, clippy silent, bench ALL PASS, vacuum
+gate 12/12. Only unreceipted hop: the literal click on the new
+"Export drawing as WAV (10 s)" context-menu item (menu automation
+races a live human mouse; the machinery below it is receipt-proven).
 
 **Wave 2.5 — the Feel Wave — shipped (branch `v4-wave2.5`, merged+tagged)**
 after Ben's first hands-on. It cleared his whole feedback list. Three
