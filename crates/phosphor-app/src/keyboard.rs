@@ -204,7 +204,22 @@ impl Shell {
                 self.settings.playlist_panel_open = self.player.panel_open;
             }
             Some(KeyCommand::FpsToggle) => {
-                self.settings.show_fps = !self.settings.show_fps;
+                // F cycles: off → fps → nerd HUD → off
+                match (self.settings.show_fps,
+                       self.settings.show_fps_detail)
+                {
+                    (false, _) => {
+                        self.settings.show_fps = true;
+                        self.settings.show_fps_detail = false;
+                    }
+                    (true, false) => {
+                        self.settings.show_fps_detail = true;
+                    }
+                    (true, true) => {
+                        self.settings.show_fps = false;
+                        self.settings.show_fps_detail = false;
+                    }
+                }
             }
             Some(KeyCommand::Quit) => return KeyOutcome::CloseRequested,
             Some(KeyCommand::FullscreenToggle) => {

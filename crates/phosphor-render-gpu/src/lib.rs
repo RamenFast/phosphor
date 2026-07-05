@@ -63,6 +63,87 @@ pub struct GpuRenderer {
     /// physical px, so σ needs the scale factor separately or HiDPI
     /// beams come out 1/scale too thin. Offline stays 1.0 (goldens).
     pub display_scale: f32,
+    /// GPU timing across decay+beam (None when the adapter lacks
+    /// TIMESTAMP_QUERY or the device wasn't given the feature).
+    timer: Option<GpuTimer>,
+}
+
+/// Pass-level timestamps around the energy passes, resolved through a
+/// two-slot staging ring so reading NEVER blocks the frame. The
+/// measured span is decay→beam — the deposit cost, the number that
+/// moves with the music.
+struct GpuTimer {
+    query_set: wgpu::QuerySet,
+    resolve: wgpu::Buffer,
+    staging: [wgpu::Buffer; 2],
+    pending: [bool; 2],
+    slot: usize,
+    ready: std::sync::mpsc::Receiver<usize>,
+    ready_sender: std::sync::mpsc::Sender<usize>,
+    period_ns: f32,
+    last_ms: Option<f32>,
+}
+
+impl GpuTimer {
+    fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Option<GpuTimer> {
+        if !device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+            return None;
+        }
+        let query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: Some("beam timing"),
+            ty: wgpu::QueryType::Timestamp,
+            count: 2,
+        });
+        let resolve = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("beam timing resolve"),
+            size: 16,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let staging = [0, 1].map(|i| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(if i == 0 { "beam timing 0" }
+                            else { "beam timing 1" }),
+                size: 16,
+                usage: wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            })
+        });
+        let (ready_sender, ready) = std::sync::mpsc::channel();
+        Some(GpuTimer {
+            query_set,
+            resolve,
+            staging,
+            pending: [false; 2],
+            slot: 0,
+            ready,
+            ready_sender,
+            period_ns: queue.get_timestamp_period(),
+            last_ms: None,
+        })
+    }
+
+    /// Harvest any finished mapping (non-blocking).
+    fn drain(&mut self) {
+        while let Ok(slot) = self.ready.try_recv() {
+            {
+                let mapped = self.staging[slot].slice(..).get_mapped_range();
+                let ticks: [u64; 2] = [
+                    u64::from_le_bytes(mapped[0..8].try_into().unwrap()),
+                    u64::from_le_bytes(mapped[8..16].try_into().unwrap()),
+                ];
+                if ticks[1] > ticks[0] {
+                    self.last_ms = Some(
+                        (ticks[1] - ticks[0]) as f32 * self.period_ns
+                            / 1.0e6);
+                }
+            }
+            self.staging[slot].unmap();
+            self.pending[slot] = false;
+        }
+    }
 }
 
 fn create_energy_pair(device: &wgpu::Device, format: wgpu::TextureFormat,
@@ -129,6 +210,7 @@ impl GpuRenderer {
                                        width, height, supersample,
                                        surface_format)?;
         renderer.hardware_encodes = surface_format.is_srgb();
+        renderer.timer = GpuTimer::new(&renderer.device, &renderer.queue);
         eprintln!(
             "phosphor: scope {}x{} ss{} energy {:?} surface {:?} \
 hw_encode={}",
@@ -416,6 +498,7 @@ hw_encode={}",
             scope_alpha: 1.0,
             hardware_encodes: false,
             display_scale: 1.0,
+            timer: None,
         })
     }
 
@@ -470,6 +553,20 @@ hw_encode={}",
                                     float_bytes(flat));
         }
 
+        // timing: pump the callback queue, harvest finished readbacks,
+        // and only write timestamps when a staging slot is free —
+        // reading NEVER stalls a frame
+        if self.timer.is_some() {
+            let _ = self.device.poll(wgpu::PollType::Poll);
+        }
+        if let Some(timer) = &mut self.timer {
+            timer.drain();
+        }
+        let time_this_frame = self.timer.as_ref()
+            .map(|timer| !timer.pending[timer.slot])
+            .unwrap_or(false);
+        let query_set = self.timer.as_ref().map(|t| &t.query_set);
+
         let source = self.current;
         let target = 1 - source;
         let decay_bind_group = self.device.create_bind_group(
@@ -507,6 +604,15 @@ hw_encode={}",
                                 store: wgpu::StoreOp::Store,
                             },
                         })],
+                    timestamp_writes: query_set
+                        .filter(|_| time_this_frame)
+                        .map(|qs| wgpu::RenderPassTimestampWrites {
+                            query_set: qs,
+                            beginning_of_pass_write_index: Some(0),
+                            // empty frame: this pass carries both ends
+                            end_of_pass_write_index: segments
+                                .is_empty().then_some(1),
+                        }),
                     ..Default::default()
                 });
             pass.set_pipeline(&self.decay_pipeline);
@@ -527,6 +633,13 @@ hw_encode={}",
                                 store: wgpu::StoreOp::Store,
                             },
                         })],
+                    timestamp_writes: query_set
+                        .filter(|_| time_this_frame)
+                        .map(|qs| wgpu::RenderPassTimestampWrites {
+                            query_set: qs,
+                            beginning_of_pass_write_index: None,
+                            end_of_pass_write_index: Some(1),
+                        }),
                     ..Default::default()
                 });
             pass.set_pipeline(&self.beam_pipeline);
@@ -536,8 +649,33 @@ hw_encode={}",
                     ..segments.len() as u64 * SEGMENT_STRIDE));
             pass.draw(0..6, 0..segments.len() as u32);
         }
+        if time_this_frame && let Some(timer) = &self.timer {
+            encoder.resolve_query_set(&timer.query_set, 0..2,
+                                      &timer.resolve, 0);
+            encoder.copy_buffer_to_buffer(
+                &timer.resolve, 0, &timer.staging[timer.slot], 0, 16);
+        }
         self.queue.submit([encoder.finish()]);
+        if time_this_frame && let Some(timer) = &mut self.timer {
+            let slot = timer.slot;
+            timer.pending[slot] = true;
+            let sender = timer.ready_sender.clone();
+            timer.staging[slot].slice(..).map_async(
+                wgpu::MapMode::Read,
+                move |result| {
+                    if result.is_ok() {
+                        let _ = sender.send(slot);
+                    }
+                });
+            timer.slot = 1 - slot;
+        }
         self.current = target;
+    }
+
+    /// Latest measured decay→beam GPU span in milliseconds (None until
+    /// the first readback lands, or without TIMESTAMP_QUERY).
+    pub fn gpu_frame_ms(&self) -> Option<f32> {
+        self.timer.as_ref().and_then(|timer| timer.last_ms)
     }
 
     /// Uniforms + bind group for a composite pass. `origin` is the

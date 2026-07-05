@@ -28,6 +28,7 @@ mod keyboard;
 mod kit;
 mod mpris;
 mod player;
+mod raster_worker;
 mod render;
 mod shell;
 mod theme;

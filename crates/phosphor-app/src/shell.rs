@@ -20,7 +20,6 @@ use std::time::{Duration, Instant};
 
 use phosphor_audio::{AudioEngine, AudioEvent};
 use phosphor_proto::settings::{default_path, Settings};
-use phosphor_render_cpu::CpuRenderer;
 use phosphor_render_gpu::GpuRenderer;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -85,8 +84,24 @@ struct Graphics {
 }
 
 struct CpuScope {
-    renderer: CpuRenderer,
+    /// the raster thread (issue #5): chrome never blocks on a raster
+    worker: crate::raster_worker::RasterWorker,
     texture: Option<egui::TextureHandle>,
+    /// size of the newest published frame (0,0 until one lands)
+    frame_size: (usize, usize),
+    /// worker-measured advance+composite cost (HUD)
+    raster_ms: Option<f32>,
+}
+
+impl CpuScope {
+    fn fresh() -> CpuScope {
+        CpuScope {
+            worker: crate::raster_worker::RasterWorker::spawn(),
+            texture: None,
+            frame_size: (0, 0),
+            raster_ms: None,
+        }
+    }
 }
 
 enum RendererChoice {
@@ -300,6 +315,18 @@ pub struct Shell {
     fps_frames: u32,
     fps_window_start: Instant,
     pub last_fps: f64,
+    /// rolling frame-work times (ms) while advancing — p99 source
+    work_ms_ring: [f32; 240],
+    work_ms_count: usize,
+    last_work_ms: f32,
+    /// redraw gaps > 1.5× the pacing period while actively rendering
+    dropped_frames: u32,
+    last_segment_count: usize,
+    /// segments accumulated over the current fps window → seg/s (the
+    /// per-frame count is misleading: 384 kHz reconstruction arrives
+    /// in ~8k bursts every ~21 ms with zeros between — measured)
+    segments_window: usize,
+    segments_per_second: f64,
     pub(crate) capture_on: bool,
     pub(crate) beam_source: BeamSource,
     pub(crate) status_line: String,
@@ -397,6 +424,13 @@ impl Shell {
             fps_frames: 0,
             fps_window_start: Instant::now(),
             last_fps: 0.0,
+            work_ms_ring: [0.0; 240],
+            work_ms_count: 0,
+            last_work_ms: 0.0,
+            dropped_frames: 0,
+            last_segment_count: 0,
+            segments_window: 0,
+            segments_per_second: 0.0,
             capture_on: false,
             beam_source: BeamSource::Silent,
             status_line: String::new(),
@@ -439,8 +473,16 @@ impl Shell {
                 compatible_surface: Some(&surface),
                 ..Default::default()
             })).expect("adapter");
+        // GPU timestamps for the nerd HUD, when the adapter has them
+        // (RADV does) — a missing feature just means gpu_ms reads None.
+        let timestamp_features = adapter.features()
+            & wgpu::Features::TIMESTAMP_QUERY;
         let (device, queue) = pollster::block_on(
-            adapter.request_device(&wgpu::DeviceDescriptor::default()))
+            adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("phosphor live"),
+                required_features: timestamp_features,
+                ..Default::default()
+            }))
             .expect("device");
 
         let capabilities = surface.get_capabilities(&adapter);
@@ -513,11 +555,7 @@ impl Shell {
             RendererChoice::Cpu => None,
         };
         let scope_cpu = match self.renderer_choice {
-            RendererChoice::Cpu => Some(CpuScope {
-                renderer: CpuRenderer::new(config.width as usize,
-                                           config.height as usize, 1),
-                texture: None,
-            }),
+            RendererChoice::Cpu => Some(CpuScope::fresh()),
             RendererChoice::Gpu => None,
         };
 
@@ -1431,8 +1469,9 @@ impl Shell {
             .as_ref()
             .map(|g| g.size())
             .or_else(|| graphics.scope_cpu.as_ref().map(|c| {
-                (c.renderer.width() as u32, c.renderer.height() as u32)
+                (c.frame_size.0 as u32, c.frame_size.1 as u32)
             }))
+            .filter(|(w, h)| *w > 0 && *h > 0)
             .unwrap_or((graphics.config.width, graphics.config.height));
         graphics.scope_gpu = None;
         graphics.scope_cpu = None;
@@ -1462,11 +1501,7 @@ impl Shell {
                 }
             }
             RendererChoice::Cpu => {
-                graphics.scope_cpu = Some(CpuScope {
-                    renderer: CpuRenderer::new(
-                        width as usize, height as usize, 1),
-                    texture: None,
-                });
+                graphics.scope_cpu = Some(CpuScope::fresh());
             }
         }
         self.apply_render_settings(graphics);
@@ -1487,15 +1522,8 @@ impl Shell {
             gpu.grid_spacing_fraction = grid_fraction;
             gpu.display_scale = scale;
         }
-        if let Some(cpu) = graphics.scope_cpu.as_mut() {
-            cpu.renderer.beam_focus = self.settings.beam_focus;
-            cpu.renderer.persistence = self.settings.persistence;
-            cpu.renderer.theme = theme;
-            cpu.renderer.grid_enabled = self.settings.grid_enabled;
-            cpu.renderer.grid_spacing_fraction = grid_fraction;
-            cpu.renderer.display_scale = scale
-                * self.settings.cairo_resolution.clamp(0.25, 1.0);
-        }
+        // CPU path: nothing to push — every RasterJob carries the full
+        // settings snapshot, so the worker is always current.
     }
 
     /// Autosize: scale the trace to fill the screen (v3
@@ -1561,6 +1589,18 @@ impl Shell {
         };
     }
 
+    /// p99 of the recorded frame-work times (0 until enough frames).
+    fn work_p99_ms(&self) -> f32 {
+        let filled = self.work_ms_count.min(self.work_ms_ring.len());
+        if filled < 8 {
+            return 0.0;
+        }
+        let mut window: Vec<f32> =
+            self.work_ms_ring[..filled].to_vec();
+        window.sort_by(|a, b| a.total_cmp(b));
+        window[((filled as f32 * 0.99) as usize).min(filled - 1)]
+    }
+
     pub(crate) fn wake_render_loop(&mut self) {
         self.quiet_frame_count = 0;
         self.fade_out_frames_remaining = FADE_OUT_FRAMES;
@@ -1590,6 +1630,20 @@ impl Shell {
     /// quiet-check, maybe render). Returns whether to keep ticking.
     fn redraw(&mut self) -> bool {
         let now = Instant::now();
+        // dropped-frame receipt: a gap past 1.5× the pacing period
+        // while the loop was actively rendering is a missed frame
+        if self.render_loop_active
+            && let Some(previous) = self.last_frame_time
+        {
+            let period_hz = self.cap_hz();
+            if period_hz > 0.0 {
+                let gap = now.duration_since(previous).as_secs_f64();
+                if gap > 1.5 / period_hz {
+                    self.dropped_frames =
+                        self.dropped_frames.saturating_add(1);
+                }
+            }
+        }
         self.last_frame_time = Some(now);
 
         // v3's "0 = uncapped/monitor": pace at the panel's refresh.
@@ -1784,7 +1838,33 @@ impl Shell {
         let Some(mut graphics) = self.graphics.take() else {
             return false;
         };
+        let work_started = Instant::now();
         let keep_going = self.frame(&mut graphics, &samples, advancing);
+        if advancing {
+            let work_ms = work_started.elapsed().as_secs_f32() * 1e3;
+            self.last_work_ms = work_ms;
+            self.work_ms_ring[self.work_ms_count
+                              % self.work_ms_ring.len()] = work_ms;
+            self.work_ms_count += 1;
+            // dip log: a frame past 2× the pacing period, named
+            let period_hz = self.cap_hz();
+            if self.args.fps_log && period_hz > 0.0
+                && work_ms as f64 > 2000.0 / period_hz
+            {
+                eprintln!(
+                    "{}",
+                    serde_json::json!({
+                        "dip": true,
+                        "t": (self.started.elapsed().as_secs_f64()
+                              * 10.0).round() / 10.0,
+                        "work_ms": (work_ms * 100.0).round() / 100.0,
+                        "gpu_ms": graphics.scope_gpu.as_ref()
+                            .and_then(|g| g.gpu_frame_ms()),
+                        "segments": self.last_segment_count,
+                    })
+                );
+            }
+        }
         // actions drain at TICK level: while quiet-asleep the frame
         // early-outs, but MPRIS media keys must still act (found live:
         // Next while paused sat queued forever)
@@ -1808,9 +1888,20 @@ impl Shell {
                         "quiet": self.quiet_frame_count
                             > QUIET_FRAMES_BEFORE_SLEEP,
                         "active": self.render_loop_active,
+                        "work_ms": (self.last_work_ms * 100.0)
+                            .round() / 100.0,
+                        "p99_ms": (self.work_p99_ms() * 100.0)
+                            .round() / 100.0,
+                        "gpu_ms": self.graphics.as_ref()
+                            .and_then(|g| g.scope_gpu.as_ref())
+                            .and_then(|g| g.gpu_frame_ms()),
+                        "drops": self.dropped_frames,
                     })
                 );
             }
+            self.segments_per_second =
+                self.segments_window as f64 / window_elapsed.as_secs_f64();
+            self.segments_window = 0;
             self.fps_frames = 0;
             self.fps_window_start = Instant::now();
         }
@@ -1873,9 +1964,7 @@ impl Shell {
                 if let Some(gpu) = graphics.scope_gpu.as_mut() {
                     gpu.grid_spacing_fraction = fraction;
                 }
-                if let Some(cpu) = graphics.scope_cpu.as_mut() {
-                    cpu.renderer.grid_spacing_fraction = fraction;
-                }
+                // CPU path: the next RasterJob carries it (grid_gain)
             }
             let mut segments: Vec<[f32; 5]> = if self.compose_drawing {
                 // the stroke in progress previews directly as
@@ -1894,6 +1983,8 @@ impl Shell {
                     trace_w as f32, trace_h as f32));
             }
             let segments = &segments[..];
+            self.last_segment_count = segments.len();
+            self.segments_window += segments.len();
             // ---- tap: broadcast a cheap frame observation to any
             // `phosphor tap` subscribers (skip everything when none) ----
             if let Some(control) = &self.control {
@@ -1922,37 +2013,36 @@ impl Shell {
                 gpu.advance(segments);
             }
             if let Some(cpu) = graphics.scope_cpu.as_mut() {
-                // v3's CPU resolution law: render at scope x fraction,
-                // the egui image upscales (0.75/0.5 presets — this was
-                // silently ignored in wave 2, all CPU frames full-res)
+                // v3's CPU resolution law lives in trace_w/h (scope ×
+                // fraction). The job snapshot makes the worker current
+                // without any cross-thread settings plumbing.
                 let fraction =
                     self.settings.cairo_resolution.clamp(0.25, 1.0);
-                let target_w = ((scope_width as f32 * fraction) as usize)
-                    .max(64);
-                let target_h = ((scope_height as f32 * fraction) as usize)
-                    .max(64);
-                let (w, h) = (cpu.renderer.width(), cpu.renderer.height());
-                if w != target_w || h != target_h {
-                    let mut renderer = CpuRenderer::new(
-                        target_w, target_h, 1);
-                    renderer.beam_focus = cpu.renderer.beam_focus;
-                    renderer.persistence = cpu.renderer.persistence;
-                    renderer.theme = cpu.renderer.theme;
-                    renderer.grid_enabled = cpu.renderer.grid_enabled;
-                    renderer.grid_spacing_fraction =
-                        cpu.renderer.grid_spacing_fraction;
-                    cpu.renderer = renderer;
-                }
-                cpu.renderer.advance(segments);
+                cpu.worker.submit(crate::raster_worker::RasterJob {
+                    segments: segments.to_vec(),
+                    width: trace_w as usize,
+                    height: trace_h as usize,
+                    beam_focus: self.settings.beam_focus,
+                    persistence: self.settings.persistence,
+                    theme: build_theme(&self.settings),
+                    grid_enabled: self.settings.grid_enabled,
+                    grid_spacing_fraction:
+                        phosphor_beam::grid_spacing_fraction(
+                            self.grid_gain),
+                    display_scale: pixels_per_point * fraction,
+                });
             }
         }
 
-        // CPU path: upload the composite as an egui texture
-        if let Some(cpu) = graphics.scope_cpu.as_mut() {
-            let size = [cpu.renderer.width(), cpu.renderer.height()];
-            let pixels = cpu.renderer.composite();
+        // CPU path: upload the newest PUBLISHED frame (the worker owns
+        // the raster; a slow raster no longer drags the chrome — #5)
+        if let Some(cpu) = graphics.scope_cpu.as_mut()
+            && let Some(frame) = cpu.worker.take_frame()
+        {
+            cpu.frame_size = (frame.width, frame.height);
+            cpu.raster_ms = Some(frame.raster_ms);
             let image = egui::ColorImage::from_rgba_unmultiplied(
-                size, pixels);
+                [frame.width, frame.height], &frame.pixels);
             match cpu.texture.as_mut() {
                 Some(texture) => texture.set(image, Default::default()),
                 None => {
@@ -1968,6 +2058,11 @@ impl Shell {
         let cpu_texture_id =
             graphics.scope_cpu.as_ref()
                 .and_then(|c| c.texture.as_ref().map(|t| t.id()));
+        // HUD numbers snapshot (the egui closure can't reach graphics)
+        let graphics_scope_gpu_ms = graphics.scope_gpu.as_ref()
+            .and_then(|g| g.gpu_frame_ms());
+        let cpu_raster_ms = graphics.scope_cpu.as_ref()
+            .and_then(|c| c.raster_ms);
         let mut scope_rect_out = self.scope_rect;
         let egui_ctx = graphics.egui_ctx.clone();
         self.player.tick_overlay();
@@ -2079,29 +2174,72 @@ impl Shell {
                 // fps overlay: top-right of the scope, mono, all modes
                 // (mini + fullscreen included — Ben's requested home)
                 if self.settings.show_fps {
-                    let text = format!("{:.0} fps", self.last_fps);
+                    // fps plate: smaller type, ACCENT digits on a
+                    // surface plate (ink-on-plate was invisible over a
+                    // hot beam — Ben's "same color, no delineation"),
+                    // and F cycles fps → nerd HUD → off
+                    let mut lines =
+                        vec![format!("{:.0} fps", self.last_fps)];
+                    if self.settings.show_fps_detail {
+                        lines.push(format!(
+                            "cpu {:>5.2} ms · p99 {:>5.2}",
+                            self.last_work_ms, self.work_p99_ms()));
+                        let gpu_ms = graphics_scope_gpu_ms;
+                        if let Some(gpu_ms) = gpu_ms {
+                            lines.push(format!(
+                                "gpu {gpu_ms:>5.2} ms · beam"));
+                        }
+                        if let Some(raster_ms) = cpu_raster_ms {
+                            lines.push(format!(
+                                "raster {raster_ms:>5.2} ms · worker"));
+                        }
+                        lines.push(format!(
+                            "{:.0}k seg/s · {} kHz · {}",
+                            self.segments_per_second / 1000.0,
+                            self.settings.scope_sample_rate / 1000,
+                            if cpu_texture_id.is_some() { "cpu" }
+                            else { "gpu" }));
+                        lines.push(format!(
+                            "{}×{} @{:.2} · {} drops",
+                            trace_w, trace_h, pixels_per_point,
+                            self.dropped_frames));
+                    }
+                    let font = egui::FontId::monospace(11.0);
                     let anchor = egui::pos2(
                         scope_rect_out.max.x - 10.0,
                         scope_rect_out.min.y + 8.0);
                     let painter = ui.painter();
-                    // hairline-boxed for legibility over any beam
-                    let galley = painter.layout_no_wrap(
-                        text.clone(), egui::FontId::monospace(12.0),
-                        self.active_palette.ink);
+                    let galleys: Vec<_> = lines.iter().map(|line| {
+                        painter.layout_no_wrap(
+                            line.clone(), font.clone(),
+                            self.active_palette.accent)
+                    }).collect();
+                    let width = galleys.iter()
+                        .map(|g| g.size().x)
+                        .fold(0.0f32, f32::max);
+                    let line_height = galleys.first()
+                        .map(|g| g.size().y).unwrap_or(12.0);
+                    let height =
+                        line_height * galleys.len() as f32
+                        + 2.0 * (galleys.len().saturating_sub(1)) as f32;
                     let box_rect = egui::Rect::from_min_size(
-                        egui::pos2(anchor.x - galley.size().x - 6.0,
+                        egui::pos2(anchor.x - width - 6.0,
                                    anchor.y - 2.0),
-                        galley.size() + egui::vec2(12.0, 4.0));
+                        egui::vec2(width + 12.0, height + 4.0));
                     painter.rect_filled(box_rect, 0.0,
-                        self.active_palette.surface.gamma_multiply(0.72));
+                        self.active_palette.surface.gamma_multiply(0.82));
                     painter.rect_stroke(box_rect, 0.0,
                         egui::Stroke::new(1.0, self.active_palette.line),
                         egui::StrokeKind::Inside);
-                    painter.text(
-                        egui::pos2(anchor.x, anchor.y),
-                        egui::Align2::RIGHT_TOP, text,
-                        egui::FontId::monospace(12.0),
-                        self.active_palette.ink);
+                    let mut y = anchor.y;
+                    for line in &lines {
+                        painter.text(
+                            egui::pos2(anchor.x, y),
+                            egui::Align2::RIGHT_TOP, line.clone(),
+                            font.clone(),
+                            self.active_palette.accent);
+                        y += line_height + 2.0;
+                    }
                 }
                 // transient toast: bottom-center, sharp hairline frame,
                 // fades over ~2.5 s (snapshot saved, vacuum notes…)
