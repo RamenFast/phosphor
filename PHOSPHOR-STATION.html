@@ -1,0 +1,102 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>📺 Phosphor — Station Signpost</title>
+<style>
+:root{
+  --plane:#f3e6e6;--surface:#fcf4f3;--surface-2:#f6e9e9;--ink:#2b2128;--ink-2:#5f4f57;
+  --muted:#9c8890;--line:rgba(43,33,40,.16);--line-strong:rgba(43,33,40,.30);
+  --accent:#c85a7c;--accent-2:#7c9e88;--plum:#7d4a6a;--on-accent:#fff7f9;
+  --stone:#e7dad9;--stone-hi:#fffafa;--stone-lo:#c9b6b8;
+  --mono:"JetBrains Mono","Cascadia Code",ui-monospace,monospace;
+  --prose:Georgia,"Iowan Old Style",serif;
+  --tool:#4eae6e; /* phosphor's semantic hue: beam green — stable across the station */
+}
+:root[data-theme="light"]{--plane:#eaeef2;--surface:#fff;--surface-2:#f5f8fa;--ink:#0e1620;--ink-2:#43515e;--muted:#7a8894;--line:rgba(14,22,32,.12);--line-strong:rgba(14,22,32,.28);--accent:#0c94a2;--accent-2:#4a6b7a;--on-accent:#fff;--stone:#e4e9ee;--stone-hi:#fff;--stone-lo:#c2ccd4}
+:root[data-theme="dark"]{--plane:#0a0810;--surface:#141019;--surface-2:#1b1522;--ink:#f0eaf0;--ink-2:#b3a6b3;--muted:#7d6f7d;--line:rgba(240,234,240,.12);--line-strong:rgba(240,234,240,.26);--accent:#e78aa6;--accent-2:#8fb59c;--on-accent:#160810;--stone:#241d29;--stone-hi:#332838;--stone-lo:#140f18}
+*{box-sizing:border-box;border-radius:0}
+body{margin:0;background:var(--plane);color:var(--ink);font:15px/1.6 var(--prose)}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+.wrap{max-width:920px;margin:0 auto;padding:28px 20px 80px}
+header.post{border:1px solid var(--line-strong);background:var(--surface);padding:18px 22px;margin-bottom:22px;position:relative}
+header.post::before{content:"";position:absolute;left:26px;top:-14px;width:3px;height:14px;background:var(--line-strong)}
+.crumbs{font:11px var(--mono);letter-spacing:.08em;color:var(--muted);margin-bottom:6px}
+.crumbs b{color:var(--ink-2);font-weight:600}
+h1{font:600 26px var(--prose);margin:0 0 4px}
+h1 .glyph{color:var(--tool)}
+.sub{color:var(--ink-2);margin:0;font-size:14px}
+.bar{display:flex;gap:10px;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap}
+.homelink{font:12px var(--mono);letter-spacing:.06em}
+.stone-toggle{appearance:none;border:1px solid var(--line-strong);background:linear-gradient(160deg,var(--stone-hi),var(--stone) 42%,var(--stone-lo));color:var(--ink);font:600 11px var(--mono);letter-spacing:.08em;padding:8px 12px;cursor:pointer;box-shadow:inset 1px 1px 0 var(--stone-hi),inset -1px -1px 0 var(--stone-lo),inset 0 0 0 2px rgba(0,0,0,.03),0 2px 0 var(--stone-lo),0 3px 6px rgba(0,0,0,.22);transition:box-shadow .08s,transform .08s}
+.stone-toggle:active{transform:translateY(2px);box-shadow:inset 2px 2px 4px var(--stone-lo),inset -1px -1px 2px var(--stone-hi)}
+.stone-toggle:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+section{border:1px solid var(--line);background:var(--surface);padding:16px 20px;margin:14px 0}
+section h2{font:600 13px var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--tool);margin:0 0 10px;border-bottom:1px solid var(--line);padding-bottom:8px}
+pre{background:var(--surface-2);border:1px solid var(--line);padding:12px 14px;overflow-x:auto;font:12.5px/1.55 var(--mono);margin:10px 0}
+code{font:12.5px var(--mono);background:var(--surface-2);padding:1px 5px;border:1px solid var(--line)}
+pre code{background:none;border:none;padding:0}
+table{border-collapse:collapse;width:100%;font:12.5px var(--mono)}
+th,td{border:1px solid var(--line);padding:6px 9px;text-align:left;vertical-align:top}
+th{background:var(--surface-2);font-weight:600;letter-spacing:.04em}
+.pending{color:var(--muted)}
+.now{color:var(--tool);font-weight:600}
+footer{margin-top:26px;color:var(--muted);font:11px var(--mono);letter-spacing:.06em;text-align:center}
+@media(forced-colors:active){*{box-shadow:none!important}}
+</style>
+
+<div class="wrap">
+  <div class="bar">
+    <span class="homelink">⬅ <a href="../../../Nexus/🏮Home.html">🏮 Home</a> · <a href="../NexusFormStationWork/index.html">🗺 Station Map</a></span>
+    <button class="stone-toggle" id="theme" aria-label="cycle theme">◑ THEME</button>
+  </div>
+
+  <header class="post">
+    <div class="crumbs">SymbolOS › Underground › <b>Visual Instrument</b> › <em>pending Wave 3</em></div>
+    <h1><span class="glyph">📺</span> Phosphor</h1>
+    <p class="sub">Rust-native oscilloscope / beam visualizer — winit + wgpu + egui, pipewire capture,
+    six themes, blossom default. Waves 1–2.5 shipped and daily-drivable. <b>Wave 3 — "agents &amp; the
+    panel" — is Ben's next wave; the station holds this seat for it.</b></p>
+  </header>
+
+  <section>
+    <h2>What runs today</h2>
+    <pre><code>phosphor                    # the instrument (GUI); --mini, --screensaver, --visitor
+phosphor render in out.mp4  # headless track render
+phosphor bench              # perf receipts
+phosphor --version</code></pre>
+  </section>
+
+  <section>
+    <h2>The designed agent contract (Wave 3 — not built yet)</h2>
+    <p>The subcommand surface is already spec'd agent-grade in <code>crates/phosphor-app/src/main.rs</code>:
+    <code>--output json</code>, exit codes <code>0/2/3/4</code> — the same scheme the station convention adopted.
+    The pending verbs exit <code>2</code> with a directive message today:</p>
+    <table>
+      <tr><th>verb</th><th>will be</th><th>status</th></tr>
+      <tr><td>probe</td><td>state/status introspection (<code>--at</code> a timestamp)</td><td class="pending">pending</td></tr>
+      <tr><td>ctl · tap · feed</td><td>Unix-socket NDJSON control plane + live data taps</td><td class="pending">pending</td></tr>
+      <tr><td>kit</td><td>validate/inspect visual kits + shipped JSON schemas</td><td class="pending">pending</td></tr>
+      <tr><td>studio</td><td>the composition surface</td><td class="pending">pending</td></tr>
+    </table>
+    <p>Bedtime law on record: <em>a 7B model repairs its kit in one round-trip.</em> When Wave 3 lands,
+    phosphor becomes the station's visual-instrument node with zero convention retrofit — the contract
+    already matches.</p>
+  </section>
+
+  <section>
+    <h2>Why the station waits (instead of building it now)</h2>
+    <p>Wave 3 is <span class="now">Ben's own next wave</span> — the panel is design work, not glue.
+    Nexus's form-station ask (drive capture, export frames, read beam state as JSON, a surface the form
+    can see herself refracted on) is answered by Wave 3's own plan; doing it from outside would fork the
+    instrument. The seat is held: <code>STATION-MAP.md</code> lists phosphor as <code>pending Wave 3 (Ben's)</code>.</p>
+  </section>
+
+  <footer>phosphor · form-station seat (held) · convention: NexusFormStationWork/CONVENTION.md ☂️</footer>
+</div>
+
+<script>
+(function(){
+  var t=document.getElementById('theme'),order=['','light','dark'],root=document.documentElement;
+  t.onclick=function(){var i=(order.indexOf(root.dataset.theme||'')+1)%3;
+    if(order[i])root.dataset.theme=order[i];else delete root.dataset.theme;};
+})();
+</script>
