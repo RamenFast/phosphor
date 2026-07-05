@@ -90,6 +90,10 @@ fn main() -> ExitCode {
             println!("phosphor {} (v4)", env!("CARGO_PKG_VERSION"));
             0
         }
+        Some("--help") | Some("-h") | Some("help") => {
+            print_help();
+            0
+        }
         Some("render") => render::run(&arguments[1..]),
         Some("--render") => {
             // v3 muscle memory: `phosphor --render in out.mp4 [--rate N]`
@@ -104,14 +108,89 @@ fn main() -> ExitCode {
         Some("ctl") => agent::run_ctl(&arguments[1..]),
         Some("kit") => kit::run(&arguments[1..]),
         Some("schema") => agent::run_schema(&arguments[1..]),
-        Some(name) if PENDING.contains(&name) => {
-            eprintln!("phosphor {name}: not built yet (v4 wave in \
-                       progress; see V4PLAN.md)");
+        Some("--screensaver") => {
+            eprintln!("phosphor --screensaver: not built yet (returns \
+                       after 4.0)\nfix: run `phosphor` normally, or \
+                       `phosphor --mini` for the tiny scope");
             2
         }
-        // GUI is the default command (flags like --mini/--visitor/
-        // --fps-log fall through to the shell's own parser)
-        _ => shell::run(&arguments),
+        Some(name) if PENDING.contains(&name) => {
+            eprintln!("phosphor {name}: not built yet (returns after \
+                       4.0)\nfix: see the roadmap issues on GitHub");
+            2
+        }
+        // GUI is the default command
+        _ => launch_gui(&arguments),
     };
     ExitCode::from(code as u8)
+}
+
+/// The GUI path with a strict front door: unknown flags print help and
+/// exit 3 — `phosphor --help` once launched a window; never again. A
+/// plain human launch forwards to an already-running instance (focus +
+/// optional file) instead of spawning a second window.
+fn launch_gui(arguments: &[String]) -> i32 {
+    const FLAGS: &[&str] = &["--mini", "--visitor", "--fps-log"];
+    const FLAGS_WITH_VALUE: &[&str] = &["--exit-after"];
+    let mut iterator = arguments.iter();
+    while let Some(argument) = iterator.next() {
+        let flag = argument.as_str();
+        if FLAGS.contains(&flag) {
+            continue;
+        }
+        if FLAGS_WITH_VALUE.contains(&flag) {
+            iterator.next();
+            continue;
+        }
+        if flag.starts_with('-') {
+            eprintln!("phosphor: unknown option '{flag}'\n");
+            print_help();
+            return 3;
+        }
+        // positional = a file to open; shell::parse_args validates it
+    }
+
+    // Scripted/receipt runs opt out of single-instance; so does the
+    // wrapped --background GUI (its point is to coexist).
+    let scripted = arguments.iter().any(|a| {
+        a == "--fps-log" || a == "--exit-after" || a == "--visitor"
+    }) || std::env::var_os("PHOSPHOR_BACKGROUND").is_some()
+        || std::env::var_os("PHOSPHOR_NO_SINGLE_INSTANCE").is_some();
+    if !scripted {
+        let play_path = arguments.iter()
+            .find(|a| !a.starts_with('-'))
+            .map(String::as_str);
+        if let Some(code) = agent::forward_to_running_instance(play_path) {
+            return code;
+        }
+    }
+    shell::run(arguments)
+}
+
+fn print_help() {
+    println!(
+        "phosphor {} — a GPU oscilloscope for everything your PC plays\n\
+         \n\
+         usage:\n\
+         \x20 phosphor [FILE]              open the scope (or focus the running one)\n\
+         \x20 phosphor --mini              tiny always-on-top scope\n\
+         \x20 phosphor --background        headless GUI on a private display (agents)\n\
+         \x20 phosphor render IN OUT.mp4   offline render of a track or .phos\n\
+         \x20 phosphor bench               performance gates (JSON)\n\
+         \x20 phosphor probe [--json]      one-shot live status\n\
+         \x20 phosphor ctl VERB [ARGS]     drive the running scope\n\
+         \x20 phosphor tap                 NDJSON stream of beam frames\n\
+         \x20 phosphor feed                beam-segment feed (panel applet)\n\
+         \x20 phosphor kit validate|inspect FILE.phoskit…\n\
+         \x20 phosphor schema              the machine-readable surface\n\
+         \n\
+         options:\n\
+         \x20 --fps-log                    JSON fps lines on stderr\n\
+         \x20 --exit-after SECONDS         quit after a timed run\n\
+         \x20 -V, --version                print the version\n\
+         \n\
+         exit codes: 0 ok · 2 unavailable · 3 bad arguments · 4 runtime\n\
+         docs: man phosphor · docs/MANUAL.md · docs/AGENTS.md",
+        env!("CARGO_PKG_VERSION")
+    );
 }

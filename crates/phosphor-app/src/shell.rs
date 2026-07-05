@@ -133,6 +133,55 @@ pub(crate) enum UiAction {
     Quit,
 }
 
+/// The single source of truth for what feeds the beam. Transitions
+/// re-derive it via `sync_beam_source`; the target combo renders from it
+/// and probe reports it — so display state can never drift from the
+/// engine again (the "Spotify still selected → black screen" root).
+/// A `Player` source means the player session owns the beam, playing OR
+/// paused — capture outranks it while on.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub(crate) enum BeamSource {
+    Capture { combo_id: String },
+    /// several app streams folded (engine-ready; UI in the ensemble wave)
+    #[allow(dead_code)]
+    Mix { combo_ids: Vec<String> },
+    Player { path: std::path::PathBuf },
+    #[default]
+    Silent,
+}
+
+impl BeamSource {
+    /// What the collapsed target combo shows (chrome prepends the kind
+    /// icon). `resolve` maps a combo id to its human label.
+    pub(crate) fn combo_label(
+        &self, resolve: impl Fn(&str) -> Option<String>) -> String
+    {
+        match self {
+            BeamSource::Capture { combo_id } =>
+                resolve(combo_id).unwrap_or_else(|| combo_id.clone()),
+            BeamSource::Mix { combo_ids } =>
+                format!("APP mix ({})", combo_ids.len()),
+            BeamSource::Player { path } => path.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "playing file".into()),
+            BeamSource::Silent => "— pick a source —".into(),
+        }
+    }
+
+    pub(crate) fn status(&self) -> crate::control::SourceStatus {
+        let (kind, detail) = match self {
+            BeamSource::Capture { combo_id } =>
+                ("capture", Some(combo_id.clone())),
+            BeamSource::Mix { combo_ids } =>
+                ("mix", Some(combo_ids.join("+"))),
+            BeamSource::Player { path } =>
+                ("player", Some(path.to_string_lossy().to_string())),
+            BeamSource::Silent => ("silent", None),
+        };
+        crate::control::SourceStatus { kind: kind.into(), detail }
+    }
+}
+
 pub struct Shell {
     pub(crate) args: ShellArgs,
     pub(crate) settings: Settings,
@@ -209,6 +258,10 @@ pub struct Shell {
     /// the Resized burst we caused ourselves must NOT be read as a
     /// user corner-drag skew (would schedule a spurious re-square)
     mini_entering: Option<Instant>,
+    /// the scope context menu is open this frame — while true the mini
+    /// settle NEVER re-squares/snaps (the window moving under an open
+    /// menu was Ben's "right click glitches out a ton")
+    pub(crate) context_menu_open: bool,
     cursor_position: (f64, f64),
     /// pointer over the scope widget last frame (egui occlusion-aware:
     /// false under chrome, panels, or floating dialogs) — the wheel
@@ -248,6 +301,7 @@ pub struct Shell {
     fps_window_start: Instant,
     pub last_fps: f64,
     pub(crate) capture_on: bool,
+    pub(crate) beam_source: BeamSource,
     pub(crate) status_line: String,
 }
 
@@ -319,6 +373,7 @@ impl Shell {
             workarea_cache: None,
             mini_drag_active: false,
             mini_entering: None,
+            context_menu_open: false,
             cursor_position: (0.0, 0.0),
             scope_hovered: false,
             mini_last_click: None,
@@ -343,6 +398,7 @@ impl Shell {
             fps_window_start: Instant::now(),
             last_fps: 0.0,
             capture_on: false,
+            beam_source: BeamSource::Silent,
             status_line: String::new(),
         })
     }
@@ -502,10 +558,19 @@ impl Shell {
                         // (found live: the Attack Vector receipt drew
                         // both streams at once).
                         let paused = !self.player.paused;
+                        if !paused && self.capture_on {
+                            // resuming the track takes the beam back:
+                            // capture stops first, or both would feed
+                            // the ring at once (the double-feed law,
+                            // now symmetric with target-pick)
+                            self.engine.stop_capture();
+                            self.capture_on = false;
+                        }
                         self.engine.set_playback_paused(paused);
                         self.player.paused = paused;
                         self.set_mpris_status(
                             if paused { "Paused" } else { "Playing" });
+                        self.sync_beam_source(None);
                         self.wake_render_loop();
                         continue;
                     }
@@ -518,6 +583,8 @@ impl Shell {
                     self.engine.stop_capture();
                     self.capture_on = false;
                     self.status_line = "idle".into();
+                    self.sync_beam_source(None);
+                    self.wake_render_loop();
                 }
                 UiAction::TargetPicked(combo_id) => {
                     // switching away restores the sound (v3 law)
@@ -527,21 +594,35 @@ impl Shell {
                         // records it — the loop keeps playing (v3)
                         continue;
                     }
-                    if self.engine.is_playing_file() {
-                        self.engine.stop_playback();
+                    // A pick is an explicit "scope this": the playing
+                    // track PAUSES (not stops — Space brings it back)
+                    // and capture starts even from idle. The old guard
+                    // read is_playing_file() AFTER stopping playback,
+                    // so it was always false → nothing started, the
+                    // fade completed, and the scope froze black with
+                    // the combo still claiming the old source.
+                    if self.engine.is_playing_file() && !self.player.paused
+                    {
+                        self.engine.set_playback_paused(true);
+                        self.player.paused = true;
+                        self.set_mpris_status("Paused");
                     }
-                    if self.capture_on || self.engine.is_playing_file() {
-                        if self.engine.start_capture(&combo_id) {
-                            self.capture_on = true;
-                            self.wake_render_loop();
-                            self.status_line =
-                                format!("scoping {combo_id}");
-                        } else {
-                            self.capture_on = false;
-                            self.status_line =
-                                format!("capture failed: {combo_id}");
-                        }
+                    if self.engine.start_capture(&combo_id) {
+                        self.capture_on = true;
+                        self.status_line = format!("scoping {combo_id}");
+                        self.sync_beam_source(Some(combo_id));
+                    } else {
+                        self.capture_on = false;
+                        self.status_line =
+                            format!("capture failed: {combo_id}");
+                        self.toast_now(format!(
+                            "couldn't scope {combo_id} — see terminal"));
+                        self.sync_beam_source(None);
                     }
+                    // ALWAYS wake: even a failed start must repaint so
+                    // the scope shows its labeled state, never a
+                    // frozen stale frame
+                    self.wake_render_loop();
                 }
                 UiAction::RefreshTargets => {
                     self.refresh_target_cache();
@@ -660,6 +741,13 @@ impl Shell {
                 UiAction::PlayerNext => self.step_playlist(1),
                 UiAction::PlayerTogglePause => {
                     let paused = !self.player.paused;
+                    if !paused && self.capture_on {
+                        // resume takes the beam back from capture
+                        // (double-feed law, same as the LIVE toggle)
+                        self.engine.stop_capture();
+                        self.capture_on = false;
+                        self.sync_beam_source(None);
+                    }
                     self.engine.set_playback_paused(paused);
                     self.player.paused = paused;
                     self.set_mpris_status(
@@ -860,6 +948,7 @@ impl Shell {
                 self.player.playing = None;
                 self.player.duration = None;
                 self.set_mpris_status("Stopped");
+                self.sync_beam_source(None);
             }
             MprisCommand::SeekRelative(offset_micros) => {
                 let target = (self.engine.playback_position_seconds()
@@ -978,6 +1067,42 @@ impl Shell {
                     json!({"status": "ok", "verb": "target",
                            "result": {"id": id}})
                 }
+                ControlVerb::Raise => {
+                    if let Some(graphics) = &self.graphics {
+                        graphics.window.set_minimized(false);
+                        graphics.window.focus_window();
+                        json!({"status": "ok", "verb": "raise"})
+                    } else {
+                        json!({
+                            "status": "error",
+                            "error": "no window to raise yet",
+                            "fix": "retry once the GUI has mapped",
+                        })
+                    }
+                }
+                ControlVerb::Open(path) => {
+                    let path = std::path::PathBuf::from(
+                        path.strip_prefix("file://").unwrap_or(&path));
+                    if crate::player::is_audio_path(&path) && path.exists()
+                    {
+                        self.actions.push(UiAction::PlayPath(path.clone()));
+                        if let Some(graphics) = &self.graphics {
+                            graphics.window.set_minimized(false);
+                            graphics.window.focus_window();
+                        }
+                        json!({"status": "ok", "verb": "open",
+                               "result": {"path": path.to_string_lossy()}})
+                    } else {
+                        json!({
+                            "status": "error",
+                            "error": format!(
+                                "not a playable audio file: {}",
+                                path.display()),
+                            "fix": "give an existing wav/flac/mp3/ogg/\
+                                    m4a/opus/phos path",
+                        })
+                    }
+                }
                 verb @ (ControlVerb::Snapshot | ControlVerb::Clip) => {
                     let (kind, action) =
                         if matches!(verb, ControlVerb::Snapshot) {
@@ -1032,6 +1157,7 @@ impl Shell {
                 on: self.capture_on,
                 target_id: self.settings.target_id.clone(),
             },
+            source: self.beam_source.status(),
             player: crate::control::PlayerStatus {
                 track: self.player.playing.as_ref()
                     .map(|p| p.to_string_lossy().to_string()),
@@ -1350,12 +1476,16 @@ impl Shell {
         let theme = build_theme(&self.settings);
         let grid_fraction =
             phosphor_beam::grid_spacing_fraction(self.settings.gain);
+        // σ display-scale law: on-screen beam width = beam_focus
+        // logical px at any DPI (v3 parity — v4 traces physical px)
+        let scale = graphics.window.scale_factor() as f32;
         if let Some(gpu) = graphics.scope_gpu.as_mut() {
             gpu.beam_focus = self.settings.beam_focus;
             gpu.persistence = self.settings.persistence;
             gpu.theme = theme;
             gpu.grid_enabled = self.settings.grid_enabled;
             gpu.grid_spacing_fraction = grid_fraction;
+            gpu.display_scale = scale;
         }
         if let Some(cpu) = graphics.scope_cpu.as_mut() {
             cpu.renderer.beam_focus = self.settings.beam_focus;
@@ -1363,6 +1493,8 @@ impl Shell {
             cpu.renderer.theme = theme;
             cpu.renderer.grid_enabled = self.settings.grid_enabled;
             cpu.renderer.grid_spacing_fraction = grid_fraction;
+            cpu.renderer.display_scale = scale
+                * self.settings.cairo_resolution.clamp(0.25, 1.0);
         }
     }
 
@@ -1395,9 +1527,38 @@ impl Shell {
             self.capture_on = true;
             self.wake_render_loop();
             self.status_line = format!("scoping {combo_id}");
+            self.sync_beam_source(Some(combo_id));
         } else {
             self.status_line = "no capture target".into();
+            self.sync_beam_source(None);
         }
+    }
+
+    /// Re-derive `beam_source` from live session state: capture (with
+    /// its combo id) outranks the player session; a loaded track counts
+    /// as `Player` playing OR paused; else silent. Call after ANY
+    /// transition that touched `capture_on` or `player.playing`.
+    pub(crate) fn sync_beam_source(&mut self, fresh_capture_id: Option<String>) {
+        self.beam_source = if self.capture_on {
+            let combo_id = fresh_capture_id.or_else(|| {
+                match &self.beam_source {
+                    BeamSource::Capture { combo_id } =>
+                        Some(combo_id.clone()),
+                    BeamSource::Mix { .. } => None, // mix keeps itself
+                    _ => self.settings.target_id.clone(),
+                }
+            });
+            match (combo_id, &self.beam_source) {
+                (_, BeamSource::Mix { combo_ids }) =>
+                    BeamSource::Mix { combo_ids: combo_ids.clone() },
+                (Some(combo_id), _) => BeamSource::Capture { combo_id },
+                (None, _) => BeamSource::Silent,
+            }
+        } else if let Some(path) = self.player.playing.clone() {
+            BeamSource::Player { path }
+        } else {
+            BeamSource::Silent
+        };
     }
 
     pub(crate) fn wake_render_loop(&mut self) {
@@ -1456,6 +1617,8 @@ impl Shell {
                 AudioEvent::StreamEnded => {
                     self.capture_on = false;
                     self.status_line = "stream ended".into();
+                    self.sync_beam_source(None);
+                    self.chrome_dirty = true;
                 }
                 AudioEvent::TargetsChanged
                 | AudioEvent::DefaultSinkChanged => {
@@ -1890,6 +2053,28 @@ impl Shell {
                                 (alpha as f32 * 0.8) as u8));
                     }
                     ui.ctx().request_repaint();
+                }
+                // no-signal hint: capture is live but the target has
+                // been silent past the sleep window — a dark scope is
+                // now a LABELED state, never a mystery black screen
+                if matches!(self.beam_source,
+                            BeamSource::Capture { .. }
+                            | BeamSource::Mix { .. })
+                    && self.quiet_frame_count > QUIET_FRAMES_BEFORE_SLEEP
+                {
+                    let label = self.beam_source.combo_label(|id| {
+                        self.target_cache.iter()
+                            .find(|t| t.combo_id() == id)
+                            .map(|t| t.label.clone())
+                    });
+                    let anchor = egui::pos2(
+                        scope_rect_out.center().x,
+                        scope_rect_out.max.y - 18.0);
+                    ui.painter().text(
+                        anchor, egui::Align2::CENTER_BOTTOM,
+                        format!("no signal · {label}"),
+                        egui::FontId::monospace(12.0),
+                        self.active_palette.muted);
                 }
                 // fps overlay: top-right of the scope, mono, all modes
                 // (mini + fullscreen included — Ben's requested home)
@@ -2375,7 +2560,13 @@ impl ApplicationHandler<()> for Shell {
         if let Some(due) = self.mini_settle
             && Instant::now() >= due
         {
-            if self.mini_drag_active {
+            if self.context_menu_open {
+                // never re-square/snap under an OPEN menu — the window
+                // sliding out from beneath it was the mini right-click
+                // glitch. Defer until the menu closes.
+                self.mini_settle = Some(
+                    Instant::now() + Duration::from_millis(180));
+            } else if self.mini_drag_active {
                 // A WM drag is still marked live and no button-release
                 // or cursor-leave cleared it (winit gives no drag-end
                 // event, and some WMs swallow the release). Re-squaring

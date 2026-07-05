@@ -187,6 +187,7 @@ impl Shell {
         self.player.playing = Some(path.to_path_buf());
         self.player.paused = false;
         self.player.duration = None; // TrackStarted fills it
+        self.sync_beam_source(None);
         self.wake_render_loop();
         self.queue_gapless_next();
     }
@@ -256,6 +257,7 @@ impl Shell {
             self.player.playing = None;
             self.player.duration = None;
             self.status_line = format!("finished: {finished}");
+            self.sync_beam_source(None);
         }
     }
 

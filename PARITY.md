@@ -165,6 +165,25 @@ studio-panel integration (wave 4), timeline (wave 4)}.
 | Mini resize: full **8-zone** edge+corner hit-test (26 px corners, 8 px edges, pure fn + unit tests) with live resize-cursor hints | ✅ | 5 new shell tests; square law preserved |
 | Mini glitchiness, three root causes: xprop-per-settle → 30 s workarea cache; mid-drag resquare churn → drag-aware deferral (one resquare+snap at settle); set_mini_mode burst → 400 ms entry grace | ✅ | mini_square.png; WM-grab paths flagged for Ben's live pass (Xvfb has no WM) |
 
+## Wave 4.0-truth — correctness (2026-07-05, the ship session)
+
+| Item | State | Receipt |
+|---|---|---|
+| **BeamSource: one truth for what feeds the beam** (combo + probe render from it; `settings.target_id` is only the remembered preference) | ✅ | probe gains `source:{kind,detail}`; receipts below |
+| **TargetPicked dead-state fixed** (guard read `is_playing_file()` AFTER stopping playback → nothing started, fade → frozen black, combo lied) | ✅ | `tests/receipts/w1-geometry.sh`: pick during playback → track pauses, capture starts, `source.kind=capture` |
+| Resume takes the beam back (Space/toggle during capture stops capture — double-feed law made symmetric) | ✅ | receipt: `source.kind=player`, `capture.on=false` after toggle |
+| No-signal label (silent target past the sleep window says so on-scope) | ✅ | code path pinned by the quiet-law counters; live-drive owed to Ben's eyes |
+| **Single instance** (plain launch forwards `raise`/`open` to the live socket and exits 0; dev flags + `PHOSPHOR_NO_SINGLE_INSTANCE` bypass) | ✅ | receipt: second launch exit 0, "already running", window count unchanged; file forward lands in the player |
+| CLI front door: `--help`/`-h` print help (exit 0), unknown flags exit 3 — **`--help` used to launch the GUI** | ✅ | receipt script asserts both |
+| `kit validate|inspect` accepts N files (used to silently take the first) | ✅ | receipt: two missing files → two `valid:false` reports |
+| New ctl verbs `raise`, `open` (+ schema/usage) | ✅ | control.rs parse tests + forward receipts |
+| **Geometry truth (the "squished goniometer" investigation)** | ✅ proven round | L=sin/R=cos circle: bbox aspect **1.000** in xy AND xy45 through PLAYER and CAPTURE (private null sink); L-only = horizontal line; mono = M-axis line. Squish does not exist in v4's pipeline |
+| Live composite path armored (`composite_into` had ZERO coverage — a viewport bug could ship 19/19 green) | ✅ | `live_viewport.rs`: live == offline byte-exact at origin 137,41; clamp CROPS never stretches; round-circle canary |
+| σ HiDPI parity (v4 traces physical px; σ was 1/scale too thin vs v3 at HiDPI) | ✅ | `display_scale` on both renderers, live-only; offline stays 1.0 → goldens byte-identical |
+| CPU-live gamma (egui upload path was the one unverified encode) | ✅ single-encode | live window screenshots, scope-region mean: GPU 7.61 vs CPU 7.45 of 255 (2% = beam phase); double-encode would inflate mids ~40% |
+| Mini context menu (window re-squared/snapped UNDER the open menu; 20+ items overflowed the 200–520 px square) | ✅ | settle defers while a menu is open; compact scrolling menu in mini |
+| Permanent gates | ✅ | workspace tests green (57+23+…+3 live-viewport), clippy silent, vacuum untouched. Bench under the session's 1440p60 recording load: branch 163.3 vs master 158.7 on offline-96k (env tax, branch faster); absolute gates re-run in the release lap |
+
 ## The one receipt that matters
 
 Ben daily-drives it for an evening: capture, vacuum, media keys,

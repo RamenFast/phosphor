@@ -58,6 +58,11 @@ pub struct GpuRenderer {
     /// NOT apply its manual gamma (double-encode washes the beam —
     /// wave-2.5 receipt). Offline stays false → bytes unchanged.
     pub hardware_encodes: bool,
+    /// Display pixels per logical point for the LIVE path. v3 traced in
+    /// logical px with `pixel_scale = scale·supersample`; v4 traces in
+    /// physical px, so σ needs the scale factor separately or HiDPI
+    /// beams come out 1/scale too thin. Offline stays 1.0 (goldens).
+    pub display_scale: f32,
 }
 
 fn create_energy_pair(device: &wgpu::Device, format: wgpu::TextureFormat,
@@ -410,6 +415,7 @@ hw_encode={}",
             grid_spacing_fraction: 0.1125,
             scope_alpha: 1.0,
             hardware_encodes: false,
+            display_scale: 1.0,
         })
     }
 
@@ -426,7 +432,10 @@ hw_encode={}",
         let buffer_width = self.width * self.supersample;
         let buffer_height = self.height * self.supersample;
         let pixel_scale = self.supersample as f32;
-        let sigma = beam_sigma(self.beam_focus, pixel_scale);
+        // positions are already in trace px — only σ carries the
+        // display scale (beam width parity with v3 at any DPI)
+        let sigma = beam_sigma(self.beam_focus,
+                               pixel_scale * self.display_scale.max(0.1));
 
         self.queue.write_buffer(
             &self.decay_uniforms, 0,
@@ -700,19 +709,62 @@ hw_encode={}",
     }
 
     pub fn composite_and_read(&mut self) -> Vec<u8> {
-        let bytes_per_row = (self.width * 4).next_multiple_of(256);
+        let encoder = self.encode_composite();
+        self.finish_and_read_texture(encoder, None, self.width,
+                                     self.height)
+    }
+
+    /// Composite into a caller-shaped stand-in surface through the
+    /// LIVE path (`composite_into`: viewport + scissor + origin
+    /// uniform) and read the whole surface back. This is how tests pin
+    /// live-path geometry — the offline path can't catch a viewport
+    /// bug by construction (buffer size == output size there).
+    pub fn composite_into_read(&mut self, surface_width: u32,
+                               surface_height: u32,
+                               viewport: (f32, f32, f32, f32))
+                               -> Vec<u8> {
+        let texture = self.device.create_texture(
+            &wgpu::TextureDescriptor {
+                label: Some("live-path stand-in surface"),
+                size: wgpu::Extent3d {
+                    width: surface_width,
+                    height: surface_height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+        let view = texture.create_view(&Default::default());
+        let mut encoder = self.device.create_command_encoder(
+            &Default::default());
+        self.composite_into(&mut encoder, &view, viewport,
+                            Some(wgpu::Color::BLACK));
+        self.finish_and_read_texture(encoder, Some(&texture),
+                                     surface_width, surface_height)
+    }
+
+    /// Copy `texture` (default: the offline output) into a mapped
+    /// buffer and return tight RGBA rows.
+    fn finish_and_read_texture(&self, mut encoder: wgpu::CommandEncoder,
+                               texture: Option<&wgpu::Texture>,
+                               width: u32, height: u32) -> Vec<u8> {
+        let bytes_per_row = (width * 4).next_multiple_of(256);
         let readback = self.device.create_buffer(
             &wgpu::BufferDescriptor {
                 label: Some("readback"),
-                size: bytes_per_row as u64 * self.height as u64,
+                size: bytes_per_row as u64 * height as u64,
                 usage: wgpu::BufferUsages::COPY_DST
                     | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
             });
-        let mut encoder = self.encode_composite();
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
-                texture: &self.output_texture,
+                texture: texture.unwrap_or(&self.output_texture),
                 mip_level: 0,
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
@@ -726,8 +778,8 @@ hw_encode={}",
                 },
             },
             wgpu::Extent3d {
-                width: self.width,
-                height: self.height,
+                width,
+                height,
                 depth_or_array_layers: 1,
             });
         self.queue.submit([encoder.finish()]);
@@ -744,11 +796,11 @@ hw_encode={}",
         receiver.recv().expect("map channel").expect("map failed");
         let mapped = slice.get_mapped_range();
         let mut pixels =
-            Vec::with_capacity((self.width * self.height * 4) as usize);
-        for row in 0..self.height {
+            Vec::with_capacity((width * height * 4) as usize);
+        for row in 0..height {
             let start = (row * bytes_per_row) as usize;
             pixels.extend_from_slice(
-                &mapped[start..start + (self.width * 4) as usize]);
+                &mapped[start..start + (width * 4) as usize]);
         }
         drop(mapped);
         readback.unmap();

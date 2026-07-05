@@ -37,6 +37,10 @@ pub(crate) enum ControlVerb {
     Target(String),
     Snapshot,
     Clip,
+    /// focus + deiconify the window (single-instance forward, agents)
+    Raise,
+    /// load a file into the player (single-instance file forward)
+    Open(String),
     Quit,
 }
 
@@ -64,6 +68,9 @@ pub(crate) struct StatusSnapshot {
     pub theme: String,
     pub ui_style: String,
     pub capture: CaptureStatus,
+    /// what actually feeds the beam right now — the single truth the
+    /// combo renders and agents should trust over capture.target_id
+    pub source: SourceStatus,
     pub player: PlayerStatus,
     pub volume: f32,
     pub gain: GainStatus,
@@ -78,6 +85,14 @@ pub(crate) struct StatusSnapshot {
 pub(crate) struct CaptureStatus {
     pub on: bool,
     pub target_id: Option<String>,
+}
+
+#[derive(Clone, Default, serde::Serialize)]
+pub(crate) struct SourceStatus {
+    /// "capture" | "player" | "mix" | "silent"
+    pub kind: String,
+    /// capture: the combo id · player: the file path · mix: "a+b+c"
+    pub detail: Option<String>,
 }
 
 #[derive(Clone, Default, serde::Serialize)]
@@ -288,6 +303,12 @@ fn parse_verb(verb: &str, args: &Value) -> Result<ControlVerb, Value> {
         }))?),
         "snapshot" => ControlVerb::Snapshot,
         "clip" => ControlVerb::Clip,
+        "raise" => ControlVerb::Raise,
+        "open" => ControlVerb::Open(str_arg("path").ok_or_else(|| json!({
+            "status": "error",
+            "error": "open needs a 'path'",
+            "fix": "phosphor ctl open --path /music/song.flac",
+        }))?),
         "quit" => ControlVerb::Quit,
         other => return Err(json!({
             "status": "error",
@@ -624,6 +645,16 @@ mod tests {
             ControlVerb::Clip));
         assert!(matches!(verb_of(r#"{"op":"ctl","verb":"quit"}"#),
             ControlVerb::Quit));
+        assert!(matches!(verb_of(r#"{"op":"ctl","verb":"raise"}"#),
+            ControlVerb::Raise));
+        match verb_of(r#"{"op":"ctl","verb":"open","args":{"path":"/b.flac"}}"#) {
+            ControlVerb::Open(p) => assert_eq!(p, "/b.flac"),
+            _ => panic!("open should carry its path"),
+        }
+        // open without a path is a fix-bearing error
+        let err = parse_request(r#"{"op":"ctl","verb":"open"}"#).err().unwrap();
+        assert_eq!(err["status"], "error");
+        assert!(err["fix"].as_str().unwrap().contains("--path"));
     }
 
     #[test]
