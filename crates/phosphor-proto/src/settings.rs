@@ -61,6 +61,9 @@ pub struct Settings {
     pub target_id: Option<String>,
     pub pinned: bool,
     pub show_now_playing: bool,
+    /// systemwide toast with album art on track changes (own player
+    /// and whichever external player the beam is scoping)
+    pub track_notifications: bool,
     pub playback_volume: f32,
     pub shuffle: bool,
     pub repeat_mode: String,
@@ -115,6 +118,7 @@ impl Default for Settings {
             target_id: None,
             pinned: false,
             show_now_playing: true,
+            track_notifications: true,
             playback_volume: 1.0,
             shuffle: false,
             repeat_mode: "off".into(),
@@ -167,7 +171,8 @@ const OWNED_KEYS: &[&str] = &[
     "kit_enabled", "renderer", "gl_supersample", "cairo_resolution",
     "show_pin_button", "show_fps", "show_fps_detail", "max_fps",
     "target_id", "pinned",
-    "show_now_playing", "playback_volume", "shuffle", "repeat_mode",
+    "show_now_playing", "track_notifications", "playback_volume",
+    "shuffle", "repeat_mode",
     "playlist_panel_open", "postcard_credit", "vacuum_enabled",
 ];
 
@@ -264,6 +269,8 @@ impl Settings {
         take!("target_id", settings.target_id, optional_string);
         take!("pinned", settings.pinned, serde_json::Value::as_bool);
         take!("show_now_playing", settings.show_now_playing,
+              serde_json::Value::as_bool);
+        take!("track_notifications", settings.track_notifications,
               serde_json::Value::as_bool);
         take!("playback_volume", settings.playback_volume, float);
         take!("shuffle", settings.shuffle, serde_json::Value::as_bool);
@@ -363,6 +370,8 @@ impl Settings {
         map.insert("pinned".into(), self.pinned.into());
         map.insert("show_now_playing".into(),
                    self.show_now_playing.into());
+        map.insert("track_notifications".into(),
+                   self.track_notifications.into());
         map.insert("playback_volume".into(), f(self.playback_volume));
         map.insert("shuffle".into(), self.shuffle.into());
         map.insert("repeat_mode".into(),

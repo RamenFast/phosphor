@@ -115,6 +115,9 @@ pub(crate) enum UiAction {
     CaptureOn,
     CaptureOff,
     TargetPicked(String),
+    /// fold several app streams into one beam (issue #6 — the light
+    /// streams panel; the engine has been ready since wave 2)
+    StartMix(Vec<String>),
     RefreshTargets,
     ModeChanged,
     SignalTuning,
@@ -212,6 +215,10 @@ pub struct Shell {
     pub(crate) settings_panel_open: bool,
     /// the in-app Manual window (book icon, left of the gear)
     pub(crate) manual_open: bool,
+    /// the light-streams panel (mix several apps into one beam)
+    pub(crate) mix_panel_open: bool,
+    /// apps ticked in the light-streams panel (combo ids)
+    pub(crate) mix_selection: std::collections::HashSet<String>,
     pub(crate) active_palette: crate::theme::Palette,
     /// short-lived on-scope toast (snapshot saved, vacuum notes…)
     pub(crate) toast: Option<(String, Instant)>,
@@ -295,6 +302,11 @@ pub struct Shell {
     pub(crate) export_results:
         Option<mpsc::Receiver<Result<std::path::PathBuf, String>>>,
     mpris: Option<crate::mpris::MprisHandle>,
+    /// the MPRIS *client*: other players, watched and driven
+    pub(crate) mpris_client:
+        Option<crate::mpris_client::MprisClientHandle>,
+    /// last own-track desktop-notification id (replaced, not stacked)
+    notification_id: u32,
     /// the control socket (None headless / when the bind failed)
     control: Option<crate::control::ControlHandle>,
     /// a deferred snapshot/clip reply: the export runs on a thread, so
@@ -351,6 +363,7 @@ impl Shell {
         let computer = build_computer(&settings, settings.scope_sample_rate)
             .map_err(|(_, message)| message)?;
         let initial_gain = settings.gain;
+        let track_notifications = settings.track_notifications;
         let renderer_choice = if settings.renderer == "cairo" {
             RendererChoice::Cpu
         } else {
@@ -371,6 +384,8 @@ impl Shell {
             target_cache: Vec::new(),
             settings_panel_open: false,
             manual_open: false,
+            mix_panel_open: false,
+            mix_selection: Default::default(),
             active_palette: crate::theme::palette("blossom"),
             toast: None,
             kit_editor: None,
@@ -411,6 +426,8 @@ impl Shell {
             exporting: false,
             export_results: None,
             mpris: crate::mpris::spawn(),
+            mpris_client: crate::mpris_client::spawn(track_notifications),
+            notification_id: 0,
             // the control socket is bound in run() once the event loop
             // (and its wake proxy) exist
             control: None,
@@ -688,6 +705,38 @@ impl Shell {
                     // ALWAYS wake: even a failed start must repaint so
                     // the scope shows its labeled state, never a
                     // frozen stale frame
+                    self.wake_render_loop();
+                }
+                UiAction::StartMix(combo_ids) => {
+                    self.engine.vacuum_release();
+                    if self.composing {
+                        continue;
+                    }
+                    if self.engine.is_playing_file()
+                        && !self.player.paused
+                    {
+                        self.engine.set_playback_paused(true);
+                        self.player.paused = true;
+                        self.set_mpris_status("Paused");
+                    }
+                    let connected =
+                        self.engine.start_capture_mix(&combo_ids);
+                    if connected > 0 {
+                        self.capture_on = true;
+                        self.beam_source = BeamSource::Mix {
+                            combo_ids: combo_ids.clone(),
+                        };
+                        self.status_line = format!(
+                            "mixing {connected} light streams");
+                    } else {
+                        self.capture_on = false;
+                        self.sync_beam_source(None);
+                        self.status_line =
+                            "mix: no app streams connected".into();
+                        self.toast_now(String::from(
+                            "no running app streams matched — are \
+                             they playing right now?"));
+                    }
                     self.wake_render_loop();
                 }
                 UiAction::RefreshTargets => {
@@ -1141,7 +1190,18 @@ impl Shell {
                            "result": {"on": on}})
                 }
                 ControlVerb::Target(id) => {
-                    self.actions.push(UiAction::TargetPicked(id.clone()));
+                    // "mix:app:a+app:b" folds several app streams
+                    if let Some(list) = id.strip_prefix("mix:") {
+                        let members: Vec<String> = list
+                            .split('+')
+                            .map(str::to_string)
+                            .filter(|m| !m.is_empty())
+                            .collect();
+                        self.actions.push(UiAction::StartMix(members));
+                    } else {
+                        self.actions.push(
+                            UiAction::TargetPicked(id.clone()));
+                    }
                     json!({"status": "ok", "verb": "target",
                            "result": {"id": id}})
                 }
@@ -1221,6 +1281,12 @@ impl Shell {
     /// Refresh the status snapshot the control socket serves (cheap;
     /// once per tick). `status` replies read this instantly, no wake.
     fn update_control_snapshot(&self) {
+        // keep the client's notification gate current (atomic, cheap)
+        if let Some(client) = &self.mpris_client {
+            client.notify_enabled.store(
+                self.settings.track_notifications,
+                std::sync::atomic::Ordering::Relaxed);
+        }
         let Some(control) = &self.control else { return };
         let metadata = self.engine.current_track_metadata()
             .unwrap_or_default();
@@ -1602,6 +1668,27 @@ impl Shell {
         }
     }
 
+    /// The external player the beam is scoping right now, if any —
+    /// app capture matches by key; whole-output capture takes whoever
+    /// is Playing (v3's watcher law, now with hands).
+    pub(crate) fn linked_external_player(
+        &self) -> Option<crate::mpris_client::ExternalPlayer>
+    {
+        let client = self.mpris_client.as_ref()?;
+        let players = client.players.lock().unwrap();
+        let app_key = match &self.beam_source {
+            BeamSource::Capture { combo_id } =>
+                combo_id.strip_prefix("app:"),
+            BeamSource::Mix { .. } => None,
+            // the built-in player owns the transport; silent scopes
+            // nothing
+            BeamSource::Player { .. } | BeamSource::Silent => {
+                return None;
+            }
+        };
+        crate::mpris_client::linked_player(&players, app_key)
+    }
+
     /// Re-derive `beam_source` from live session state: capture (with
     /// its combo id) outranks the player session; a loaded track counts
     /// as `Player` playing OR paused; else silent. Call after ANY
@@ -1785,6 +1872,31 @@ impl Shell {
                     self.queue_gapless_next();
                     self.mpris_track_changed();
                     self.load_cover_art(&path);
+                    // the systemwide toast with the album art (Ben's
+                    // ask) — embedded cover written to the runtime
+                    // dir for the image-path hint
+                    if self.settings.track_notifications {
+                        let art_path = self.engine.current_cover_art()
+                            .and_then(|art| {
+                                let path =
+                                    crate::notify::own_art_path();
+                                std::fs::create_dir_all(
+                                    path.parent()?).ok()?;
+                                std::fs::write(&path, &art.data)
+                                    .ok()?;
+                                Some(path)
+                            });
+                        let title = metadata.title.clone()
+                            .unwrap_or_else(|| basename.clone());
+                        self.notification_id =
+                            crate::notify::notify_track_with_file(
+                                &title,
+                                metadata.artist.as_deref()
+                                    .unwrap_or(""),
+                                "Phosphor",
+                                art_path.as_deref(),
+                                self.notification_id);
+                    }
                     self.chrome_dirty = true;
                 }
             }
@@ -2124,6 +2236,7 @@ impl Shell {
                 self.ui_kit_editor(ctx);
                 self.ui_postcard_dialog(ctx);
                 self.ui_manual_window(ctx);
+                self.ui_mix_panel(ctx);
             }
             // (the bottom status bar is gone — track state lives in the
             //  transport row, fps is a scope overlay, transient notes

@@ -155,10 +155,30 @@ impl Shell {
                 egui::ComboBox::from_id_salt("target")
                     .width(240.0)
                     .selected_text(selected_label)
-                    .show_ui(ui, |ui| {
+    .show_ui(ui, |ui| {
                         let mut clicked = None;
+                        // grouped: OUT (whole outputs) · APP (one
+                        // program) · IN (microphones) — the flat list
+                        // made the three kinds blur together
+                        let mut last_kind = "";
                         for target in &self.target_cache {
                             let id = target.combo_id();
+                            let kind = if id.starts_with("app:") {
+                                "APPLICATIONS"
+                            } else if id.ends_with(".monitor") {
+                                "OUTPUTS"
+                            } else {
+                                "MICROPHONES"
+                            };
+                            if kind != last_kind {
+                                if !last_kind.is_empty() {
+                                    ui.add_space(2.0);
+                                }
+                                ui.label(egui::RichText::new(kind)
+                                    .monospace().size(10.0)
+                                    .color(self.active_palette.muted));
+                                last_kind = kind;
+                            }
                             // the check marks what actually FEEDS the
                             // beam — nothing is checked while a file
                             // plays (that was the ghost-selection bug)
@@ -170,6 +190,17 @@ impl Shell {
                             {
                                 clicked = Some(id);
                             }
+                        }
+                        ui.separator();
+                        let mixing = matches!(&self.beam_source,
+                                              BeamSource::Mix { .. });
+                        if ui.selectable_label(
+                            mixing,
+                            format!("{}  Mix several apps…",
+                                    icon::STACK))
+                            .clicked()
+                        {
+                            self.mix_panel_open = true;
                         }
                         if let Some(id) = clicked {
                             self.settings.target_id = Some(id.clone());
@@ -574,6 +605,12 @@ impl Shell {
                 }
             });
         ui.checkbox(&mut self.settings.show_pin_button, "Pin button");
+        ui.checkbox(&mut self.settings.track_notifications,
+                    "Track notifications")
+            .on_hover_text(
+                "A systemwide toast with the album art when the song \
+                 changes —\nfor files Phosphor plays and for the \
+                 player the beam is scoping");
         if ui.checkbox(&mut self.settings.show_now_playing, "Track info")
             .on_hover_text(
                 "Fade the artist/title into the corner when the song \
@@ -841,6 +878,91 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                 text_color);
         }
         response.on_hover_text(tooltip).clicked()
+    }
+
+    /// The light-streams panel (issue #6): tick several running apps,
+    /// fold them into ONE beam. The engine's mixer has been ready
+    /// since wave 2 — this is its first surface.
+    pub(crate) fn ui_mix_panel(&mut self, ctx: &egui::Context) {
+        if !self.mix_panel_open {
+            return;
+        }
+        let mut open = self.mix_panel_open;
+        let mut start: Option<Vec<String>> = None;
+        let mut stop = false;
+        egui::Window::new("Light streams")
+            .collapsible(false)
+            .resizable(false)
+            .default_width(300.0)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(
+                    "Fold several apps into one beam — every ticked \
+                     stream lands in the same light.");
+                ui.add_space(4.0);
+                let apps: Vec<(String, String)> = self.target_cache
+                    .iter()
+                    .filter(|t| t.combo_id().starts_with("app:"))
+                    .map(|t| (t.combo_id(), t.label.clone()))
+                    .collect();
+                if apps.is_empty() {
+                    ui.label(egui::RichText::new(
+                        "no apps are playing right now — start some \
+                         sound, then Refresh (⟳ in the toolbar)")
+                        .color(self.active_palette.muted));
+                }
+                for (id, label) in &apps {
+                    let mut ticked = self.mix_selection.contains(id);
+                    if ui.checkbox(&mut ticked, label).clicked() {
+                        if ticked {
+                            self.mix_selection.insert(id.clone());
+                        } else {
+                            self.mix_selection.remove(id);
+                        }
+                    }
+                }
+                // drop stale selections (apps that stopped playing)
+                self.mix_selection
+                    .retain(|id| apps.iter().any(|(a, _)| a == id));
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let n = self.mix_selection.len();
+                    ui.add_enabled_ui(n >= 1, |ui| {
+                        if self.bevel_button(
+                                ui, &format!("Scope the mix ({n})"),
+                                "Start capturing every ticked app \
+                                 into one beam")
+                            .clicked()
+                        {
+                            let mut members: Vec<String> = self
+                                .mix_selection.iter().cloned().collect();
+                            members.sort();
+                            start = Some(members);
+                        }
+                    });
+                    if matches!(&self.beam_source,
+                                crate::shell::BeamSource::Mix { .. })
+                        && self.bevel_button(ui, "Stop mix",
+                                             "Back to a single source")
+                            .clicked()
+                    {
+                        stop = true;
+                    }
+                });
+                ui.add_space(2.0);
+                ui.label(egui::RichText::new(
+                    "agents: phosphor ctl target \
+                     mix:app:one+app:two")
+                    .monospace().size(10.5)
+                    .color(self.active_palette.muted));
+            });
+        if let Some(members) = start {
+            self.actions.push(UiAction::StartMix(members));
+        }
+        if stop {
+            self.actions.push(UiAction::CaptureOff);
+        }
+        self.mix_panel_open = open;
     }
 
     /// The in-app Manual (book icon, left of the gear): the essentials

@@ -27,6 +27,8 @@ mod exports;
 mod keyboard;
 mod kit;
 mod mpris;
+mod mpris_client;
+mod notify;
 mod player;
 mod raster_worker;
 mod render;
