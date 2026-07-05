@@ -100,7 +100,9 @@ impl Default for Settings {
             scope_glass: false,
             glass_tint: 0.5,
             glass_tints: BTreeMap::new(),
-            ui_style: "dark".into(),
+            // the wanted default (Ben, wave 3.3) — was "dark", which
+            // meant fresh installs never saw the intended look
+            ui_style: "blossom_dark".into(),
             kit_path: None,
             kit_enabled: false,
             renderer: "gl".into(),

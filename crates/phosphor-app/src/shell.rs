@@ -210,6 +210,8 @@ pub struct Shell {
     pub(crate) actions: Vec<UiAction>,
     pub(crate) target_cache: Vec<phosphor_audio::CaptureTarget>,
     pub(crate) settings_panel_open: bool,
+    /// the in-app Manual window (book icon, left of the gear)
+    pub(crate) manual_open: bool,
     pub(crate) active_palette: crate::theme::Palette,
     /// short-lived on-scope toast (snapshot saved, vacuum notes…)
     pub(crate) toast: Option<(String, Instant)>,
@@ -368,6 +370,7 @@ impl Shell {
             actions: Vec::new(),
             target_cache: Vec::new(),
             settings_panel_open: false,
+            manual_open: false,
             active_palette: crate::theme::palette("blossom"),
             toast: None,
             kit_editor: None,
@@ -527,13 +530,38 @@ impl Shell {
         surface.configure(&device, &config);
 
         let egui_ctx = egui::Context::default();
-        // Phosphor icon font (the crate is literally named for the
-        // app) — replaces emoji so icons render at one consistent
-        // weight/size in every theme. Regular only: active/toggled
-        // state is encoded by the carved SURFACE + accent, never by a
-        // shape swap (the design system's rule #2).
+        // The type system (regalia wave): IBM Plex Sans for prose —
+        // egui's default Ubuntu-Light was the "text hard to read"
+        // culprit (a thin face at small sizes) — JetBrains Mono for
+        // DATA (the skill's mono rule), a Medium family for headings,
+        // and the Phosphor icon font for glyphs (no raw-unicode tofu).
         {
             let mut fonts = egui::FontDefinitions::default();
+            fonts.font_data.insert(
+                "plex-sans".into(),
+                egui::FontData::from_static(include_bytes!(
+                    "../assets/fonts/IBMPlexSans-Regular.ttf")).into());
+            fonts.font_data.insert(
+                "plex-sans-medium".into(),
+                egui::FontData::from_static(include_bytes!(
+                    "../assets/fonts/IBMPlexSans-Medium.ttf")).into());
+            fonts.font_data.insert(
+                "jetbrains-mono".into(),
+                egui::FontData::from_static(include_bytes!(
+                    "../assets/fonts/JetBrainsMono-Regular.ttf")).into());
+            if let Some(family) = fonts.families
+                .get_mut(&egui::FontFamily::Proportional)
+            {
+                family.insert(0, "plex-sans".into());
+            }
+            if let Some(family) = fonts.families
+                .get_mut(&egui::FontFamily::Monospace)
+            {
+                family.insert(0, "jetbrains-mono".into());
+            }
+            fonts.families.insert(
+                egui::FontFamily::Name("plex-medium".into()),
+                vec!["plex-sans-medium".into(), "plex-sans".into()]);
             egui_phosphor::add_to_fonts(
                 &mut fonts, egui_phosphor::Variant::Regular);
             egui_ctx.set_fonts(fonts);
@@ -892,10 +920,18 @@ impl Shell {
                                 Ok(monitor_id) => {
                                     self.engine.start_capture(&monitor_id);
                                     self.capture_on = true;
-                                    self.app_vacuum = Some(key);
+                                    self.app_vacuum = Some(key.clone());
+                                    self.sync_beam_source(
+                                        Some(monitor_id));
                                     self.wake_render_loop();
-                                    self.status_line =
-                                        "⌀ scoping the void".into();
+                                    // say what the light state IS —
+                                    // the ⌀ mystery, spelled out
+                                    self.status_line = format!(
+                                        "vacuum · {key} plays as light \
+                                         only (no sound)");
+                                    self.toast_now(format!(
+                                        "{key} → vacuum: light only, \
+                                         sound returns when released"));
                                 }
                                 Err(error) => {
                                     self.status_line =
@@ -911,8 +947,12 @@ impl Shell {
                             && self.engine.start_capture(&id)
                         {
                             self.capture_on = true;
+                            self.sync_beam_source(Some(id));
+                        } else {
+                            self.sync_beam_source(None);
                         }
-                        self.status_line = "vacuum released".into();
+                        self.status_line =
+                            "vacuum released — sound restored".into();
                     }
                 }
             }
@@ -2083,6 +2123,7 @@ impl Shell {
             if !self.is_fullscreen {
                 self.ui_kit_editor(ctx);
                 self.ui_postcard_dialog(ctx);
+                self.ui_manual_window(ctx);
             }
             // (the bottom status bar is gone — track state lives in the
             //  transport row, fps is a scope overlay, transient notes

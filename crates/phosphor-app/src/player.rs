@@ -276,25 +276,26 @@ impl Shell {
                     egui::Stroke::new(1.0, self.active_palette.line),
                     egui::StrokeKind::Inside);
             }
-            if ui.button(icon::SKIP_BACK).on_hover_text("Previous track in folder")
-                .clicked()
+            if self.bevel_button(ui, icon::SKIP_BACK,
+                                 "Previous track in folder").clicked()
             {
                 self.actions.push(UiAction::PlayerPrevious);
             }
             let play_label = if self.player.paused { icon::PLAY } else { icon::PAUSE };
-            if ui.button(play_label)
-                .on_hover_text("Play/pause the loaded file").clicked()
+            if self.bevel_button(ui, play_label,
+                                 "Play/pause the loaded file").clicked()
             {
                 self.actions.push(UiAction::PlayerTogglePause);
             }
-            if ui.button(icon::SKIP_FORWARD).on_hover_text("Next track in folder")
-                .clicked()
+            if self.bevel_button(ui, icon::SKIP_FORWARD,
+                                 "Next track in folder").clicked()
             {
                 self.actions.push(UiAction::PlayerNext);
             }
             let mut volume = self.settings.playback_volume;
             if ui.add(egui::Slider::new(&mut volume, 0.0..=1.0)
-                      .show_value(false))
+                      .show_value(false)
+                      .trailing_fill(true))
                 .on_hover_text("Track volume — just this stream, not \
                                 the whole system")
                 .changed()
@@ -302,20 +303,26 @@ impl Shell {
                 self.settings.playback_volume = volume;
                 self.engine.set_volume(cubic_volume(volume));
             }
+            // the readout the volume never had (slider audit)
+            ui.label(egui::RichText::new(
+                format!("{:>3.0} %", volume * 100.0)).monospace());
             // Vacuum is a signature control → carved/dimensional.
-            if self.carved_toggle(ui, "\u{2300}",
+            // Icon-font glyph (U+2300 was a tofu candidate).
+            if self.carved_toggle(ui, icon::PROHIBIT,
                 self.settings.vacuum_enabled,
-                "Vacuum mode — the track plays as light only: nothing \
-                 reaches\nthe speakers, the beam sees everything. \
-                 (Sound can't cross\na vacuum; a CRT is a vacuum tube.)")
+                "Vacuum — light only: the track plays full-tilt into \
+                 the void,\nnothing reaches the speakers, the beam \
+                 sees everything.\n(Sound can't cross a vacuum; a CRT \
+                 is a vacuum tube.)")
             {
                 self.settings.vacuum_enabled = !self.settings.vacuum_enabled;
                 self.actions.push(UiAction::PlayerVacuumToggled);
                 self.actions.push(UiAction::SaveSettings);
             }
-            let mut shuffle = self.settings.shuffle;
-            if ui.toggle_value(&mut shuffle, icon::SHUFFLE).clicked() {
-                self.settings.shuffle = shuffle;
+            if self.bevel_toggle(ui, icon::SHUFFLE, self.settings.shuffle,
+                                 "Shuffle")
+            {
+                self.settings.shuffle = !self.settings.shuffle;
                 self.actions.push(UiAction::SaveSettings);
                 self.actions.push(UiAction::GaplessRequeue);
             }
@@ -324,8 +331,9 @@ impl Shell {
                 "one" => icon::REPEAT_ONCE,
                 _ => icon::ARROW_RIGHT,
             };
-            if ui.button(repeat_label)
-                .on_hover_text("Repeat: off → all → one").clicked()
+            if self.bevel_toggle(ui, repeat_label,
+                                 self.settings.repeat_mode != "off",
+                                 "Repeat: off → all → one")
             {
                 self.settings.repeat_mode =
                     match self.settings.repeat_mode.as_str() {
@@ -336,12 +344,11 @@ impl Shell {
                 self.actions.push(UiAction::SaveSettings);
                 self.actions.push(UiAction::GaplessRequeue);
             }
-            let mut panel = self.player.panel_open;
-            if ui.toggle_value(&mut panel, icon::LIST)
-                .on_hover_text("Playlist (L)").clicked()
+            if self.bevel_toggle(ui, icon::LIST, self.player.panel_open,
+                                 "Playlist (L)")
             {
-                self.player.panel_open = panel;
-                self.settings.playlist_panel_open = panel;
+                self.player.panel_open = !self.player.panel_open;
+                self.settings.playlist_panel_open = self.player.panel_open;
             }
 
             // position + time
@@ -352,7 +359,8 @@ impl Shell {
                     .min(duration);
                 let slider = ui.add(
                     egui::Slider::new(&mut shown, 0.0..=duration)
-                        .show_value(false));
+                        .show_value(false)
+                        .trailing_fill(true));
                 let response = slider
                     .on_hover_text("Track position — drag to seek");
                 if response.dragged() || response.changed() {
@@ -360,8 +368,10 @@ impl Shell {
                     self.player.seek_debounce =
                         Some((shown, Instant::now()));
                 }
-                ui.label(format!("{} / {}", format_time(shown),
-                                 format_time(duration)));
+                // time is DATA → mono (the readability audit)
+                ui.label(egui::RichText::new(
+                    format!("{} / {}", format_time(shown),
+                            format_time(duration))).monospace());
             }
             ui.label(
                 playing.file_name().map(|n| n.to_string_lossy().to_string())
@@ -377,7 +387,21 @@ impl Shell {
         egui::SidePanel::left("playlist")
             .default_width(240.0)
             .show(ctx, |ui| {
-                ui.heading("Playlist");
+                ui.horizontal(|ui| {
+                    ui.heading("Playlist");
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            // the close affordance it never had
+                            if ui.button(icon::X)
+                                .on_hover_text("Close (L)")
+                                .clicked()
+                            {
+                                self.player.panel_open = false;
+                                self.settings.playlist_panel_open = false;
+                            }
+                        });
+                });
                 ui.separator();
                 let mut clicked: Option<PathBuf> = None;
                 egui::ScrollArea::vertical().show(ui, |ui| {

@@ -184,6 +184,22 @@ studio-panel integration (wave 4), timeline (wave 4)}.
 | Mini context menu (window re-squared/snapped UNDER the open menu; 20+ items overflowed the 200–520 px square) | ✅ | settle defers while a menu is open; compact scrolling menu in mini |
 | Permanent gates | ✅ | workspace tests green (57+23+…+3 live-viewport), clippy silent, vacuum untouched. Bench under the session's 1440p60 recording load: branch 163.3 vs master 158.7 on offline-96k (env tax, branch faster); absolute gates re-run in the release lap |
 
+## Wave 4.0-regalia — the look (2026-07-05, the ship session)
+
+| Item | State | Receipt |
+|---|---|---|
+| Blossom Dark is the ACTUAL default (settings default was `dark` — the wanted look never shipped to fresh installs) | ✅ | fresh-HOME probe: `ui_style: blossom_dark`; pinned by test |
+| The type system: IBM Plex Sans body (14.5) + Medium headings, JetBrains Mono data, `weak_text_alpha` 0.55→0.7, labels read primary ink | ✅ | w3 screenshots — the thin-Ubuntu-Light era is over |
+| Selection law: `override_text_color` removed; selected rows render `on_accent` on accent | ✅ | w3-themepicker.png: "Blossom Dark" dark-on-sakura, readable |
+| Tofu purge: ✕ ⌀ ◰◳◱◲▣ ⏭⏮ → icon-font glyphs; settings ✕ was literally the "blank square" | ✅ | settings/manual shots; playlist gains its first close button |
+| Button depth tiers: carved (primary) / **beveled** (standard — real 2-stroke bevel, pressed inverts + 1 px nudge) / flat (rows) | ✅ | toolbar/transport/kit-editor swapped to bevel_button/bevel_toggle |
+| Slider system: accent-filled tracks + REAL-unit mono readouts (×2.13 gain, 71 % glow, ×8 beam, volume % it never had, mono time) | ✅ | w3-blossom_dark.png |
+| Four NEW looks — Stonework 95 (loudest bevel in the table, pinned by test), AMOLED (true #000), Paper, CRT Amber; 11 palettes, swatch-chip picker | ✅ | w3-theme-strip.png (5-row A/B) |
+| Toolbar law: gear at the true right end of the sliders row (directly BELOW the source icon), Manual (book) beside it | ✅ | all w3 shots |
+| In-app Manual: sections, keys table, agent pointer, GitHub link | ✅ | w3-manual.png |
+| Light clarity: vacuum verbs say "light only, no sound" in label/tooltip/status/toast | ✅ | code + VacuumApp status wording |
+| Permanent gates | ✅ | 20 suites green, clippy silent, w1-geometry 15/15 re-run |
+
 ## The one receipt that matters
 
 Ben daily-drives it for an evening: capture, vacuum, media keys,
