@@ -1889,7 +1889,14 @@ impl Shell {
                         // .phos: subtitle is "trace by <credit>" —
                         // the postcard credit fade (v3 law). Certain
                         // artists get a nod (undocumented, v3 table).
-                        let mut subtitle = metadata.artist.clone();
+                        // Art + track + artist — album (Ben's card).
+                        let mut subtitle = match (&metadata.artist,
+                                                  &metadata.album) {
+                            (Some(artist), Some(album))
+                                if !album.is_empty() =>
+                                Some(format!("{artist} — {album}")),
+                            (artist, _) => artist.clone(),
+                        };
                         let nod = match metadata.artist.as_deref()
                             .map(|a| a.trim().to_lowercase())
                             .as_deref()
@@ -1970,11 +1977,25 @@ impl Shell {
                 if !was_first && self.settings.show_now_playing
                     && let Some(title) = &external.title
                 {
-                    let subtitle = match &external.artist {
-                        Some(artist) => Some(format!(
-                            "{artist}  ·  via {}", external.identity)),
-                        None => Some(format!("via {}", external.identity)),
-                    };
+                    // art + track + artist — album · via player
+                    // (Ben's spec for the corner card)
+                    let mut parts: Vec<String> = Vec::new();
+                    if let Some(artist) = &external.artist {
+                        parts.push(artist.clone());
+                    }
+                    if let Some(album) = &external.album
+                        && !album.is_empty()
+                    {
+                        parts.push(album.clone());
+                    }
+                    let mut line = parts.join(" — ");
+                    if line.is_empty() {
+                        line = format!("via {}", external.identity);
+                    } else {
+                        line.push_str(&format!(
+                            "  ·  via {}", external.identity));
+                    }
+                    let subtitle = Some(line);
                     // the cached art (fetched on the client thread)
                     // becomes the overlay thumbnail — decode is a
                     // few ms once per track change
@@ -1997,6 +2018,11 @@ impl Shell {
                     self.player.flash_now_playing(
                         title, subtitle.as_deref());
                     self.chrome_dirty = true;
+                    // a change can land while the scope sleeps (paused
+                    // player, quiet capture) — without a wake the
+                    // flash would never paint in ANY view, and mini/
+                    // fullscreen live in exactly those quiet corners
+                    self.wake_render_loop();
                 }
             }
         } else {
