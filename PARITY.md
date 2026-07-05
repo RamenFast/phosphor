@@ -200,6 +200,17 @@ studio-panel integration (wave 4), timeline (wave 4)}.
 | Light clarity: vacuum verbs say "light only, no sound" in label/tooltip/status/toast | ✅ | code + VacuumApp status wording |
 | Permanent gates | ✅ | 20 suites green, clippy silent, w1-geometry 15/15 re-run |
 
+## Wave 4.0-ensemble — the desktop is the instrument (2026-07-05)
+
+| Item | State | Receipt |
+|---|---|---|
+| **MPRIS client** (`mpris_client.rs`): watches every player on the bus, matches the beam's app key (or whoever's Playing on whole-output capture — v3's watcher law, now with hands) | ✅ | unit tests for the matcher; live roster read Spotify + Thorium |
+| **Transport during capture drives the scoped player** — the row that used to vanish | ✅ | screenshot: "brakence — introvert · via Spotify" with prev/pause/next; busctl receipt: **Playing → Paused → Playing** driven from phosphor's own buttons, restored |
+| **Album-art notifications** (org.freedesktop.Notifications over zbus; https art via curl subprocess, embedded art via runtime file; one replaced slot, never stacked; settings toggle default on) | ✅ | dbus-monitor: Notify("Lissajous in Sakura", "Turtle Vector · via Phosphor", image-path=extracted APIC), daemon returned id |
+| **Light-streams panel (#6)**: tick running apps → one beam; `ctl target mix:app:a+app:b`; probe `source.kind=mix` | ✅ | paplay+ffplay folded: `{"kind":"mix","detail":"app:paplay+app:ffplay"}`, tap frames 1024 seg @ peak 0.823 |
+| Source combo grouped OUT · APP · IN with muted mono headers + "Mix several apps…" entry | ✅ | code + live drive |
+| Permanent gates | ✅ | 20 suites green (incl. new matcher tests), clippy silent, w1-geometry 15/15 re-run |
+
 ## The one receipt that matters
 
 Ben daily-drives it for an evening: capture, vacuum, media keys,

@@ -742,7 +742,9 @@ fn schema_document() -> Value {
                     "theme": {"args": {"name": "string (see enums.themes)"}},
                     "ui": {"args": {"name": "string (see enums.ui_styles)"}},
                     "capture": {"args": {"on": "bool"}},
-                    "target": {"args": {"id": "integer|string"}},
+                    "target": {"args": {"id": "integer|string"},
+                               "note": "mix:app:a+app:b folds several \
+                                        app streams into one beam"},
                     "raise": {"args": {}, "note": "focus + deiconify the window"},
                     "open": {"args": {"path": "audio file path"},
                              "note": "load into the player and focus"},

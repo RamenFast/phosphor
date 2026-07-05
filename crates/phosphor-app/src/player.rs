@@ -261,9 +261,14 @@ impl Shell {
         }
     }
 
-    /// The transport row (§4.2) — drawn only while a file is loaded.
+    /// The transport row (§4.2): the built-in player when a file is
+    /// loaded, else the EXTERNAL player the beam is scoping — Ben:
+    /// "if music is coming from spotify, [the controls] control that".
     pub(crate) fn ui_transport(&mut self, ui: &mut egui::Ui) {
-        let Some(playing) = self.player.playing.clone() else { return };
+        let Some(playing) = self.player.playing.clone() else {
+            self.ui_external_transport(ui);
+            return;
+        };
         ui.horizontal(|ui| {
             // cover-art thumbnail (hairline-framed), when the playing
             // track carries embedded art
@@ -376,6 +381,58 @@ impl Shell {
             ui.label(
                 playing.file_name().map(|n| n.to_string_lossy().to_string())
                     .unwrap_or_default());
+        });
+    }
+
+    /// The external transport: drives the MPRIS player the beam is
+    /// scoping (Spotify, a browser…). Drawn only while capture is the
+    /// source and a matching player exists.
+    fn ui_external_transport(&mut self, ui: &mut egui::Ui) {
+        let Some(player) = self.linked_external_player() else { return };
+        let Some(client) = &self.mpris_client else { return };
+        let commands = client.commands.clone();
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(player.can_control, |ui| {
+                if self.bevel_button(ui, icon::SKIP_BACK,
+                                     "Previous track").clicked()
+                {
+                    let _ = commands.send(
+                        crate::mpris_client::ClientCommand::Previous(
+                            player.bus_name.clone()));
+                }
+                let glyph = if player.status == "Playing" {
+                    icon::PAUSE
+                } else {
+                    icon::PLAY
+                };
+                if self.bevel_button(ui, glyph, "Play/pause").clicked() {
+                    let _ = commands.send(
+                        crate::mpris_client::ClientCommand::PlayPause(
+                            player.bus_name.clone()));
+                }
+                if self.bevel_button(ui, icon::SKIP_FORWARD,
+                                     "Next track").clicked()
+                {
+                    let _ = commands.send(
+                        crate::mpris_client::ClientCommand::Next(
+                            player.bus_name.clone()));
+                }
+            });
+            let what = match (&player.title, &player.artist) {
+                (Some(title), Some(artist)) =>
+                    format!("{artist} — {title}"),
+                (Some(title), None) => title.clone(),
+                _ => String::new(),
+            };
+            if !what.is_empty() {
+                ui.label(what);
+            }
+            ui.label(egui::RichText::new(
+                format!("via {}", player.identity))
+                .small().color(self.active_palette.muted))
+                .on_hover_text(
+                    "The beam is scoping this player, so the \
+                     transport drives it (MPRIS)");
         });
     }
 
