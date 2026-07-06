@@ -1365,11 +1365,15 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
 
     /// The context menu (§5.1 tree; items land as their passes do).
     pub(crate) fn ui_context_menu(&mut self, response: &egui::Response) {
-        // In mini the window is a 200–520 px square: the full menu
-        // overflows it, so the mini menu is COMPACT (watching controls
-        // only) and scrolls inside the window instead of spilling out.
+        // One menu, one geometry, in every window mode: the fixed width
+        // and a scroll cap keep it inside the 200–520 px mini square,
+        // and in the full/fullscreen window the cap is far taller than
+        // the content so nothing scrolls — same look everywhere. The
+        // cap is sized from the LIVE scope response, not self.scope_rect:
+        // that cache is one frame stale right after a mini/fullscreen
+        // switch, which was the "menu opens with the other mode's
+        // geometry" glitch. Item content still adapts via `compact`.
         let compact = self.is_mini;
-        let max_height = (self.scope_rect.height() - 24.0).max(120.0);
         let mut hovered = false;
         let opened = response
             .context_menu(|ui| {
@@ -1383,14 +1387,14 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                     return;
                 }
                 hovered = ui.ui_contains_pointer();
-                if compact {
-                    ui.set_max_width(230.0);
-                    egui::ScrollArea::vertical()
-                        .max_height(max_height)
-                        .show(ui, |ui| self.context_menu_items(ui, true));
-                } else {
-                    self.context_menu_items(ui, false);
-                }
+                ui.set_max_width(230.0);
+                // cap from the ctx's LIVE content rect (== the window):
+                // always current across mini/fullscreen switches, unlike
+                // the frame-stale self.scope_rect this used to read
+                let max_height = (ui.ctx().content_rect().height() - 24.0).max(120.0);
+                egui::ScrollArea::vertical()
+                    .max_height(max_height)
+                    .show(ui, |ui| self.context_menu_items(ui, compact));
             })
             .is_some();
         self.context_menu_open = opened;

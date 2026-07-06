@@ -916,6 +916,9 @@ impl Shell {
                     self.export_compose_drawing();
                 }
                 UiAction::MiniToggle => {
+                    // a menu left open across the switch would wear the
+                    // old mode's geometry — ask it to close first
+                    self.close_menu_request = true;
                     let enable = !self.is_mini;
                     self.set_mini_mode(enable, graphics);
                 }
@@ -924,6 +927,9 @@ impl Shell {
                     self.apply_window_level(graphics);
                 }
                 UiAction::FullscreenToggle => {
+                    // same courtesy as MiniToggle: no menu survives a
+                    // mode switch with stale geometry
+                    self.close_menu_request = true;
                     self.is_fullscreen = !self.is_fullscreen;
                     graphics.window.set_fullscreen(
                         if self.is_fullscreen {
