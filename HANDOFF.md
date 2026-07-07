@@ -29,7 +29,13 @@ Same-day follow-up to 4.1.0, Ben's last two asks of the trilogy:
   halo two-layer strokes; shapes scaled to ~85–90% of their quadrants
   and pulled center-ward; dividers/frame went neutral (#2a3a32) so
   the colors carry it. RGBA 64px law held. Guard-band scan: no trace
-  crosses a divider or the frame.
+  crosses a divider or the frame. Ben's catch, patched same hour
+  (6442eeb, tag moved per the fresh-release law): the knot was the
+  ORIGINAL open path scaled up — its stroke endpoints read as "cut
+  off"; replaced with a true CLOSED 3:2 lissajous (120-pt parametric).
+  ICON LAW: traces in the icon must be closed figures (or naturally
+  open like the waveform), and verify composition on a TRANSPARENT
+  render first — geometry reads honestly without the background.
 - **docs/AGENTS.md refreshed for agents**: beam_cycle probe field +
   settings surface, the sharpened Escape law (normal window = QUIT),
   and a "Changing the code" section pointing at BUGLOG/HANDOFF/
