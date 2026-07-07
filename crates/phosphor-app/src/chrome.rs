@@ -1388,13 +1388,22 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                 }
                 hovered = ui.ui_contains_pointer();
                 ui.set_max_width(230.0);
-                // cap from the ctx's LIVE content rect (== the window):
-                // always current across mini/fullscreen switches, unlike
-                // the frame-stale self.scope_rect this used to read
-                let max_height = (ui.ctx().content_rect().height() - 24.0).max(120.0);
-                egui::ScrollArea::vertical()
-                    .max_height(max_height)
-                    .show(ui, |ui| self.context_menu_items(ui, compact));
+                // The menu is FIXED-size on purpose: egui's find_best_align
+                // only flips a popup that doesn't fit, and a ScrollArea makes
+                // every placement "fit" by squishing — which pinned the menu
+                // below the cursor wearing a scrollbar. With fixed content
+                // the popup flips/translates to keep every option visible.
+                // Only when the whole WINDOW is shorter than the menu (tiny
+                // mini squares) does a scroll cage make physical sense.
+                let window_height = ui.ctx().content_rect().height();
+                let menu_estimate = if compact { 440.0 } else { 620.0 };
+                if window_height < menu_estimate {
+                    egui::ScrollArea::vertical()
+                        .max_height((window_height - 24.0).max(120.0))
+                        .show(ui, |ui| self.context_menu_items(ui, compact));
+                } else {
+                    self.context_menu_items(ui, compact);
+                }
             })
             .is_some();
         self.context_menu_open = opened;
