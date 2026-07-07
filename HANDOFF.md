@@ -1,5 +1,26 @@
 # Handoff — next session starts here
 
+## v4.0.1 SHIPPED (July 6, 2026 — the context-menu patch)
+
+Ben's first real-use bug report after 4.0.0: the right-click menu wore
+different geometry in mini vs full, glitched across mode switches, and
+could truncate behind a scrollbar. Two commits, root causes in the
+receipts: `aaa0b61` (one 230px geometry everywhere; MiniToggle/
+FullscreenToggle now raise `close_menu_request` so no menu survives a
+switch wearing stale geometry — `self.scope_rect` is a frame stale
+there and could crush the mini menu to ~2 rows) and `8725984` (the
+scroll cage itself was the second face of the bug: egui 0.33's
+`find_best_align` only flips a popup that doesn't fit, and an inner
+ScrollArea made every placement "fit" by squishing — menu content is
+now fixed-size so egui flips/translates it complete; the cage remains
+only when the whole window is shorter than the menu, ~sub-440px minis).
+Verified under Xvfb: low/mid right-clicks, full window + 1000px mini,
+all options visible, zero scrollbars. Release: tag `v4.0.1`, deb + rpm
++ source + SHA256SUMS, marked Latest; installed locally via the deb
+(the interim `/usr/local/bin` shadow removed). Known non-goal noted in
+passing: in-app Escape doesn't close the context menu (the Escape
+cascade owns Esc); click-outside does. Untouched by choice.
+
 ## v4.0.0 SHIPPED (July 5, 2026 — the all-nighter, camera rolling)
 
 **Phosphor 4.0.0 is released and installed on Ben's machine**: tag
