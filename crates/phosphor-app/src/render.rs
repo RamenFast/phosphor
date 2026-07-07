@@ -58,6 +58,15 @@ impl FrameSink {
             FrameSink::Gpu(renderer) => renderer.composite_and_read(),
         }
     }
+
+    /// Per-frame theme update — the beam color cycle animates offline
+    /// renders on media time (one beam law: exports match live).
+    pub fn set_theme(&mut self, theme: Theme) {
+        match self {
+            FrameSink::Cpu(renderer) => renderer.theme = theme,
+            FrameSink::Gpu(renderer) => renderer.theme = theme,
+        }
+    }
 }
 
 fn usage() -> String {
@@ -223,6 +232,8 @@ pub fn build_computer(settings: &Settings, rate: u32)
 }
 
 /// Theme from settings (Custom / preset / AMOLED) — shell-shared too.
+/// Equivalent to `build_theme_at(settings, 0.0)` minus the cycle: the
+/// static entry point for paths with no clock.
 pub fn build_theme(settings: &Settings) -> Theme {
     let mut theme = if settings.theme_name == "Custom" {
         Theme::custom(settings.custom_beam_color,
@@ -231,6 +242,53 @@ pub fn build_theme(settings: &Settings) -> Theme {
         Theme::preset(&settings.theme_name)
             .unwrap_or_else(|| phosphor_beam::THEME_PRESETS[0].1)
     };
+    if settings.amoled_background {
+        theme = theme.with_amoled();
+    }
+    theme
+}
+
+/// Is the beam color cycle actually animating? (Custom theme with two
+/// or three live slots — one slot is a static custom color, exactly
+/// the pre-4.1 behavior.)
+pub fn beam_cycle_animating(settings: &Settings) -> bool {
+    settings.theme_name == "Custom" && settings.beam_cycle_count > 1
+}
+
+/// The animated beam color at `t` seconds (any steady clock: wall for
+/// the live scope, media time for exports). Each color→color leg lasts
+/// `beam_cycle_seconds`, eased with smoothstep so the beam lingers on
+/// the pure colors and glides between them; the ring wraps 1→2(→3)→1.
+pub fn cycle_beam_color(settings: &Settings, t: f64) -> [f32; 3] {
+    let colors = [settings.custom_beam_color,
+                  settings.custom_beam_color_2,
+                  settings.custom_beam_color_3];
+    let count = settings.beam_cycle_count.clamp(1, 3) as usize;
+    if count == 1 {
+        return colors[0];
+    }
+    let leg = settings.beam_cycle_seconds.clamp(0.1, 60.0);
+    let phase = (t / leg).rem_euclid(count as f64);
+    let index = (phase as usize).min(count - 1);
+    let next = (index + 1) % count;
+    let fraction = (phase - index as f64) as f32;
+    let eased = fraction * fraction * (3.0 - 2.0 * fraction);
+    let from = colors[index];
+    let to = colors[next];
+    [from[0] + (to[0] - from[0]) * eased,
+     from[1] + (to[1] - from[1]) * eased,
+     from[2] + (to[2] - from[2]) * eased]
+}
+
+/// Theme at `t`: the cycle animates the Custom beam (flash and
+/// background derive from it, v3's Theme::custom law — the grid stays
+/// the user's pick); everything else is `build_theme` verbatim.
+pub fn build_theme_at(settings: &Settings, t: f64) -> Theme {
+    if !beam_cycle_animating(settings) {
+        return build_theme(settings);
+    }
+    let mut theme = Theme::custom(cycle_beam_color(settings, t),
+                                  settings.custom_grid_color);
     if settings.amoled_background {
         theme = theme.with_amoled();
     }
@@ -371,6 +429,11 @@ pub fn run(arguments: &[String]) -> i32 {
             *slot = f32::from_le_bytes([chunk[0], chunk[1], chunk[2],
                                         chunk[3]]);
         }
+        if beam_cycle_animating(&settings) {
+            sink.set_theme(build_theme_at(
+                &settings,
+                frame_index as f64 / f64::from(EXPORT_FPS)));
+        }
         let segments = computer.compute(&samples, width as f32,
                                         height as f32);
         sink.advance(segments);
@@ -428,4 +491,73 @@ pub fn run(arguments: &[String]) -> i32 {
                   frame_index as f64 / seconds);
     }
     0
+}
+
+#[cfg(test)]
+mod cycle_tests {
+    use super::*;
+
+    fn cycling_settings(count: i64, seconds: f64) -> Settings {
+        Settings {
+            theme_name: "Custom".into(),
+            custom_beam_color: [1.0, 0.0, 0.0],
+            custom_beam_color_2: [0.0, 1.0, 0.0],
+            custom_beam_color_3: [0.0, 0.0, 1.0],
+            beam_cycle_count: count,
+            beam_cycle_seconds: seconds,
+            ..Settings::default()
+        }
+    }
+
+    #[test]
+    fn one_slot_is_static() {
+        let settings = cycling_settings(1, 3.0);
+        assert!(!beam_cycle_animating(&settings));
+        for t in [0.0, 1.7, 42.0] {
+            assert_eq!(cycle_beam_color(&settings, t), [1.0, 0.0, 0.0]);
+        }
+        assert_eq!(build_theme_at(&settings, 5.0),
+                   build_theme(&settings));
+    }
+
+    #[test]
+    fn legs_start_pure_and_blend_midway() {
+        let settings = cycling_settings(3, 3.0);
+        assert!(beam_cycle_animating(&settings));
+        // leg starts sit exactly on the slots
+        assert_eq!(cycle_beam_color(&settings, 0.0), [1.0, 0.0, 0.0]);
+        assert_eq!(cycle_beam_color(&settings, 3.0), [0.0, 1.0, 0.0]);
+        assert_eq!(cycle_beam_color(&settings, 6.0), [0.0, 0.0, 1.0]);
+        // midway through leg 1: an even red→green blend (smoothstep
+        // of 0.5 is 0.5)
+        let mid = cycle_beam_color(&settings, 1.5);
+        assert!((mid[0] - 0.5).abs() < 1e-6 && (mid[1] - 0.5).abs() < 1e-6,
+                "midpoint blends evenly: {mid:?}");
+        // the ring wraps: leg 3 ends back on slot 1
+        assert_eq!(cycle_beam_color(&settings, 9.0), [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn two_slots_ping_pong_through_the_ring() {
+        let settings = cycling_settings(2, 1.0);
+        assert_eq!(cycle_beam_color(&settings, 0.0), [1.0, 0.0, 0.0]);
+        assert_eq!(cycle_beam_color(&settings, 1.0), [0.0, 1.0, 0.0]);
+        assert_eq!(cycle_beam_color(&settings, 2.0), [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn cycle_theme_derives_flash_and_background_from_animated_beam() {
+        let settings = cycling_settings(2, 1.0);
+        let theme = build_theme_at(&settings, 1.0); // pure green
+        assert_eq!(theme.beam_color, [0.0, 1.0, 0.0]);
+        assert_eq!(theme.grid_color, settings.custom_grid_color,
+                   "grid stays the user's pick");
+        // Theme::custom law: background = beam * 0.03
+        assert!((theme.background_color[1] - 0.03).abs() < 1e-6);
+        // presets never animate
+        let mut preset = cycling_settings(3, 1.0);
+        preset.theme_name = "P7 Green".into();
+        assert!(!beam_cycle_animating(&preset));
+        assert_eq!(build_theme_at(&preset, 2.0), build_theme(&preset));
+    }
 }

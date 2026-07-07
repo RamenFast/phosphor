@@ -540,13 +540,93 @@ impl Shell {
             .response
             .on_hover_text("The scope's phosphor color");
         if self.settings.theme_name == "Custom" {
-            let mut beam = self.settings.custom_beam_color;
-            if ui.horizontal(|ui| {
-                ui.label("Custom beam");
-                ui.color_edit_button_rgb(&mut beam).changed()
-            }).inner {
-                self.settings.custom_beam_color = beam;
-                self.actions.push(UiAction::RenderTuning);
+            // Up to three beam colors (v4.1): one is the static custom
+            // color, two or three cycle on the transition timer. A
+            // removed slot keeps its pick — re-adding remembers.
+            let count = self.settings.beam_cycle_count.clamp(1, 3);
+            let mut retune = false;
+            let mut save = false;
+            ui.horizontal(|ui| {
+                ui.label(if count == 1 { "Custom beam" }
+                         else { "Beam colors" });
+                let mut beam = self.settings.custom_beam_color;
+                if ui.color_edit_button_rgb(&mut beam).changed() {
+                    self.settings.custom_beam_color = beam;
+                    retune = true;
+                }
+                if count >= 2 {
+                    let mut second = self.settings.custom_beam_color_2;
+                    if ui.color_edit_button_rgb(&mut second).changed() {
+                        self.settings.custom_beam_color_2 = second;
+                        retune = true;
+                    }
+                }
+                if count >= 3 {
+                    let mut third = self.settings.custom_beam_color_3;
+                    if ui.color_edit_button_rgb(&mut third).changed() {
+                        self.settings.custom_beam_color_3 = third;
+                        retune = true;
+                    }
+                }
+                if count < 3
+                    && ui.button(icon::PLUS)
+                        .on_hover_text(if count == 1 {
+                            "Add a second color — the beam cycles \
+                             between your colors"
+                        } else {
+                            "Add a third color to the cycle"
+                        })
+                        .clicked()
+                {
+                    self.settings.beam_cycle_count = count + 1;
+                    retune = true;
+                    save = true;
+                }
+                if count > 1
+                    && ui.button(icon::MINUS)
+                        .on_hover_text("Drop the last color — its \
+                                        pick is remembered")
+                        .clicked()
+                {
+                    self.settings.beam_cycle_count = count - 1;
+                    retune = true;
+                    save = true;
+                }
+            });
+            if self.settings.beam_cycle_count > 1 {
+                ui.horizontal(|ui| {
+                    ui.label("Transition");
+                    let mut seconds = self.settings.beam_cycle_seconds;
+                    let response = ui.add(
+                        egui::DragValue::new(&mut seconds)
+                            .range(0.1..=60.0)
+                            .speed(0.05)
+                            .max_decimals(2)
+                            .suffix(" s"));
+                    if response.has_focus() {
+                        // focus-trap law: every text-capable widget
+                        // registers (BUGLOG standing laws)
+                        self.text_focus_ids.insert(response.id);
+                    }
+                    if response
+                        .on_hover_text("Seconds per color→color leg. \
+                                        Under 1 s asks for a \
+                                        photosensitivity confirmation.")
+                        .changed()
+                    {
+                        if seconds < 1.0 && !self.epilepsy_ack {
+                            // pin at 1 s until the prompt is answered
+                            self.epilepsy_prompt =
+                                Some(f64::max(seconds, 0.1));
+                            self.settings.beam_cycle_seconds = 1.0;
+                        } else {
+                            self.settings.beam_cycle_seconds =
+                                seconds.clamp(0.1, 60.0);
+                        }
+                        retune = true;
+                        save = true;
+                    }
+                });
             }
             let mut grid = self.settings.custom_grid_color;
             if ui.horizontal(|ui| {
@@ -554,7 +634,13 @@ impl Shell {
                 ui.color_edit_button_rgb(&mut grid).changed()
             }).inner {
                 self.settings.custom_grid_color = grid;
+                retune = true;
+            }
+            if retune {
                 self.actions.push(UiAction::RenderTuning);
+            }
+            if save {
+                self.actions.push(UiAction::SaveSettings);
             }
         }
         // Theme selector: the six palettes (theme.rs). The v3 aero-
@@ -729,7 +815,11 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
     pub(crate) fn apply_ui_style(&mut self, ctx: &egui::Context) {
         // afterglow / blossom_dark chrome samples the live beam color;
         // every theme reads its tokens from the palette table (theme.rs).
-        let beam = crate::render::build_theme(&self.settings).beam_color;
+        // build_theme_at: when the color cycle runs, chrome accents that
+        // follow the beam ride the same animated color (free win)
+        let beam = crate::render::build_theme_at(
+            &self.settings,
+            self.started.elapsed().as_secs_f64()).beam_color;
         let target = crate::theme::palette(&self.settings.ui_style)
             .with_beam(beam);
         // glass floats the chrome over the desktop → dim the panels
@@ -1360,6 +1450,55 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
         }
         if open {
             self.postcard_dialog = Some(dialog);
+        }
+    }
+
+    /// Photosensitivity confirmation: a sub-1 s beam-color transition
+    /// was requested. The setting stays pinned at 1.0 s until the user
+    /// explicitly keeps the faster value; confirming holds for this
+    /// session only — next launch asks again (safety over convenience).
+    pub(crate) fn ui_epilepsy_prompt(&mut self, ctx: &egui::Context) {
+        let Some(requested) = self.epilepsy_prompt else { return };
+        let mut open = true;
+        let mut decided = false;
+        // plain-text title: icon::WARNING isn't in the loaded font
+        // subset and rendered tofu (the v3.3 box-glyph lesson again)
+        egui::Window::new("Photosensitivity warning")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_max_width(340.0);
+                ui.label(format!(
+                    "A {requested:.2} s transition flashes the whole \
+                     scope between colors faster than once per second."));
+                ui.label(
+                    "Rapid color flashing can trigger seizures in \
+                     people with photosensitive epilepsy. The timer is \
+                     held at 1.00 s unless you choose the faster one.");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Keep 1.00 s — safe").clicked() {
+                        // the setting is already pinned at 1.0
+                        decided = true;
+                    }
+                    if ui.button(format!("Use {requested:.2} s — I \
+                                          understand the risk"))
+                        .clicked()
+                    {
+                        self.settings.beam_cycle_seconds =
+                            requested.clamp(0.1, 60.0);
+                        self.epilepsy_ack = true;
+                        self.actions.push(UiAction::RenderTuning);
+                        decided = true;
+                    }
+                });
+            });
+        if decided || !open {
+            // closing the window without choosing = the safe default
+            self.epilepsy_prompt = None;
+            self.actions.push(UiAction::SaveSettings);
         }
     }
 

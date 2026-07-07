@@ -26,7 +26,8 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-use crate::render::{build_computer, build_theme};
+use crate::render::{build_computer, build_theme, build_theme_at,
+                    beam_cycle_animating, cycle_beam_color};
 
 const QUIET_PEAK_THRESHOLD: f32 = 1e-4;
 const QUIET_FRAMES_BEFORE_SLEEP: u32 = 120;
@@ -336,7 +337,14 @@ pub struct Shell {
     next_frame_anchor: Option<Instant>,
     pub(crate) chrome_dirty: bool,
     last_frame_time: Option<Instant>,
-    started: Instant,
+    pub(crate) started: Instant,
+    /// a sub-1 s transition was requested and awaits the
+    /// photosensitivity prompt (holds the value the user asked for;
+    /// the applied setting stays pinned at 1.0 s meanwhile)
+    pub(crate) epilepsy_prompt: Option<f64>,
+    /// sub-1 s transitions were confirmed once this session — the
+    /// prompt returns next launch (safety over convenience)
+    pub(crate) epilepsy_ack: bool,
     fps_frames: u32,
     fps_window_start: Instant,
     pub last_fps: f64,
@@ -455,6 +463,8 @@ impl Shell {
             chrome_dirty: true,
             last_frame_time: None,
             started: Instant::now(),
+            epilepsy_prompt: None,
+            epilepsy_ack: false,
             fps_frames: 0,
             fps_window_start: Instant::now(),
             last_fps: 0.0,
@@ -825,6 +835,11 @@ impl Shell {
                     let history = self.engine.copy_history(seconds);
                     let settings = self.settings.clone();
                     let rate = self.settings.scope_sample_rate;
+                    // cycle origin so exports are WYSIWYG: the clip
+                    // re-lives the last N seconds of color, the
+                    // snapshot lands on the color on screen right now
+                    let cycle_t0 = self.started.elapsed().as_secs_f64()
+                        - if snapshot { 0.0 } else { seconds as f64 };
                     let (sender, receiver) = mpsc::channel();
                     self.export_results = Some(receiver);
                     self.exporting = true;
@@ -836,10 +851,10 @@ impl Shell {
                     std::thread::spawn(move || {
                         let result = if snapshot {
                             crate::exports::save_snapshot(
-                                history, settings, rate)
+                                history, settings, rate, cycle_t0)
                         } else {
                             crate::exports::save_clip(
-                                history, settings, rate)
+                                history, settings, rate, cycle_t0)
                         };
                         let _ = sender.send(result);
                     });
@@ -1376,6 +1391,14 @@ impl Shell {
                 render_active: self.render_loop_active,
             },
             fps: self.last_fps,
+            beam_cycle: beam_cycle_animating(&self.settings)
+                .then(|| crate::control::BeamCycleStatus {
+                    colors: self.settings.beam_cycle_count,
+                    seconds: self.settings.beam_cycle_seconds,
+                    current: cycle_beam_color(
+                        &self.settings,
+                        self.started.elapsed().as_secs_f64()),
+                }),
         };
         *control.shared.status.lock().unwrap() = snapshot;
     }
@@ -2111,7 +2134,12 @@ impl Shell {
         } else {
             self.render_loop_active = false;
             false
-        } || visitor_active || self.compose_drawing;
+        } || visitor_active || self.compose_drawing
+            // an animating beam cycle is an animation: the clear
+            // color, grid tint, and beam hue move even in silence, so
+            // the loop keeps pacing (the user opted in by adding
+            // colors; frames stay capped and near-empty when quiet)
+            || beam_cycle_animating(&self.settings);
 
         let Some(mut graphics) = self.graphics.take() else {
             return false;
@@ -2302,7 +2330,9 @@ impl Shell {
                     height: trace_h as usize,
                     beam_focus: self.settings.beam_focus,
                     persistence: self.settings.persistence,
-                    theme: build_theme(&self.settings),
+                    theme: build_theme_at(
+                        &self.settings,
+                        self.started.elapsed().as_secs_f64()),
                     grid_enabled: self.settings.grid_enabled,
                     grid_spacing_fraction:
                         phosphor_beam::grid_spacing_fraction(
@@ -2366,6 +2396,9 @@ impl Shell {
                 self.ui_manual_window(ctx);
                 self.ui_mix_panel(ctx);
             }
+            // the photosensitivity prompt outranks the fullscreen
+            // hide: a safety question is never deferred
+            self.ui_epilepsy_prompt(ctx);
             // (the bottom status bar is gone — track state lives in the
             //  transport row, fps is a scope overlay, transient notes
             //  are on-scope toasts; consolidation per the design pass)
@@ -2650,7 +2683,12 @@ impl Shell {
         // background, deposits the glow inside the scope rect.
         // Glass: the pane's opacity is the per-style tint; the clear
         // is premultiplied so the compositor sees the desktop through.
-        let theme = build_theme(&self.settings);
+        // The theme resolves PER FRAME here: the beam color cycle
+        // (v4.1) animates the Custom beam on the wall clock, so the
+        // clear color, the GPU renderer, and the raster jobs all read
+        // the same instant.
+        let theme = build_theme_at(&self.settings,
+                                   self.started.elapsed().as_secs_f64());
         let glass_alpha = if self.settings.scope_glass {
             let style = &self.settings.ui_style;
             (*self.settings.glass_tints.get(style)
@@ -2666,6 +2704,7 @@ impl Shell {
         };
         if let Some(gpu) = graphics.scope_gpu.as_mut() {
             gpu.scope_alpha = glass_alpha as f32;
+            gpu.theme = theme; // the cycle's per-frame color (v4.1)
             // clamp to the ACQUIRED surface: on a shrink (mini) the
             // egui rect is one frame stale and a scissor outside the
             // render target is a validation error

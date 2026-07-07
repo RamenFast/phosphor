@@ -687,6 +687,20 @@ fn schema_document() -> Value {
             "render_active": {"type": "boolean"},
         })),
         "fps": {"type": "number"},
+        // null unless the Custom-theme beam color cycle is animating
+        // (v4.1); `current` moves every tick — poll it to watch the
+        // color travel without screenshotting
+        "beam_cycle": {"oneOf": [
+            {"type": "null"},
+            strict_object(json!({
+                "colors": {"type": "integer",
+                            "minimum": 2, "maximum": 3},
+                "seconds": {"type": "number"},
+                "current": {"type": "array",
+                            "items": {"type": "number"},
+                            "minItems": 3, "maxItems": 3},
+            })),
+        ]},
     }));
 
     let ctl_schema = strict_object(json!({

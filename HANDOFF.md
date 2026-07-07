@@ -1,6 +1,45 @@
 # Handoff — next session starts here
 
-**NEW STANDING RULE: read `docs/dev/BUGLOG.md` before changing UI/
+## v4.1.0 SHIPPED (July 7, 2026 — the beam color cycle)
+
+Ben's ask, same day as 4.0.2: up to **3 beam colors** auto-crossfading
+on a user timer (default 3 s), epilepsy prompt under 1 s, minor custom
+color redesign; 1 color static / 2 switch / 3 ring. Built as a
+property of the Custom theme: `cycle_beam_color()` +
+`build_theme_at(settings, t)` in render.rs (smoothstep legs,
+`rem_euclid` ring); flash/background derive from the moving beam
+(Theme::custom law), grid stays the user's. Every consumer reads the
+same clock: live redraw + GPU theme + raster jobs (`self.started`
+wall clock), snapshot/clip (WYSIWYG `cycle_t0` threaded through
+exports — the clip re-lives the sweep you watched), `phosphor render`
+(media time via `FrameSink::set_theme`), chrome accents
+(`apply_ui_style` → accent_follows_beam styles ride along), probe
+(`beam_cycle: {colors, seconds, current}` — null when static; schema
+updated). Quiet law: an animating cycle counts as `advancing`
+(opt-in animation; frames stay capped). Settings keys
+`custom_beam_color_2/_3`, `beam_cycle_count` (1–3),
+`beam_cycle_seconds` (0.1–60, clamped) — removed slots KEEP their
+colors. UI: APPEARANCE → Custom shows up-to-3 swatches + [+]/[–] +
+Transition DragValue (text_focus_ids registered); sub-1 s requests
+pin the setting at 1.0 s and open the **photosensitivity prompt**
+(explicit "Use N s — I understand the risk" vs "Keep 1.00 s — safe";
+ack holds for the session only, returns next launch; closing the
+window = safe default).
+
+Receipted on isolated Xvfb: probe `current` walked B→R→G→B over one
+9 s ring (13 samples); snapshots at 2 s spacing came out R/G/B by
+pixel analysis; `phosphor render` frames at 0.5/2.5/4.5 s = R/G/B;
+prompt receipts (pin→Keep→re-prompt→Use 0.10 s→ack'd 0.2 s silent);
+presets never animate (ctl theme flip); settings survive restart.
+Gates: 20/20 suites (+5 new), clippy 0, bench ALL PASS (196/153.6/
+26.4/1849 — a mid-session bench dip was the live test rig's CPU, the
+BENCH.md environmental law, not a regression). OPEN QUESTION for real
+hands: typing into DragValues after synthetic double-click did nothing
+under xdotool (pre-existing, Gain field identical — likely
+synthetic-double-click timing; drag works everywhere; verify typing
+with a real mouse sometime).
+
+**STANDING RULE: read `docs/dev/BUGLOG.md` before changing UI/
 input/menu/playlist/window-mode code, and append to it with every
 root-caused fix.** Ben asked for a regression ledger after v4.0.1
 shipped a broken menu twice-over; the ledger is now the law.

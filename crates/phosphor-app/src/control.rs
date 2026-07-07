@@ -79,6 +79,17 @@ pub(crate) struct StatusSnapshot {
     pub vacuum: VacuumStatus,
     pub quiet: QuietStatus,
     pub fps: f64,
+    /// present while the Custom-theme color cycle is animating (v4.1);
+    /// `current` is the interpolated beam color this tick — agents can
+    /// watch it move without screenshotting
+    pub beam_cycle: Option<BeamCycleStatus>,
+}
+
+#[derive(Clone, Default, serde::Serialize)]
+pub(crate) struct BeamCycleStatus {
+    pub colors: i64,
+    pub seconds: f64,
+    pub current: [f32; 3],
 }
 
 #[derive(Clone, Default, serde::Serialize)]

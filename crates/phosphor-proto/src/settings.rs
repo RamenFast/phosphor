@@ -39,6 +39,15 @@ pub struct Settings {
     pub theme_name: String,
     pub custom_beam_color: [f32; 3],
     pub custom_grid_color: [f32; 3],
+    /// Beam color cycle (v4.1): slots 2/3 keep their colors even while
+    /// inactive (re-adding a slot remembers), `beam_cycle_count` says
+    /// how many are live (1 = static custom, 2–3 = cycle), and
+    /// `beam_cycle_seconds` is one color→color leg. Sub-1 s legs are
+    /// gated behind the photosensitivity prompt in the UI.
+    pub custom_beam_color_2: [f32; 3],
+    pub custom_beam_color_3: [f32; 3],
+    pub beam_cycle_count: i64,
+    pub beam_cycle_seconds: f64,
     pub amoled_background: bool,
     pub grid_enabled: bool,
     pub scope_glass: bool,
@@ -98,6 +107,12 @@ impl Default for Settings {
             theme_name: "P7 Green".into(),
             custom_beam_color: [0.42, 1.0, 0.55],
             custom_grid_color: [0.35, 1.0, 0.45],
+            // slot defaults chosen so a fresh cycle already looks
+            // deliberate: P7 green → ice blue → vaporwave pink
+            custom_beam_color_2: [0.35, 0.75, 1.0],
+            custom_beam_color_3: [1.0, 0.30, 0.88],
+            beam_cycle_count: 1,
+            beam_cycle_seconds: 3.0,
             amoled_background: false,
             grid_enabled: true,
             scope_glass: false,
@@ -166,7 +181,9 @@ const OWNED_KEYS: &[&str] = &[
     "display_mode", "gain", "auto_gain", "persistence", "beam_energy",
     "beam_focus", "scope_sample_rate", "precompute_enabled",
     "compose_frequency_hz", "theme_name", "custom_beam_color",
-    "custom_grid_color", "amoled_background", "grid_enabled",
+    "custom_grid_color", "custom_beam_color_2", "custom_beam_color_3",
+    "beam_cycle_count", "beam_cycle_seconds",
+    "amoled_background", "grid_enabled",
     "scope_glass", "glass_tint", "glass_tints", "ui_style", "kit_path",
     "kit_enabled", "renderer", "gl_supersample", "cairo_resolution",
     "show_pin_button", "show_fps", "show_fps_detail", "max_fps",
@@ -231,6 +248,16 @@ impl Settings {
         take!("theme_name", settings.theme_name, string);
         take!("custom_beam_color", settings.custom_beam_color, color);
         take!("custom_grid_color", settings.custom_grid_color, color);
+        take!("custom_beam_color_2", settings.custom_beam_color_2,
+              color);
+        take!("custom_beam_color_3", settings.custom_beam_color_3,
+              color);
+        take!("beam_cycle_count", settings.beam_cycle_count,
+              |value: &serde_json::Value| value.as_i64()
+              .map(|number| number.clamp(1, 3)));
+        take!("beam_cycle_seconds", settings.beam_cycle_seconds,
+              |value: &serde_json::Value| value.as_f64()
+              .map(|number| number.clamp(0.1, 60.0)));
         take!("amoled_background", settings.amoled_background,
               serde_json::Value::as_bool);
         take!("grid_enabled", settings.grid_enabled,
@@ -340,6 +367,16 @@ impl Settings {
                    color(self.custom_beam_color));
         map.insert("custom_grid_color".into(),
                    color(self.custom_grid_color));
+        map.insert("custom_beam_color_2".into(),
+                   color(self.custom_beam_color_2));
+        map.insert("custom_beam_color_3".into(),
+                   color(self.custom_beam_color_3));
+        map.insert("beam_cycle_count".into(),
+                   self.beam_cycle_count.into());
+        map.insert("beam_cycle_seconds".into(),
+                   serde_json::Number::from_f64(self.beam_cycle_seconds)
+                       .map(serde_json::Value::Number)
+                       .unwrap_or(serde_json::Value::Null));
         map.insert("amoled_background".into(),
                    self.amoled_background.into());
         map.insert("grid_enabled".into(), self.grid_enabled.into());
@@ -430,6 +467,29 @@ mod tests {
         assert_eq!(settings.gain, 1.0, "untouched default");
         assert_eq!(settings.unknown.get("martian_field"),
                    Some(&serde_json::Value::from(9)));
+    }
+
+    #[test]
+    fn beam_cycle_keys_round_trip_and_clamp() {
+        let directory = std::env::temp_dir()
+            .join("phosphor-proto-settings-cycle-test");
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("settings.json");
+        std::fs::write(&path, r#"{
+            "custom_beam_color_2": [1.0, 0.0, 0.0],
+            "beam_cycle_count": 9,
+            "beam_cycle_seconds": 0.01}"#).unwrap();
+        let settings = Settings::load(&path);
+        assert_eq!(settings.custom_beam_color_2, [1.0, 0.0, 0.0]);
+        assert_eq!(settings.beam_cycle_count, 3, "clamped to 1..=3");
+        assert_eq!(settings.beam_cycle_seconds, 0.1,
+                   "clamped to 0.1..=60");
+        assert_eq!(settings.custom_beam_color_3, [1.0, 0.30, 0.88],
+                   "untouched default");
+        settings.save(&path).unwrap();
+        let reloaded = Settings::load(&path);
+        assert_eq!(reloaded.beam_cycle_count, 3);
+        assert_eq!(reloaded.custom_beam_color_2, [1.0, 0.0, 0.0]);
     }
 
     #[test]

@@ -91,8 +91,11 @@ fn offline_pipeline(settings: &Settings, rate: u32, width: u32, height: u32)
 }
 
 /// Snapshot: warm the glow on the tail, write the final frame as PNG.
-/// Returns the written path.
-pub fn save_snapshot(history: Vec<f32>, settings: Settings, rate: u32)
+/// Returns the written path. `cycle_t0` is the shell's beam-cycle
+/// clock at the moment of the request — the PNG lands on the color
+/// that was on screen (the warmup walks up to it).
+pub fn save_snapshot(history: Vec<f32>, settings: Settings, rate: u32,
+                     cycle_t0: f64)
                      -> Result<PathBuf, String> {
     if history.len() < 12_000 {
         return Err("nothing captured yet to export".into());
@@ -105,10 +108,16 @@ pub fn save_snapshot(history: Vec<f32>, settings: Settings, rate: u32)
         .min(history.len());
     let tail = &history[history.len() - warmup_samples..];
     let per_frame = (rate / EXPORT_FPS) as usize * 2;
-    for chunk in tail.chunks(per_frame.max(2)) {
+    let frame_count = tail.chunks(per_frame.max(2)).count().max(1);
+    for (index, chunk) in tail.chunks(per_frame.max(2)).enumerate() {
+        renderer.theme = crate::render::build_theme_at(
+            &settings,
+            cycle_t0
+                - (frame_count - index) as f64 / f64::from(EXPORT_FPS));
         let segments = computer.compute(chunk, width as f32, height as f32);
         renderer.advance(segments);
     }
+    renderer.theme = crate::render::build_theme_at(&settings, cycle_t0);
     let pixels = renderer.composite().to_vec();
 
     let directory = pictures_directory();
@@ -127,7 +136,10 @@ pub fn save_snapshot(history: Vec<f32>, settings: Settings, rate: u32)
 }
 
 /// Clip: last 10 s re-rendered at 60 fps, muxed with its own audio.
-pub fn save_clip(history: Vec<f32>, settings: Settings, rate: u32)
+/// `cycle_t0` = the beam-cycle clock at the clip's FIRST frame, so the
+/// export re-lives the color sweep the user just watched.
+pub fn save_clip(history: Vec<f32>, settings: Settings, rate: u32,
+                 cycle_t0: f64)
                  -> Result<PathBuf, String> {
     if history.len() < 12_000 {
         return Err("nothing captured yet to export".into());
@@ -161,7 +173,9 @@ pub fn save_clip(history: Vec<f32>, settings: Settings, rate: u32)
     let mut stdin = encoder.stdin.take().ok_or("ffmpeg stdin")?;
 
     let per_frame = (rate / EXPORT_FPS) as usize * 2;
-    for chunk in history.chunks(per_frame.max(2)) {
+    for (index, chunk) in history.chunks(per_frame.max(2)).enumerate() {
+        renderer.theme = crate::render::build_theme_at(
+            &settings, cycle_t0 + index as f64 / f64::from(EXPORT_FPS));
         let segments = computer.compute(chunk, width as f32, height as f32);
         renderer.advance(segments);
         if stdin.write_all(renderer.composite()).is_err() {

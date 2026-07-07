@@ -87,6 +87,24 @@ alone they drift. Depth dims the beam like far phosphor.
 - **Focus** (settings) — beam width in px.
 - Every readout is mono, draggable, and type-able (double-click).
 
+## Beam colors — the cycle
+
+The scope's phosphor is a **Beam** preset (P7 Green, Amber…) or
+**Custom**. Custom grew a cycle in 4.1: up to **three colors** that
+crossfade into each other on a **transition timer** (default 3 s per
+leg, eased so the beam lingers on your picks before gliding on). One
+color stays static, two ping-pong, three walk the ring. Flash and
+background derive from the moving beam, the grid stays your pick, and
+chrome accents that follow the beam (Blossom Dark, Afterglow) ride
+along. Snapshots, clips, and `phosphor render` reproduce the cycle
+exactly — exports re-live the colors you watched. Agents can poll it:
+`phosphor probe` carries `beam_cycle.current` while it runs.
+
+Setting the transition **below 1 s** asks for an explicit
+photosensitivity confirmation first — rapid whole-scope color flashing
+can trigger seizures in people with photosensitive epilepsy. The timer
+holds at 1 s unless you accept, and the question returns next launch.
+
 ## Compose — draw your own oscilloscope music
 
 `D` (or right-click → Compose): draw on the scope; release and the
@@ -147,7 +165,9 @@ means 165), GPU quality (supersampling), CPU renderer resolution.
 `~/.config/phosphor/settings.json` — every key survives round-trips,
 foreign keys are preserved, v3 files migrate untouched. Highlights:
 `ui_style` (11 ids — see the picker), `theme_name` (beam phosphor
-color; `Custom` + RGB), `scope_sample_rate` (up to 384 kHz
+color; `Custom` + RGB), `custom_beam_color_2`/`_3` +
+`beam_cycle_count` + `beam_cycle_seconds` (the color cycle — removed
+slots keep their picks), `scope_sample_rate` (up to 384 kHz
 reconstruction), `renderer` (`gl`/`cairo`), `max_fps` (0 = monitor,
 -1 = uncapped), `track_notifications`, `show_fps_detail`,
 `glass_tints` (per-style), `vacuum_enabled`, `kit_path`/`kit_enabled`.

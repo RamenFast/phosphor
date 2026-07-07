@@ -103,6 +103,11 @@ with the snapshot button:
   compositing, two-layer P7 decay, octave graticule; GPU (wgpu) and
   SIMD-CPU renderers sharing one beam model, byte-compared in CI-grade
   tests. The CPU raster runs on its own worker thread.
+- **Beam color cycle** (4.1) — the Custom phosphor takes up to
+  **three colors** that crossfade on your timer (one stays static, two
+  ping-pong, three walk the ring). Exports re-live the exact colors;
+  chrome that follows the beam follows the cycle. Sub-second
+  transitions sit behind an explicit photosensitivity confirmation.
 - **The nerd HUD** — F cycles fps → full panel: cpu/gpu frame times
   (real GPU timestamps), p99, dropped frames, segments/s, resolution.
 - **Compose mode** — press D, draw a shape, hear it immediately; export
@@ -127,13 +132,13 @@ Grab the [latest release](https://github.com/RamenFast/phosphor/releases/latest)
 **Debian · Ubuntu · Mint (.deb)** — or just double-click it:
 
 ```bash
-sudo apt install ./phosphor_4.0.2_amd64.deb
+sudo apt install ./phosphor_4.1.0_amd64.deb
 ```
 
 **Fedora · openSUSE (.rpm)** *(built on Mint, `rpm --test`-verified — reports welcome)*:
 
 ```bash
-sudo dnf install ./phosphor-4.0.2-1.x86_64.rpm
+sudo dnf install ./phosphor-4.1.0-1.x86_64.rpm
 ```
 
 **From source** (any Linux; Rust 1.96+):
@@ -154,7 +159,7 @@ mp4 clips and `.phos`-from-anything renders.
 **Verify it breathes:**
 
 ```bash
-phosphor --version   # phosphor 4.0.2 (v4)
+phosphor --version   # phosphor 4.1.0 (v4)
 phosphor             # the scope; second launches focus this one
 ```
 

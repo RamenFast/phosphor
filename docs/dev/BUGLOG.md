@@ -103,8 +103,10 @@ queued, fullscreen pane populated.
 - **Menu vs mini settle:** never re-square/snap the mini while
   `context_menu_open` — the window sliding under an open menu was
   "right click glitches out a ton".
-- **Escape** walks the leave-cascade (compose → fullscreen → mini);
-  it is NOT a popup closer. Don't send it casually in receipts.
+- **Escape** walks the leave-cascade (compose → fullscreen → mini →
+  **Close**): in a plain normal window Escape QUITS THE APP (v3 law).
+  It is not a popup closer — never send it casually in receipts (it
+  killed a test instance mid-receipt on 2026-07-07).
 - **Version law:** egui 0.33 ↔ egui-wgpu 0.33 ↔ wgpu 27 ↔ winit 0.30.
   The glue defines the set; egui-phosphor 0.11 matches egui 0.33.
 - **sRGB double-encode:** prefer a non-sRGB surface; else set the
