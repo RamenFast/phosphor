@@ -696,6 +696,7 @@ fn schema_document() -> Value {
                 "colors": {"type": "integer",
                             "minimum": 2, "maximum": 3},
                 "seconds": {"type": "number"},
+                "mode": {"enum": ["timer", "track"]},
                 "current": {"type": "array",
                             "items": {"type": "number"},
                             "minItems": 3, "maxItems": 3},

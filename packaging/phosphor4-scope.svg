@@ -1,41 +1,41 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
+     viewBox="0 0 256 256" width="256" height="256">
   <!-- Phosphor v4 icon: four scope views, one per quadrant, each the
-       signature shape of a display mode. Deep CRT black, P7-green beam.
-       Sharp corners (the house rule); a hairline divider grid. -->
+       signature shape of a display mode. Deep CRT black; every trace
+       wears its own phosphor colour (drawn from the app's theme presets)
+       with a saturated soft halo and a bright core. Sharp corners
+       (the house rule); neutral hairline divider grid + outer frame. -->
   <defs>
-    <radialGradient id="glow" cx="50%" cy="50%" r="60%">
-      <stop offset="0%" stop-color="#8dffb0" stop-opacity="0.95"/>
-      <stop offset="55%" stop-color="#33e07a" stop-opacity="0.65"/>
-      <stop offset="100%" stop-color="#0d3a1f" stop-opacity="0"/>
-    </radialGradient>
-    <filter id="soft" x="-30%" y="-30%" width="160%" height="160%">
-      <feGaussianBlur stdDeviation="1.4"/>
+    <filter id="halo" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="2.6"/>
     </filter>
-  </defs>
+    <filter id="core" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="0.55"/>
+    </filter>
+    <filter id="dot" x="-120%" y="-120%" width="340%" height="340%">
+      <feGaussianBlur stdDeviation="1.6"/>
+    </filter>
 
-  <rect width="256" height="256" fill="#050807"/>
-  <!-- quadrant divider hairlines -->
-  <g stroke="#1f7a46" stroke-opacity="0.5" stroke-width="1">
-    <line x1="128" y1="8" x2="128" y2="248"/>
-    <line x1="8" y1="128" x2="248" y2="128"/>
-  </g>
-  <rect x="8" y="8" width="240" height="240" fill="none"
-        stroke="#2fae63" stroke-opacity="0.35" stroke-width="1.5"/>
-
-  <g fill="none" stroke="#63ffa8" stroke-width="3.2"
-     stroke-linecap="round" stroke-linejoin="round" filter="url(#soft)">
     <!-- top-left: XY knot (a lissajous 3:2) -->
-    <path d="M 30 64 C 44 40, 74 40, 78 64 C 82 88, 52 100, 40 82
-             C 28 64, 54 46, 68 62 C 82 78, 60 92, 46 78"/>
-    <!-- top-right: Takens torus (a projected donut knot) -->
-    <path d="M 168 40 C 210 40, 224 64, 200 82 C 176 100, 150 78, 168 60
-             C 186 42, 218 58, 206 76"/>
-    <ellipse cx="192" cy="64" rx="30" ry="16" stroke-opacity="0.5"/>
-    <!-- bottom-left: waveform -->
-    <path d="M 20 192 L 34 192 L 40 168 L 50 214 L 60 176 L 70 206
+    <g id="g-knot" transform="translate(78,74) scale(1.5) translate(-56,-70)">
+      <path d="M 30 64 C 44 40, 74 40, 78 64 C 82 88, 52 100, 40 82
+               C 28 64, 54 46, 68 62 C 82 78, 60 92, 46 78"/>
+    </g>
+
+    <!-- top-right: Takens torus (a projected donut knot) + ellipse -->
+    <g id="g-torus" transform="translate(186,76) scale(1.35) translate(-189,-70)">
+      <path d="M 168 40 C 210 40, 224 64, 200 82 C 176 100, 150 78, 168 60
+               C 186 42, 218 58, 206 76"/>
+      <ellipse cx="192" cy="64" rx="30" ry="16" opacity="0.55"/>
+    </g>
+
+    <!-- bottom-left: waveform (taller amplitude reads better small) -->
+    <path id="g-wave" transform="translate(68,186) scale(1.12,1.92) translate(-64,-191)"
+          d="M 20 192 L 34 192 L 40 168 L 50 214 L 60 176 L 70 206
              L 80 184 L 92 192 L 108 192"/>
-    <!-- bottom-right: radial spectrum (rays from a center) -->
-    <g stroke-width="2.6">
+
+    <!-- bottom-right: radial spectrum (rays from a centre) -->
+    <g id="g-radial" transform="translate(185,185) scale(1.33) translate(-192,-192)">
       <line x1="192" y1="192" x2="192" y2="156"/>
       <line x1="192" y1="192" x2="222" y2="174"/>
       <line x1="192" y1="192" x2="224" y2="204"/>
@@ -44,6 +44,37 @@
       <line x1="192" y1="192" x2="160" y2="200"/>
       <line x1="192" y1="192" x2="164" y2="170"/>
     </g>
-    <circle cx="192" cy="192" r="4" fill="#8dffb0" stroke="none"/>
+  </defs>
+
+  <rect width="256" height="256" fill="#050807"/>
+
+  <!-- neutral hairline quadrant dividers + outer frame -->
+  <g stroke="#2a3a32" stroke-opacity="0.85" stroke-width="1">
+    <line x1="128" y1="8" x2="128" y2="248"/>
+    <line x1="8" y1="128" x2="248" y2="128"/>
   </g>
+  <rect x="8" y="8" width="240" height="240" fill="none"
+        stroke="#2a3a32" stroke-width="1.5"/>
+
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <!-- P7 Green knot -->
+    <use xlink:href="#g-knot" stroke="#63ffa8" stroke-width="6.6" opacity="0.8"  filter="url(#halo)"/>
+    <use xlink:href="#g-knot" stroke="#baffd6" stroke-width="3.0"                filter="url(#core)"/>
+
+    <!-- Ice Blue torus -->
+    <use xlink:href="#g-torus" stroke="#59bfff" stroke-width="6.2" opacity="0.8" filter="url(#halo)"/>
+    <use xlink:href="#g-torus" stroke="#b3e2ff" stroke-width="2.9"               filter="url(#core)"/>
+
+    <!-- Amber waveform -->
+    <use xlink:href="#g-wave" stroke="#ffa030" stroke-width="6.6" opacity="0.8"  filter="url(#halo)"/>
+    <use xlink:href="#g-wave" stroke="#ffd39a" stroke-width="3.2"                filter="url(#core)"/>
+
+    <!-- Vaporwave pink radial -->
+    <use xlink:href="#g-radial" stroke="#ff4de0" stroke-width="5.4" opacity="0.8" filter="url(#halo)"/>
+    <use xlink:href="#g-radial" stroke="#ffa6ee" stroke-width="2.6"               filter="url(#core)"/>
+  </g>
+
+  <!-- radial centre dot: pink family bright core -->
+  <circle cx="185" cy="185" r="8"   fill="#ff4de0" opacity="0.7" filter="url(#dot)"/>
+  <circle cx="185" cy="185" r="4.6" fill="#ffb3ef"/>
 </svg>

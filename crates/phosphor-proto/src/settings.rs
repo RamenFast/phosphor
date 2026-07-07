@@ -48,6 +48,9 @@ pub struct Settings {
     pub custom_beam_color_3: [f32; 3],
     pub beam_cycle_count: i64,
     pub beam_cycle_seconds: f64,
+    /// "timer" = legs advance on the clock · "track" = one advance per
+    /// song change (the crossfade still takes `beam_cycle_seconds`)
+    pub beam_cycle_mode: String,
     pub amoled_background: bool,
     pub grid_enabled: bool,
     pub scope_glass: bool,
@@ -113,6 +116,7 @@ impl Default for Settings {
             custom_beam_color_3: [1.0, 0.30, 0.88],
             beam_cycle_count: 1,
             beam_cycle_seconds: 3.0,
+            beam_cycle_mode: "timer".into(),
             amoled_background: false,
             grid_enabled: true,
             scope_glass: false,
@@ -182,7 +186,7 @@ const OWNED_KEYS: &[&str] = &[
     "beam_focus", "scope_sample_rate", "precompute_enabled",
     "compose_frequency_hz", "theme_name", "custom_beam_color",
     "custom_grid_color", "custom_beam_color_2", "custom_beam_color_3",
-    "beam_cycle_count", "beam_cycle_seconds",
+    "beam_cycle_count", "beam_cycle_seconds", "beam_cycle_mode",
     "amoled_background", "grid_enabled",
     "scope_glass", "glass_tint", "glass_tints", "ui_style", "kit_path",
     "kit_enabled", "renderer", "gl_supersample", "cairo_resolution",
@@ -258,6 +262,10 @@ impl Settings {
         take!("beam_cycle_seconds", settings.beam_cycle_seconds,
               |value: &serde_json::Value| value.as_f64()
               .map(|number| number.clamp(0.1, 60.0)));
+        take!("beam_cycle_mode", settings.beam_cycle_mode,
+              |value: &serde_json::Value| value.as_str()
+              .filter(|mode| ["timer", "track"].contains(mode))
+              .map(str::to_string));
         take!("amoled_background", settings.amoled_background,
               serde_json::Value::as_bool);
         take!("grid_enabled", settings.grid_enabled,
@@ -377,6 +385,8 @@ impl Settings {
                    serde_json::Number::from_f64(self.beam_cycle_seconds)
                        .map(serde_json::Value::Number)
                        .unwrap_or(serde_json::Value::Null));
+        map.insert("beam_cycle_mode".into(),
+                   self.beam_cycle_mode.clone().into());
         map.insert("amoled_background".into(),
                    self.amoled_background.into());
         map.insert("grid_enabled".into(), self.grid_enabled.into());
@@ -478,8 +488,11 @@ mod tests {
         std::fs::write(&path, r#"{
             "custom_beam_color_2": [1.0, 0.0, 0.0],
             "beam_cycle_count": 9,
-            "beam_cycle_seconds": 0.01}"#).unwrap();
+            "beam_cycle_seconds": 0.01,
+            "beam_cycle_mode": "martian"}"#).unwrap();
         let settings = Settings::load(&path);
+        assert_eq!(settings.beam_cycle_mode, "timer",
+                   "unknown mode falls back to the default");
         assert_eq!(settings.custom_beam_color_2, [1.0, 0.0, 0.0]);
         assert_eq!(settings.beam_cycle_count, 3, "clamped to 1..=3");
         assert_eq!(settings.beam_cycle_seconds, 0.1,

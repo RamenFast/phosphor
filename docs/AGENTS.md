@@ -28,6 +28,13 @@ phosphor probe --json
 it is *what actually feeds the beam*, reconciled with the engine.
 `capture.target_id` is only the remembered preference.
 
+**`beam_cycle`** (4.1+) is `null` unless the Custom-theme color cycle
+is animating, else `{"colors":2|3,"seconds":…,"mode":"timer|track",
+"current":[r,g,b]}`. `current` is the interpolated beam color this
+tick — poll it to watch the color travel without screenshots. `timer`
+advances continuously; `track` (4.2+) advances one slot per song
+change and rests between songs.
+
 ## Drive the scope
 
 ```bash
@@ -67,6 +74,19 @@ worth knowing:
   frames where `segments > 0`; judge liveness from `tick`s.
 - **A circle is aspect 1.0.** `(bbox[2]-bbox[0])/(bbox[3]-bbox[1])`
   on an L=sin/R=cos tone is the whole rendering-geometry test.
+
+## The beam color cycle (4.1/4.2)
+
+No ctl verb — the cycle is settings-driven (`~/.config/phosphor/
+settings.json`, hot-read at launch; the GUI edits it live):
+`theme_name:"Custom"` + `beam_cycle_count` (1 = static, 2–3 = cycle) +
+`custom_beam_color`/`_2`/`_3` + `beam_cycle_seconds` (leg/fade length,
+0.1–60) + `beam_cycle_mode` (`"timer"` continuous · `"track"` one step
+per song). Exports follow: snapshots/clips carry the on-screen color,
+`phosphor render` animates timer mode on media time (track mode holds
+still — one input file is one song). Sub-1 s timer legs prompt the
+HUMAN with a photosensitivity confirmation — don't script around it;
+respect the pin at 1.0 s.
 
 ## Kits (the 7B-model art form)
 
@@ -108,6 +128,22 @@ phosphor bench                      # perf gates, JSON
 - `feed` speaks the frozen v3 applet protocol (`{"s":[…]}` lines, no
   envelope) — it is the ONE deliberate exception to the contract.
 - Sending `Escape` to the window walks the leave-cascade
-  (compose → fullscreen → mini) — it is not a popup-closer.
+  (compose → fullscreen → mini → **close**) — in a plain normal
+  window Escape QUITS the app. It is not a popup-closer; never send
+  it casually.
 - `--visitor`, `--exit-after`, `--fps-log` are receipt/dev flags and
   bypass single-instance on purpose.
+
+## Changing the code (not just driving it)
+
+Read **`docs/dev/BUGLOG.md`** FIRST — the regression ledger; every
+entry is a shipped bug with the law that prevents its return, and
+code comments cite entries as `BUGLOG #N`. Fix a root-caused bug →
+append the entry (symptom · root cause · law · receipt). The receipt
+must exercise the user's actual gesture (a real click on a real menu
+item — v4.0.1 receipted menu *geometry*, never clicked an item, and
+shipped the menu broken). The living project map is `HANDOFF.md` at
+the repo root; the receipts ledger of the v4 rewrite is
+`docs/dev/PARITY.md`; perf gates are `phosphor bench` (BENCH.md laws:
+compare under the same machine load — a busy Xvfb test rig once
+read as a perf regression).

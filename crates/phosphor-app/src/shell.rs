@@ -26,8 +26,8 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-use crate::render::{build_computer, build_theme, build_theme_at,
-                    beam_cycle_animating, cycle_beam_color};
+use crate::render::{build_computer, build_theme, build_theme_phase,
+                    beam_cycle_animating, cycle_beam_color_phase};
 
 const QUIET_PEAK_THRESHOLD: f32 = 1e-4;
 const QUIET_FRAMES_BEFORE_SLEEP: u32 = 120;
@@ -345,6 +345,11 @@ pub struct Shell {
     /// sub-1 s transitions were confirmed once this session — the
     /// prompt returns next launch (safety over convenience)
     pub(crate) epilepsy_ack: bool,
+    /// track-mode cycle: which color slot the beam is resting on
+    pub(crate) cycle_song_index: usize,
+    /// a song-change crossfade is in flight since this instant (the
+    /// sweep from the previous slot takes beam_cycle_seconds)
+    pub(crate) cycle_song_fade: Option<Instant>,
     fps_frames: u32,
     fps_window_start: Instant,
     pub last_fps: f64,
@@ -465,6 +470,8 @@ impl Shell {
             started: Instant::now(),
             epilepsy_prompt: None,
             epilepsy_ack: false,
+            cycle_song_index: 0,
+            cycle_song_fade: None,
             fps_frames: 0,
             fps_window_start: Instant::now(),
             last_fps: 0.0,
@@ -833,11 +840,22 @@ impl Shell {
                     let snapshot = matches!(action, UiAction::SaveSnapshot);
                     let seconds = if snapshot { 1.5 } else { 10.0 };
                     let history = self.engine.copy_history(seconds);
-                    let settings = self.settings.clone();
+                    let mut settings = self.settings.clone();
                     let rate = self.settings.scope_sample_rate;
                     // cycle origin so exports are WYSIWYG: the clip
                     // re-lives the last N seconds of color, the
-                    // snapshot lands on the color on screen right now
+                    // snapshot lands on the color on screen right now.
+                    // Track mode: the color rests between songs — the
+                    // export FREEZES on the current interpolated color
+                    // (collapse the clone to a one-color cycle).
+                    if settings.beam_cycle_mode == "track"
+                        && beam_cycle_animating(&settings)
+                    {
+                        settings.custom_beam_color =
+                            cycle_beam_color_phase(
+                                &settings, self.beam_cycle_phase());
+                        settings.beam_cycle_count = 1;
+                    }
                     let cycle_t0 = self.started.elapsed().as_secs_f64()
                         - if snapshot { 0.0 } else { seconds as f64 };
                     let (sender, receiver) = mpsc::channel();
@@ -1395,9 +1413,9 @@ impl Shell {
                 .then(|| crate::control::BeamCycleStatus {
                     colors: self.settings.beam_cycle_count,
                     seconds: self.settings.beam_cycle_seconds,
-                    current: cycle_beam_color(
-                        &self.settings,
-                        self.started.elapsed().as_secs_f64()),
+                    mode: self.settings.beam_cycle_mode.clone(),
+                    current: cycle_beam_color_phase(
+                        &self.settings, self.beam_cycle_phase()),
                 }),
         };
         *control.shared.status.lock().unwrap() = snapshot;
@@ -1679,6 +1697,72 @@ impl Shell {
         self.apply_render_settings(graphics);
     }
 
+    /// The beam-cycle ring phase right now (see
+    /// `cycle_beam_color_phase`): timer mode reads the wall clock;
+    /// track mode rests on a slot and sweeps one unit per song change.
+    pub(crate) fn beam_cycle_phase(&self) -> f64 {
+        let leg = self.settings.beam_cycle_seconds.clamp(0.1, 60.0);
+        if self.settings.beam_cycle_mode == "track" {
+            let count =
+                self.settings.beam_cycle_count.clamp(1, 3) as f64;
+            let index = self.cycle_song_index as f64;
+            match self.cycle_song_fade {
+                Some(started) => {
+                    let fraction =
+                        (started.elapsed().as_secs_f64() / leg).min(1.0);
+                    (index - 1.0).rem_euclid(count) + fraction
+                }
+                None => index,
+            }
+        } else {
+            self.started.elapsed().as_secs_f64() / leg
+        }
+    }
+
+    /// The theme this frame — THE one resolution every live consumer
+    /// shares (surface clear, GPU renderer, raster jobs, chrome
+    /// accents, probe).
+    pub(crate) fn current_theme(&self) -> phosphor_beam::Theme {
+        if beam_cycle_animating(&self.settings) {
+            build_theme_phase(&self.settings, self.beam_cycle_phase())
+        } else {
+            build_theme(&self.settings)
+        }
+    }
+
+    /// Does the cycle need frames RIGHT NOW? Timer mode always (the
+    /// color never stops moving); track mode only while a song-change
+    /// crossfade is in flight — between songs the color rests and the
+    /// quiet law applies unmodified.
+    pub(crate) fn beam_cycle_needs_frames(&self) -> bool {
+        if !beam_cycle_animating(&self.settings) {
+            return false;
+        }
+        if self.settings.beam_cycle_mode == "track" {
+            let leg = self.settings.beam_cycle_seconds.clamp(0.1, 60.0);
+            return self.cycle_song_fade
+                .is_some_and(|started| {
+                    started.elapsed().as_secs_f64() < leg
+                });
+        }
+        true
+    }
+
+    /// A new song began (own player track start, or the scoped
+    /// external player changed track): in track mode, advance the
+    /// ring one slot and start the crossfade.
+    pub(crate) fn beam_cycle_song_changed(&mut self) {
+        if self.settings.beam_cycle_mode != "track"
+            || !beam_cycle_animating(&self.settings)
+        {
+            return;
+        }
+        let count = self.settings.beam_cycle_count.clamp(1, 3) as usize;
+        self.cycle_song_index = (self.cycle_song_index + 1) % count;
+        self.cycle_song_fade = Some(Instant::now());
+        self.wake_render_loop();
+    }
+
     fn apply_render_settings(&self, graphics: &mut Graphics) {
         let theme = build_theme(&self.settings);
         let grid_fraction =
@@ -1942,6 +2026,10 @@ impl Shell {
                         self.player.flash_now_playing(
                             &title, subtitle.as_deref());
                     }
+                    // change-color-on-song: every real track start
+                    // counts (manual, next/prev, gapless splice) —
+                    // compose loops bailed out above
+                    self.beam_cycle_song_changed();
                     self.queue_gapless_next();
                     self.mpris_track_changed();
                     self.load_cover_art(&path);
@@ -1998,6 +2086,12 @@ impl Shell {
             {
                 let was_first = self.last_external_signature.is_none();
                 self.last_external_signature = signature;
+                if !was_first {
+                    // the scoped player moved to a new song — the
+                    // color advances even when the overlay card is
+                    // disabled (the cycle is not a notification)
+                    self.beam_cycle_song_changed();
+                }
                 // announce CHANGES while listening, not the state we
                 // walked in on (mirrors the notification law)
                 if !was_first && self.settings.show_now_playing
@@ -2138,8 +2232,9 @@ impl Shell {
             // an animating beam cycle is an animation: the clear
             // color, grid tint, and beam hue move even in silence, so
             // the loop keeps pacing (the user opted in by adding
-            // colors; frames stay capped and near-empty when quiet)
-            || beam_cycle_animating(&self.settings);
+            // colors; frames stay capped and near-empty when quiet).
+            // Track mode only needs frames DURING a song-change fade.
+            || self.beam_cycle_needs_frames();
 
         let Some(mut graphics) = self.graphics.take() else {
             return false;
@@ -2330,9 +2425,7 @@ impl Shell {
                     height: trace_h as usize,
                     beam_focus: self.settings.beam_focus,
                     persistence: self.settings.persistence,
-                    theme: build_theme_at(
-                        &self.settings,
-                        self.started.elapsed().as_secs_f64()),
+                    theme: self.current_theme(),
                     grid_enabled: self.settings.grid_enabled,
                     grid_spacing_fraction:
                         phosphor_beam::grid_spacing_fraction(
@@ -2684,11 +2777,10 @@ impl Shell {
         // Glass: the pane's opacity is the per-style tint; the clear
         // is premultiplied so the compositor sees the desktop through.
         // The theme resolves PER FRAME here: the beam color cycle
-        // (v4.1) animates the Custom beam on the wall clock, so the
-        // clear color, the GPU renderer, and the raster jobs all read
-        // the same instant.
-        let theme = build_theme_at(&self.settings,
-                                   self.started.elapsed().as_secs_f64());
+        // (v4.1) animates the Custom beam — timer mode on the wall
+        // clock, track mode per song (v4.2) — so the clear color, the
+        // GPU renderer, and the raster jobs all read the same instant.
+        let theme = self.current_theme();
         let glass_alpha = if self.settings.scope_glass {
             let style = &self.settings.ui_style;
             (*self.settings.glass_tints.get(style)

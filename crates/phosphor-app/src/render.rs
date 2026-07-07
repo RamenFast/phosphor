@@ -255,11 +255,14 @@ pub fn beam_cycle_animating(settings: &Settings) -> bool {
     settings.theme_name == "Custom" && settings.beam_cycle_count > 1
 }
 
-/// The animated beam color at `t` seconds (any steady clock: wall for
-/// the live scope, media time for exports). Each color→color leg lasts
-/// `beam_cycle_seconds`, eased with smoothstep so the beam lingers on
+/// The beam color at ring `phase` ∈ [0, count): the integer part
+/// names the slot, the fraction is the progress of the crossfade
+/// toward the next slot, eased with smoothstep so the beam lingers on
 /// the pure colors and glides between them; the ring wraps 1→2(→3)→1.
-pub fn cycle_beam_color(settings: &Settings, t: f64) -> [f32; 3] {
+/// Timer mode derives phase from the clock; track mode (change on
+/// song) holds an integer phase and sweeps one unit per song change.
+pub fn cycle_beam_color_phase(settings: &Settings, phase: f64)
+                              -> [f32; 3] {
     let colors = [settings.custom_beam_color,
                   settings.custom_beam_color_2,
                   settings.custom_beam_color_3];
@@ -267,8 +270,7 @@ pub fn cycle_beam_color(settings: &Settings, t: f64) -> [f32; 3] {
     if count == 1 {
         return colors[0];
     }
-    let leg = settings.beam_cycle_seconds.clamp(0.1, 60.0);
-    let phase = (t / leg).rem_euclid(count as f64);
+    let phase = phase.rem_euclid(count as f64);
     let index = (phase as usize).min(count - 1);
     let next = (index + 1) % count;
     let fraction = (phase - index as f64) as f32;
@@ -280,19 +282,27 @@ pub fn cycle_beam_color(settings: &Settings, t: f64) -> [f32; 3] {
      from[2] + (to[2] - from[2]) * eased]
 }
 
-/// Theme at `t`: the cycle animates the Custom beam (flash and
-/// background derive from it, v3's Theme::custom law — the grid stays
-/// the user's pick); everything else is `build_theme` verbatim.
-pub fn build_theme_at(settings: &Settings, t: f64) -> Theme {
+/// Theme from an explicit ring phase — the shell's track mode feeds
+/// this; the timer paths go through `build_theme_at`.
+pub fn build_theme_phase(settings: &Settings, phase: f64) -> Theme {
     if !beam_cycle_animating(settings) {
         return build_theme(settings);
     }
-    let mut theme = Theme::custom(cycle_beam_color(settings, t),
-                                  settings.custom_grid_color);
+    let mut theme = Theme::custom(
+        cycle_beam_color_phase(settings, phase),
+        settings.custom_grid_color);
     if settings.amoled_background {
         theme = theme.with_amoled();
     }
     theme
+}
+
+/// Theme at TIMER time `t`: the cycle animates the Custom beam (flash
+/// and background derive from it, v3's Theme::custom law — the grid
+/// stays the user's pick); everything else is `build_theme` verbatim.
+pub fn build_theme_at(settings: &Settings, t: f64) -> Theme {
+    let leg = settings.beam_cycle_seconds.clamp(0.1, 60.0);
+    build_theme_phase(settings, t / leg)
 }
 
 /// Build the computer + renderer the way v3's offline pipeline did:
@@ -429,7 +439,12 @@ pub fn run(arguments: &[String]) -> i32 {
             *slot = f32::from_le_bytes([chunk[0], chunk[1], chunk[2],
                                         chunk[3]]);
         }
-        if beam_cycle_animating(&settings) {
+        // headless renders animate the cycle on MEDIA time — timer
+        // mode only: in track mode one input = one song, so the color
+        // holds still (slot 1, the build_pipeline theme)
+        if beam_cycle_animating(&settings)
+            && settings.beam_cycle_mode != "track"
+        {
             sink.set_theme(build_theme_at(
                 &settings,
                 frame_index as f64 / f64::from(EXPORT_FPS)));
@@ -497,6 +512,13 @@ pub fn run(arguments: &[String]) -> i32 {
 mod cycle_tests {
     use super::*;
 
+    /// the timer clock expressed through the phase form (what
+    /// build_theme_at does internally)
+    fn cycle_beam_color(settings: &Settings, t: f64) -> [f32; 3] {
+        let leg = settings.beam_cycle_seconds.clamp(0.1, 60.0);
+        cycle_beam_color_phase(settings, t / leg)
+    }
+
     fn cycling_settings(count: i64, seconds: f64) -> Settings {
         Settings {
             theme_name: "Custom".into(),
@@ -543,6 +565,28 @@ mod cycle_tests {
         assert_eq!(cycle_beam_color(&settings, 0.0), [1.0, 0.0, 0.0]);
         assert_eq!(cycle_beam_color(&settings, 1.0), [0.0, 1.0, 0.0]);
         assert_eq!(cycle_beam_color(&settings, 2.0), [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn phase_form_matches_track_mode_semantics() {
+        let settings = cycling_settings(3, 3.0);
+        // integer phases rest exactly on the slots (a track-mode hold)
+        assert_eq!(cycle_beam_color_phase(&settings, 0.0),
+                   [1.0, 0.0, 0.0]);
+        assert_eq!(cycle_beam_color_phase(&settings, 1.0),
+                   [0.0, 1.0, 0.0]);
+        assert_eq!(cycle_beam_color_phase(&settings, 2.0),
+                   [0.0, 0.0, 1.0]);
+        // a song-change fade mid-flight: phase 1.5 = green→blue even
+        let mid = cycle_beam_color_phase(&settings, 1.5);
+        assert!((mid[1] - 0.5).abs() < 1e-6
+                && (mid[2] - 0.5).abs() < 1e-6, "{mid:?}");
+        // the ring wraps: phase 2→0 sweep lands back on red
+        assert_eq!(cycle_beam_color_phase(&settings, 3.0),
+                   [1.0, 0.0, 0.0]);
+        // timer form is the phase form on t/leg
+        assert_eq!(cycle_beam_color(&settings, 4.5),
+                   cycle_beam_color_phase(&settings, 1.5));
     }
 
     #[test]

@@ -1,5 +1,47 @@
 # Handoff — next session starts here
 
+## v4.2.0 SHIPPED (July 7, 2026 — song colors + the four-color icon)
+
+Same-day follow-up to 4.1.0, Ben's last two asks of the trilogy:
+
+- **Change color on song** (`beam_cycle_mode: "timer"|"track"`): track
+  mode holds an integer ring phase (`cycle_song_index`) and sweeps ONE
+  eased unit per song change — hooks at the own-player TrackStarted
+  arm (before queue_gapless_next; manual, next/prev, and gapless
+  splices all count; compose loops excluded) and the external
+  now-playing signature watcher (`!was_first`, fires even with the
+  overlay card disabled). The phase form is the new core:
+  `cycle_beam_color_phase(settings, phase)` + `build_theme_phase`;
+  timer mode = phase from the clock (`build_theme_at` = t/leg). The
+  shell's `current_theme()` is THE per-frame resolution for surface
+  clear + GPU + raster + chrome accents + probe. Quiet law:
+  `beam_cycle_needs_frames()` — timer always, track only while a fade
+  is in flight (the color RESTS between songs, zero extra frames).
+  Exports in track mode FREEZE on the current color (the clone
+  collapses to a one-color cycle); headless render animates timer
+  mode only. probe.beam_cycle grows `mode`. The epilepsy prompt
+  guards TIMER mode only (one fade per song is not a strobe) but
+  re-arms when switching track→timer with a sub-1 s leg. UI: an
+  "Advance" combo (On a timer / Every song) in the Custom section.
+- **The icon** (Opus subagent, visually verified): each quadrant's
+  trace now wears its own phosphor — P7-green knot, ice-blue torus,
+  amber waveform, vaporwave-pink radial — as bright-core + colored-
+  halo two-layer strokes; shapes scaled to ~85–90% of their quadrants
+  and pulled center-ward; dividers/frame went neutral (#2a3a32) so
+  the colors carry it. RGBA 64px law held. Guard-band scan: no trace
+  crosses a divider or the frame.
+- **docs/AGENTS.md refreshed for agents**: beam_cycle probe field +
+  settings surface, the sharpened Escape law (normal window = QUIT),
+  and a "Changing the code" section pointing at BUGLOG/HANDOFF/
+  PARITY/bench with the receipts-gesture rule.
+
+Receipts: track-mode probe walked red→(open)→green→(next)→blue→
+(next, wrap)→red with eased mid-fade samples and bit-identical rests
+2 s apart; Advance combo receipted both ways live (timer resumed
+motion after the switch); icon verified at 256 px and 64 px by eye.
+Gates: 20/20 suites (+1 phase test), clippy 0 after folding the
+timer helper into tests, bench ALL PASS.
+
 ## v4.1.0 SHIPPED (July 7, 2026 — the beam color cycle)
 
 Ben's ask, same day as 4.0.2: up to **3 beam colors** auto-crossfading

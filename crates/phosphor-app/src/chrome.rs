@@ -594,6 +594,50 @@ impl Shell {
                 }
             });
             if self.settings.beam_cycle_count > 1 {
+                // how the ring advances: continuously on a timer, or
+                // one step per song ("just want 1 color change per
+                // song" — Ben's spec). Switching INTO timer mode with
+                // a sub-1 s leg re-arms the photosensitivity prompt.
+                ui.horizontal(|ui| {
+                    ui.label("Advance");
+                    let track_mode =
+                        self.settings.beam_cycle_mode == "track";
+                    egui::ComboBox::from_id_salt("beam-cycle-advance")
+                        .selected_text(if track_mode { "Every song" }
+                                       else { "On a timer" })
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_label(!track_mode,
+                                                   "On a timer")
+                                .clicked() && track_mode
+                            {
+                                self.settings.beam_cycle_mode =
+                                    "timer".into();
+                                if self.settings.beam_cycle_seconds < 1.0
+                                    && !self.epilepsy_ack
+                                {
+                                    self.epilepsy_prompt = Some(
+                                        self.settings.beam_cycle_seconds);
+                                    self.settings.beam_cycle_seconds = 1.0;
+                                }
+                                retune = true;
+                                save = true;
+                            }
+                            if ui.selectable_label(track_mode,
+                                                   "Every song")
+                                .clicked() && !track_mode
+                            {
+                                self.settings.beam_cycle_mode =
+                                    "track".into();
+                                retune = true;
+                                save = true;
+                            }
+                        })
+                        .response
+                        .on_hover_text(
+                            "On a timer: colors crossfade continuously. \
+                             Every song: one color step per track \
+                             change (yours or the scoped player's).");
+                });
                 ui.horizontal(|ui| {
                     ui.label("Transition");
                     let mut seconds = self.settings.beam_cycle_seconds;
@@ -614,8 +658,13 @@ impl Shell {
                                         photosensitivity confirmation.")
                         .changed()
                     {
-                        if seconds < 1.0 && !self.epilepsy_ack {
-                            // pin at 1 s until the prompt is answered
+                        if seconds < 1.0 && !self.epilepsy_ack
+                            && self.settings.beam_cycle_mode != "track"
+                        {
+                            // pin at 1 s until the prompt is answered.
+                            // Track mode is exempt: one fade per song
+                            // is not a strobe (the timer-mode switch
+                            // re-checks).
                             self.epilepsy_prompt =
                                 Some(f64::max(seconds, 0.1));
                             self.settings.beam_cycle_seconds = 1.0;
@@ -815,11 +864,10 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
     pub(crate) fn apply_ui_style(&mut self, ctx: &egui::Context) {
         // afterglow / blossom_dark chrome samples the live beam color;
         // every theme reads its tokens from the palette table (theme.rs).
-        // build_theme_at: when the color cycle runs, chrome accents that
-        // follow the beam ride the same animated color (free win)
-        let beam = crate::render::build_theme_at(
-            &self.settings,
-            self.started.elapsed().as_secs_f64()).beam_color;
+        // current_theme: when the color cycle runs (timer or per-song),
+        // chrome accents that follow the beam ride the same animated
+        // color (free win)
+        let beam = self.current_theme().beam_color;
         let target = crate::theme::palette(&self.settings.ui_style)
             .with_beam(beam);
         // glass floats the chrome over the desktop → dim the panels

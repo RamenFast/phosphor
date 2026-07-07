@@ -93,7 +93,11 @@ The scope's phosphor is a **Beam** preset (P7 Green, Amber…) or
 **Custom**. Custom grew a cycle in 4.1: up to **three colors** that
 crossfade into each other on a **transition timer** (default 3 s per
 leg, eased so the beam lingers on your picks before gliding on). One
-color stays static, two ping-pong, three walk the ring. Flash and
+color stays static, two ping-pong, three walk the ring. The
+**Advance** control (4.2) picks the rhythm: **On a timer** cycles
+continuously; **Every song** takes one eased color step per track
+change — yours or the scoped player's — and rests in between, for
+listeners who want each song to own a color. Flash and
 background derive from the moving beam, the grid stays your pick, and
 chrome accents that follow the beam (Blossom Dark, Afterglow) ride
 along. Snapshots, clips, and `phosphor render` reproduce the cycle
@@ -166,8 +170,9 @@ means 165), GPU quality (supersampling), CPU renderer resolution.
 foreign keys are preserved, v3 files migrate untouched. Highlights:
 `ui_style` (11 ids — see the picker), `theme_name` (beam phosphor
 color; `Custom` + RGB), `custom_beam_color_2`/`_3` +
-`beam_cycle_count` + `beam_cycle_seconds` (the color cycle — removed
-slots keep their picks), `scope_sample_rate` (up to 384 kHz
+`beam_cycle_count` + `beam_cycle_seconds` + `beam_cycle_mode`
+(`timer`/`track` — the color cycle; removed slots keep their picks),
+`scope_sample_rate` (up to 384 kHz
 reconstruction), `renderer` (`gl`/`cairo`), `max_fps` (0 = monitor,
 -1 = uncapped), `track_notifications`, `show_fps_detail`,
 `glass_tints` (per-style), `vacuum_enabled`, `kit_path`/`kit_enabled`.

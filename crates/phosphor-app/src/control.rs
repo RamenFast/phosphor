@@ -89,6 +89,8 @@ pub(crate) struct StatusSnapshot {
 pub(crate) struct BeamCycleStatus {
     pub colors: i64,
     pub seconds: f64,
+    /// "timer" (legs on the clock) | "track" (one advance per song)
+    pub mode: String,
     pub current: [f32; 3],
 }
 
