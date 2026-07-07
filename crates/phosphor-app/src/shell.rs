@@ -2628,6 +2628,33 @@ impl Shell {
                         format!("no signal · {label}"),
                         egui::FontId::monospace(12.0),
                         self.active_palette.muted);
+                    // the resting beam: a real CRT never shows
+                    // nothing — with no deflection the electron beam
+                    // sits at dead center as a small dot. Painted
+                    // chrome-side (the engine is asleep; this costs
+                    // zero frames), it settles in over ~a second via
+                    // egui's one-shot animation and then holds still.
+                    let settle = ui.ctx().animate_bool_with_time(
+                        egui::Id::new("resting-beam"), true, 1.1);
+                    let beam = self.current_theme().beam_color;
+                    let center = scope_rect_out.center();
+                    let paint_dot = |radius: f32, alpha: f32| {
+                        ui.painter().circle_filled(
+                            center, radius,
+                            egui::Color32::from_rgba_unmultiplied(
+                                (beam[0] * 255.0) as u8,
+                                (beam[1] * 255.0) as u8,
+                                (beam[2] * 255.0) as u8,
+                                (alpha * settle) as u8));
+                    };
+                    paint_dot(9.0, 14.0);  // far halo
+                    paint_dot(5.0, 46.0);  // glow
+                    paint_dot(2.4, 210.0); // the beam itself
+                } else {
+                    // re-arm the settle so the dot fades in fresh the
+                    // next time the scope goes quiet
+                    ui.ctx().animate_bool_with_time(
+                        egui::Id::new("resting-beam"), false, 0.2);
                 }
                 // fps overlay: top-right of the scope, mono, all modes
                 // (mini + fullscreen included — Ben's requested home)

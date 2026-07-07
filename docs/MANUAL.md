@@ -168,7 +168,7 @@ means 165), GPU quality (supersampling), CPU renderer resolution.
 
 `~/.config/phosphor/settings.json` — every key survives round-trips,
 foreign keys are preserved, v3 files migrate untouched. Highlights:
-`ui_style` (11 ids — see the picker), `theme_name` (beam phosphor
+`ui_style` (12 ids — see the picker), `theme_name` (beam phosphor
 color; `Custom` + RGB), `custom_beam_color_2`/`_3` +
 `beam_cycle_count` + `beam_cycle_seconds` + `beam_cycle_mode`
 (`timer`/`track` — the color cycle; removed slots keep their picks),

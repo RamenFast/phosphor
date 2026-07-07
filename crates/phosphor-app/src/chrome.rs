@@ -594,6 +594,42 @@ impl Shell {
                 }
             });
             if self.settings.beam_cycle_count > 1 {
+                // the ring, previewed: a slim gradient strip sampling
+                // the whole cycle start→wrap. Self-expressive — the
+                // journey the beam will take, visible before it takes
+                // it (and it live-updates as swatches change).
+                let (strip, _) = ui.allocate_exact_size(
+                    egui::vec2(ui.available_width().min(198.0), 6.0),
+                    egui::Sense::hover());
+                if ui.is_rect_visible(strip) {
+                    let painter = ui.painter();
+                    let steps = 48;
+                    let ring = self.settings.beam_cycle_count as f64;
+                    for index in 0..steps {
+                        let fraction = index as f32 / steps as f32;
+                        let color = crate::render::cycle_beam_color_phase(
+                            &self.settings, fraction as f64 * ring);
+                        let x0 = strip.min.x
+                            + strip.width() * fraction;
+                        let x1 = strip.min.x
+                            + strip.width() * (index + 1) as f32
+                              / steps as f32;
+                        painter.rect_filled(
+                            egui::Rect::from_min_max(
+                                egui::pos2(x0, strip.min.y),
+                                egui::pos2(x1, strip.max.y)),
+                            0.0,
+                            egui::Color32::from_rgb(
+                                (color[0] * 255.0) as u8,
+                                (color[1] * 255.0) as u8,
+                                (color[2] * 255.0) as u8));
+                    }
+                    painter.rect_stroke(
+                        strip, 0.0,
+                        egui::Stroke::new(
+                            1.0, self.active_palette.line_strong),
+                        egui::StrokeKind::Inside);
+                }
                 // how the ring advances: continuously on a timer, or
                 // one step per song ("just want 1 color change per
                 // song" — Ben's spec). Switching INTO timer mode with

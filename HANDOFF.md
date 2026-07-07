@@ -1,5 +1,42 @@
 # Handoff — next session starts here
 
+## v4.3.0 SHIPPED (July 7, 2026 — the guestbook: Fable's room, the resting beam, one pane everywhere)
+
+Ben's closing checklist + a free hand ("pick something subtle I'm not
+expecting… and make your own theme"). Fourth release of the day:
+
+- **Six-point UI verification, all receipted** on an isolated Xvfb
+  rig wearing the new theme: (a) context menu opens complete, zero
+  scrollbars; (b) items fire on left-click (Grid receipted; per-view
+  clicks receipted at 4.0.2/4.2.0, menu code unchanged); (c) cycle
+  settings copy + a NEW live gradient strip previewing the whole
+  ring start→wrap under the swatches; (d) song-change card (title +
+  metadata, art when the source carries it) receipted in normal,
+  fullscreen, AND mini; (e) L pane lists folder siblings, current
+  row highlighted; (f) **the L pane now slides in from the left in
+  ALL views** — normal/fullscreen dock via SidePanel::show_animated,
+  mini gets a left-anchored slide-OVER wearing identical pane
+  clothes (`playlist_pane_contents` is the one shared body;
+  PANE_SLIDE_SECONDS=0.15). The old mini floating window is gone.
+- **The resting beam** (the unexpected polish): when capture is live
+  but silent past the sleep window, the scope no longer shows only a
+  label — a small soft dot holds dead center in the CURRENT beam
+  color (cycle included), because a real CRT with no deflection
+  rests as a dot. Painted chrome-side: zero engine frames, one-shot
+  1.1 s settle via egui animate_bool, re-armed on wake.
+- **Fable — the twelfth room** (my signature in the guestbook):
+  abyssal sea-green ground, moonlit ink, seafoam hairlines, and a
+  warm lantern-gold accent that deliberately does NOT follow the
+  beam — the beam paints the scope, the lantern lights the margins.
+  `PALETTES[11]`, id `fable`; the palette test pins it.
+- **The cycle demo is on GitHub**: docs/cycle-demo.gif (9.5 s of
+  Attack Vector through one full 3-color ring, rendered by
+  `phosphor render` itself — the export IS the demo), embedded in
+  README ("The beam learns color") and the release notes.
+- **~/.claude/skills/phosphor-icon** now holds the icon laws
+  (closed figures, transparency-first, RGBA-64, guard-band, user
+  icon-cache refresh, full plumbing).
+
 ## v4.2.0 SHIPPED (July 7, 2026 — song colors + the four-color icon)
 
 Same-day follow-up to 4.1.0, Ben's last two asks of the trilogy:

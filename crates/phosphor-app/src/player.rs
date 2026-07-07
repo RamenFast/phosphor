@@ -452,55 +452,78 @@ impl Shell {
         });
     }
 
-    /// Playlist side panel (key L): click to play, current highlighted.
+    /// One slide, both shapes (docked + mini's slide-over) — matches
+    /// the house animation_time neighborhood.
+    pub(crate) const PANE_SLIDE_SECONDS: f32 = 0.15;
+
+    /// Playlist pane (key L): click to play, current highlighted.
+    /// ONE shape in every view — it slides in from the LEFT (Ben:
+    /// "the L menu appears consistently sliding in from the left on
+    /// all views"). Normal + fullscreen dock it (the scope yields the
+    /// strip); mini can't afford to dock a 200–520 px square, so it
+    /// gets a left-anchored slide-OVER wearing the same pane clothes,
+    /// riding the same slide. L works EVERYWHERE.
     pub(crate) fn ui_playlist_panel(&mut self, ctx: &egui::Context) {
-        if !self.player.panel_open {
-            return;
-        }
-        // Normal view AND fullscreen: the docked left slide-out (Ben:
-        // "playlist in fullscreen pops out into a window, not the left
-        // pane slide out" — BUGLOG #2; the scope yields the strip while
-        // it's open, same as windowed). Mini keeps the floating window:
-        // a 200–520 px square can't host a docked panel. L works
-        // EVERYWHERE (it used to be gated behind hide_chrome, so the
-        // key silently did nothing exactly where you'd want it).
+        let open = self.player.panel_open;
         if self.is_mini {
-            let mut open = true;
-            egui::Window::new("Playlist")
-                .collapsible(false)
-                .resizable(true)
-                .default_width(240.0)
-                .max_height(
-                    (self.scope_rect.height() - 40.0).max(120.0))
-                .open(&mut open)
-                .show(ctx, |ui| self.playlist_rows(ui));
-            if !open {
-                self.player.panel_open = false;
-                self.settings.playlist_panel_open = false;
+            let slide = ctx.animate_bool_with_time(
+                egui::Id::new("mini-playlist-slide"), open,
+                Self::PANE_SLIDE_SECONDS);
+            if slide <= 0.0 {
+                return;
             }
+            let content = ctx.content_rect();
+            let width = (content.width() * 0.72).min(200.0);
+            let offset_x = -(1.0 - slide) * width;
+            let panel_fill = ctx.style().visuals.panel_fill;
+            let edge = self.active_palette.line_strong;
+            egui::Area::new(egui::Id::new("mini-playlist"))
+                .anchor(egui::Align2::LEFT_TOP, [offset_x, 0.0])
+                .show(ctx, |ui| {
+                    egui::Frame::NONE
+                        .fill(panel_fill)
+                        .inner_margin(egui::Margin::same(8))
+                        .show(ui, |ui| {
+                            ui.set_width(width - 16.0);
+                            ui.set_min_height(content.height() - 16.0);
+                            self.playlist_pane_contents(ui);
+                        });
+                    // the pane's right hairline — the docked panel's
+                    // resize edge, mimed so the two shapes match
+                    let rect = ui.min_rect();
+                    ui.painter().line_segment(
+                        [egui::pos2(rect.max.x, rect.min.y),
+                         egui::pos2(rect.max.x, content.max.y)],
+                        egui::Stroke::new(1.0, edge));
+                });
             return;
         }
         egui::SidePanel::left("playlist")
             .default_width(240.0)
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.heading("Playlist");
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            // the close affordance it never had
-                            if ui.button(icon::X)
-                                .on_hover_text("Close (L)")
-                                .clicked()
-                            {
-                                self.player.panel_open = false;
-                                self.settings.playlist_panel_open = false;
-                            }
-                        });
-                });
-                ui.separator();
-                self.playlist_rows(ui);
+            .show_animated(ctx, open, |ui| {
+                self.playlist_pane_contents(ui);
             });
+    }
+
+    /// The pane's one body: heading + close affordance + the rows
+    /// (shared by the docked panel and mini's slide-over).
+    fn playlist_pane_contents(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.heading("Playlist");
+            ui.with_layout(
+                egui::Layout::right_to_left(egui::Align::Center),
+                |ui| {
+                    if ui.button(icon::X)
+                        .on_hover_text("Close (L)")
+                        .clicked()
+                    {
+                        self.player.panel_open = false;
+                        self.settings.playlist_panel_open = false;
+                    }
+                });
+        });
+        ui.separator();
+        self.playlist_rows(ui);
     }
 
     fn playlist_rows(&mut self, ui: &mut egui::Ui) {

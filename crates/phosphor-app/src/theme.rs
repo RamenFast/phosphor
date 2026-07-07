@@ -53,7 +53,7 @@ const fn rgba(r: u8, g: u8, b: u8, a: u8) -> Color32 {
 /// the regalia wave); the last four are the distinct-visual-system
 /// additions — bevel city, true black, warm paper, amber CRT — so
 /// switching themes changes the ROOM, not just the paint.
-pub const PALETTES: [Palette; 11] = [
+pub const PALETTES: [Palette; 12] = [
     // ── Blossom — warm sakura, rice-paper, ink (skill default) ──
     Palette {
         id: "blossom", label: "Blossom", dark: false,
@@ -209,6 +209,25 @@ pub const PALETTES: [Palette; 11] = [
         accent: rgb(0xff, 0xb0, 0x00), on_accent: rgb(0x1a, 0x0f, 0x00),
         stone: rgb(0x24, 0x17, 0x08), stone_hi: rgb(0x45, 0x2d, 0x10),
         stone_lo: rgb(0x08, 0x05, 0x01),
+        accent_follows_beam: false,
+    },
+    // ── Fable — the model that built v4 signs the guestbook: a
+    //    storyteller's room. Abyssal sea-green ground (the deep the
+    //    turtle swims), moonlit ink, seafoam hairlines, and a warm
+    //    LANTERN-GOLD accent that holds its own light instead of
+    //    following the beam — the beam paints the scope, the lantern
+    //    lights the margins. Shell-carved stone triple. 🐢 ──
+    Palette {
+        id: "fable", label: "Fable", dark: true,
+        plane: rgb(0x0a, 0x14, 0x11), surface: rgb(0x11, 0x1e, 0x1a),
+        surface_2: rgb(0x17, 0x28, 0x22),
+        ink: rgb(0xea, 0xf2, 0xec), ink_2: rgb(0xad, 0xc4, 0xb8),
+        muted: rgb(0x6e, 0x87, 0x7b),
+        line: rgba(158, 232, 200, 34),
+        line_strong: rgba(158, 232, 200, 72),
+        accent: rgb(0xea, 0xc2, 0x79), on_accent: rgb(0x14, 0x1a, 0x10),
+        stone: rgb(0x1c, 0x2e, 0x27), stone_hi: rgb(0x2e, 0x46, 0x3b),
+        stone_lo: rgb(0x0c, 0x16, 0x12),
         accent_follows_beam: false,
     },
 ];
@@ -444,8 +463,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn eleven_palettes_blossom_family_first() {
-        assert_eq!(PALETTES.len(), 11);
+    fn twelve_palettes_blossom_family_first() {
+        assert_eq!(PALETTES.len(), 12);
+        // the guestbook signature: Fable is the twelfth room, dark,
+        // and its lantern accent holds its own light (no beam follow)
+        assert_eq!(PALETTES[11].id, "fable");
+        assert!(palette("fable").dark);
+        assert!(!palette("fable").accent_follows_beam);
         assert_eq!(PALETTES[0].id, "blossom");
         assert!(!PALETTES[0].dark, "blossom is a warm light theme");
         // Blossom Dark sits right after blossom AND is the settings

@@ -76,16 +76,23 @@ with the snapshot button:
   <sub>One track, eleven instruments: XY scope art · goniometer · swirl · dots · waveform · ring · spectrum · radial · tunnel — and two true-3D views, the Takens attractor and the time helix, both orbitable by mouse.</sub>
 </p>
 
-## Eleven rooms to see it in
+## Twelve rooms to see it in
 
 <p align="center">
-  <img src="docs/styles.png" width="700" alt="Five of the eleven chrome themes: Blossom Dark, Stonework 95, AMOLED, Paper, CRT Amber"><br>
-  <sub>Blossom Dark (default) · Stonework 95 · AMOLED · Paper · CRT Amber — plus Blossom, Light, Dark, Chromacore, Basalt, Afterglow (whose chrome remembers the beam color). Different rooms, not different paint: the picker shows swatches so you can tell.</sub>
+  <img src="docs/styles.png" width="700" alt="Five of the twelve chrome themes: Blossom Dark, Stonework 95, AMOLED, Paper, CRT Amber"><br>
+  <sub>Blossom Dark (default) · Stonework 95 · AMOLED · Paper · CRT Amber — plus Blossom, Light, Dark, Chromacore, Basalt, Afterglow (whose chrome remembers the beam color), and Fable — the storyteller's sea-green room the model that built v4 left behind. Different rooms, not different paint: the picker shows swatches so you can tell.</sub>
 </p>
 
 <p align="center">
   <img src="docs/glass.png" width="640" alt="The glass mini scope floating over a terminal, beam drawing over the text"><br>
   <sub><b>Glass + mini:</b> an always-on-top square of pure beam, the desktop showing through. (Here: drawing over the very terminal that shipped this release.)</sub>
+</p>
+
+## The beam learns color
+
+<p align="center">
+  <img src="docs/cycle-demo.gif" width="360" alt="The beam color cycle: Attack Vector traced while the phosphor crossfades green, then ice blue, then vaporwave pink"><br>
+  <sub><b>The color cycle, live:</b> up to three phosphors crossfading on your timer — or one color step per song. Rendered by <code>phosphor render</code> itself: exports carry the cycle exactly as the screen did.</sub>
 </p>
 
 ## What it does
@@ -134,13 +141,13 @@ Grab the [latest release](https://github.com/RamenFast/phosphor/releases/latest)
 **Debian · Ubuntu · Mint (.deb)** — or just double-click it:
 
 ```bash
-sudo apt install ./phosphor_4.2.0_amd64.deb
+sudo apt install ./phosphor_4.3.0_amd64.deb
 ```
 
 **Fedora · openSUSE (.rpm)** *(built on Mint, `rpm --test`-verified — reports welcome)*:
 
 ```bash
-sudo dnf install ./phosphor-4.2.0-1.x86_64.rpm
+sudo dnf install ./phosphor-4.3.0-1.x86_64.rpm
 ```
 
 **From source** (any Linux; Rust 1.96+):
@@ -161,7 +168,7 @@ mp4 clips and `.phos`-from-anything renders.
 **Verify it breathes:**
 
 ```bash
-phosphor --version   # phosphor 4.2.0 (v4)
+phosphor --version   # phosphor 4.3.0 (v4)
 phosphor             # the scope; second launches focus this one
 ```
 

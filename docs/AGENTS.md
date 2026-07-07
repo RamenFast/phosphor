@@ -40,7 +40,7 @@ change and rests between songs.
 ```bash
 phosphor ctl mode xy45            # modes: see `phosphor schema` enums
 phosphor ctl theme "P7 Green"     # beam phosphor color
-phosphor ctl ui amber             # chrome look (11 ids)
+phosphor ctl ui amber             # chrome look (12 ids)
 phosphor ctl target "device:alsa_output.pci-0000_0b_00.4.analog-stereo.monitor"
 phosphor ctl target "app:Spotify" # one app, by name key
 phosphor ctl target "mix:app:one+app:two"   # fold several apps
