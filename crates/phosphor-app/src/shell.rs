@@ -290,8 +290,6 @@ pub struct Shell {
     /// settle NEVER re-squares/snaps (the window moving under an open
     /// menu was Ben's "right click glitches out a ton")
     pub(crate) context_menu_open: bool,
-    /// pointer was over the open menu last frame (dismiss logic)
-    pub(crate) context_menu_hovered: bool,
     /// a click outside the menu asked it to close (honored inside the
     /// menu closure next frame — reliable even when a WM grab or the
     /// fullscreen surface swallows the release egui would need)
@@ -433,7 +431,6 @@ impl Shell {
             mini_drag_active: false,
             mini_entering: None,
             context_menu_open: false,
-            context_menu_hovered: false,
             close_menu_request: false,
             last_external_signature: None,
             cursor_position: (0.0, 0.0),
@@ -2382,12 +2379,32 @@ impl Shell {
                 self.scope_hovered = scope_response.hovered();
                 // left-press outside an open menu dismisses it — the
                 // normal-view behavior, made to work in fullscreen and
-                // mini too (Ben's patch list)
+                // mini too (Ben's patch list). "Outside" = the press
+                // landed on a layer BELOW Order::Foreground: the menu
+                // and every submenu are Foreground popups, so item
+                // presses never count. (BUGLOG #1: testing a hovered
+                // flag measured via ui_contains_pointer at the TOP of
+                // the menu closure reads an empty min_rect → always
+                // false → every item press closed the menu before its
+                // release could land — "menu items don't work,
+                // hotkeys do".)
                 if self.context_menu_open
-                    && !self.context_menu_hovered
                     && ui.ctx().input(|i| i.pointer.primary_pressed())
                 {
-                    self.close_menu_request = true;
+                    // press_origin is None when the release arrived in
+                    // the same input batch (a fast click) — fall back
+                    // to interact_pos; the pointer hasn't moved between
+                    // the two within one frame in any way that matters
+                    let press_on_menu = ui.ctx()
+                        .input(|i| i.pointer.press_origin()
+                                    .or(i.pointer.interact_pos()))
+                        .and_then(|pos| ui.ctx().layer_id_at(pos))
+                        .is_some_and(|layer| {
+                            layer.order == egui::Order::Foreground
+                        });
+                    if !press_on_menu {
+                        self.close_menu_request = true;
+                    }
                 }
                 self.ui_context_menu(&scope_response);
                 if scope_response.double_clicked() && self.is_mini {
@@ -2803,12 +2820,29 @@ impl ApplicationHandler<()> for Shell {
                 state: winit::event::ElementState::Pressed,
                 button: winit::event::MouseButton::Left, ..
             } if self.is_mini => {
-                // With the context menu open, left-press DISMISSES it
-                // — never starts a WM drag. The WM grab used to
-                // swallow the release egui needed, so the menu could
-                // not be clicked away in mini (Ben's patch list).
+                // With the context menu open, a left-press OUTSIDE the
+                // menu dismisses it — and never starts a WM drag (the
+                // WM grab used to swallow the release egui needed). A
+                // press ON the menu (Foreground layer: menu + submenus)
+                // belongs to egui — starting a drag OR dismissing here
+                // ate every item click in mini (BUGLOG #1).
                 if self.context_menu_open {
-                    self.close_menu_request = true;
+                    let on_menu = self.graphics.as_ref()
+                        .is_some_and(|graphics| {
+                            let ppp = graphics.egui_ctx
+                                .pixels_per_point();
+                            let (x, y) = self.cursor_position;
+                            let pos = egui::pos2(x as f32 / ppp,
+                                                 y as f32 / ppp);
+                            graphics.egui_ctx.layer_id_at(pos)
+                                .is_some_and(|layer| {
+                                    layer.order
+                                        == egui::Order::Foreground
+                                })
+                        });
+                    if !on_menu {
+                        self.close_menu_request = true;
+                    }
                     self.wake_render_loop();
                     return;
                 }

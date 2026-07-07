@@ -127,13 +127,13 @@ Grab the [latest release](https://github.com/RamenFast/phosphor/releases/latest)
 **Debian · Ubuntu · Mint (.deb)** — or just double-click it:
 
 ```bash
-sudo apt install ./phosphor_4.0.1_amd64.deb
+sudo apt install ./phosphor_4.0.2_amd64.deb
 ```
 
 **Fedora · openSUSE (.rpm)** *(built on Mint, `rpm --test`-verified — reports welcome)*:
 
 ```bash
-sudo dnf install ./phosphor-4.0.1-1.x86_64.rpm
+sudo dnf install ./phosphor-4.0.2-1.x86_64.rpm
 ```
 
 **From source** (any Linux; Rust 1.96+):
@@ -154,7 +154,7 @@ mp4 clips and `.phos`-from-anything renders.
 **Verify it breathes:**
 
 ```bash
-phosphor --version   # phosphor 4.0.1 (v4)
+phosphor --version   # phosphor 4.0.2 (v4)
 phosphor             # the scope; second launches focus this one
 ```
 

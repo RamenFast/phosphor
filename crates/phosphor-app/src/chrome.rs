@@ -1374,7 +1374,6 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
         // switch, which was the "menu opens with the other mode's
         // geometry" glitch. Item content still adapts via `compact`.
         let compact = self.is_mini;
-        let mut hovered = false;
         let opened = response
             .context_menu(|ui| {
                 // a click that landed OUTSIDE the menu asked it to
@@ -1386,7 +1385,6 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                     ui.close();
                     return;
                 }
-                hovered = ui.ui_contains_pointer();
                 ui.set_max_width(230.0);
                 // The menu is FIXED-size on purpose: egui's find_best_align
                 // only flips a popup that doesn't fit, and a ScrollArea makes
@@ -1407,7 +1405,6 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
             })
             .is_some();
         self.context_menu_open = opened;
-        self.context_menu_hovered = hovered;
         if !opened {
             self.close_menu_request = false;
         }

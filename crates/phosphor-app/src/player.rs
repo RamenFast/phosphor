@@ -178,6 +178,17 @@ impl Shell {
             self.player.playlist.iter().position(|p| p == path)
         {
             self.player.playlist_index = index;
+        } else {
+            // the path came from OUTSIDE the list (ctl open, MPRIS
+            // OpenUri, file-manager forward): the file-dialog law
+            // applies — folder siblings become the playlist. Without
+            // this the playlist stayed EMPTY on external opens: bare
+            // panel, dead next/previous, no gapless (BUGLOG #3).
+            // Drag-drop is unaffected — it seeds its single-track
+            // list before calling here, so its path is always found.
+            let (playlist, index) = build_playlist(path);
+            self.player.playlist = playlist;
+            self.player.playlist_index = index;
         }
         self.engine.stop_capture();
         self.capture_on = false;
@@ -446,11 +457,14 @@ impl Shell {
         if !self.player.panel_open {
             return;
         }
-        // Normal view: a docked side panel. Mini/fullscreen: the same
-        // list as a floating window — L works EVERYWHERE now (it used
-        // to be gated behind hide_chrome, so the key silently did
-        // nothing exactly where you'd want a quick track hop).
-        if self.is_mini || self.is_fullscreen {
+        // Normal view AND fullscreen: the docked left slide-out (Ben:
+        // "playlist in fullscreen pops out into a window, not the left
+        // pane slide out" — BUGLOG #2; the scope yields the strip while
+        // it's open, same as windowed). Mini keeps the floating window:
+        // a 200–520 px square can't host a docked panel. L works
+        // EVERYWHERE (it used to be gated behind hide_chrome, so the
+        // key silently did nothing exactly where you'd want it).
+        if self.is_mini {
             let mut open = true;
             egui::Window::new("Playlist")
                 .collapsible(false)

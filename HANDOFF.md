@@ -1,5 +1,42 @@
 # Handoff — next session starts here
 
+**NEW STANDING RULE: read `docs/dev/BUGLOG.md` before changing UI/
+input/menu/playlist/window-mode code, and append to it with every
+root-caused fix.** Ben asked for a regression ledger after v4.0.1
+shipped a broken menu twice-over; the ledger is now the law.
+
+## v4.0.2 SHIPPED (July 7, 2026 — the functionality-assurance pass)
+
+The session after the crash. Ben's report: menu items dead (hotkeys
+fine), fullscreen playlist popping out as a window, repeating bugs.
+Three root causes, all receipted live on an isolated Xvfb instance
+(BUGLOG #1–#3 hold the full stories):
+
+- **Menu items dead** (#1): v4.0.1's dismiss patch measured "hovered"
+  via `ui_contains_pointer()` before item layout (empty `min_rect` →
+  always false) → every press queued a close that beat the button's
+  release. Plus mini's winit handler ate ALL presses with the menu
+  open. Fix: dismissal = press on a layer BELOW `Order::Foreground`
+  (`layer_id_at`; submenus are Foreground too), with
+  `press_origin().or(interact_pos())` because a same-frame-batched
+  click clears press_origin. Receipts: item + submenu clicks fire in
+  normal/fullscreen/mini (probe-verified mode/track changes);
+  outside-press still dismisses in all three.
+- **Fullscreen playlist** (#2): was gated with mini into the floating
+  window; now falls through to the docked left SidePanel (only mini
+  floats). Receipt: fullscreen L → docked pane, row click switches
+  track.
+- **External opens left the playlist empty** (#3, found during
+  receipts): `ctl open`/MPRIS OpenUri → `play_file(…, false)` built
+  nothing; now a path outside the current list builds the
+  folder-sibling playlist (drag-drop unaffected — it seeds first).
+
+Gates at close: 20/20 suites, clippy silent, bench ALL PASS
+(offline 183.2/148.0, cpu-noise 25.6, gpu 1855/1031/1627/2941;
+noise cut regenerated from git-history signals.py — see BUGLOG
+standing law). Release v4.0.2: deb + rpm + source + SHA256SUMS,
+installed on Ben's machine.
+
 ## v4.0.1 SHIPPED (July 6, 2026 — the context-menu patch)
 
 Ben's first real-use bug report after 4.0.0: the right-click menu wore
