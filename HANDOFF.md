@@ -1,5 +1,26 @@
 # Handoff — next session starts here
 
+## v4.6.0 SHIPPED (July 7, 2026 — the menu leaves the window; Ben's second RC round)
+
+Ben's polish list, mid-final-testing: (1) **the context menu is a
+real OS popup window now** (BUGLOG #10 — PopupMenu-typed,
+override-redirect, transparent canvas, own egui ctx/surface on the
+shared device; renders from about_to_wait because per-window
+RedrawRequested never arrives for override-redirect windows; NEVER
+close it on its own Focused(false) — it never holds focus and winit
+reports false at birth). It expands past the mini/normal window
+edges — receipted towering over a 280 px mini. (2) Right-click menu
+naming fixed: "Beam color" = phosphor presets (was mislabeled
+"Theme"), NEW "Theme" submenu = the 12 chrome rooms. (3) FPS row =
+two fill-squares (■□ counter, ■■ nerd HUD, □□ off) clicking through
+without closing the menu; cycle_fps + G now SaveSettings immediately
+(crash-proof persistence). (4) fullscreen→mini is ONE M press —
+STAGED (un-fullscreen, mini_pending ~140 ms, about_to_wait finishes;
+same-tick shrink lost the WM race = Ben's double-press). Bench note:
+offline-96k missed once during Ben's live NTFS copy (load 11.6,
+mount.ntfs 33% CPU) — diff is UI-only (dsp/beam/render untouched),
+BENCH environmental law; re-ran clean after the copy settled.
+
 ## v4.5.0 SHIPPED (July 7, 2026 — the release-candidate pass; Ben's final v4 test round is NEXT)
 
 Ben: "almost ready for an official end/stable release for version 4…

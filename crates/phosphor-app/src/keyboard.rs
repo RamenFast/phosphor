@@ -140,7 +140,9 @@ fn escape_step(composing: bool, fullscreen: bool, mini: bool)
 impl Shell {
     /// F and the context-menu FPS item share ONE state machine:
     /// off → fps counter → nerd HUD → off (the menu used to be a
-    /// bare show_fps checkbox that couldn't reach the HUD).
+    /// bare show_fps checkbox that couldn't reach the HUD). The
+    /// choice persists immediately — surviving a crash, not just a
+    /// clean quit ("user preferences saved on restart").
     pub(crate) fn cycle_fps(&mut self) {
         match (self.settings.show_fps, self.settings.show_fps_detail) {
             (false, _) => {
@@ -155,6 +157,7 @@ impl Shell {
                 self.settings.show_fps_detail = false;
             }
         }
+        self.actions.push(UiAction::SaveSettings);
     }
 
     pub(crate) fn handle_key(&mut self, key: &Key) -> KeyOutcome {
@@ -217,6 +220,7 @@ impl Shell {
             Some(KeyCommand::GridToggle) => {
                 self.settings.grid_enabled = !self.settings.grid_enabled;
                 self.actions.push(UiAction::RenderTuning);
+                self.actions.push(UiAction::SaveSettings);
             }
             Some(KeyCommand::PlaylistToggle) => {
                 self.player.panel_open = !self.player.panel_open;

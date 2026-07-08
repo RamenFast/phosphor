@@ -139,8 +139,10 @@ Phosphor — it plays at *your* detail rate, "trace by you" fading in.
 
 - **M** — mini: a square, undecorated, always-on-top scope. Drag to
   move (edges snap to the work area), 8-zone edge/corner resize,
-  double-click or Esc restores, right-click for the compact menu +
-  Align + size presets.
+  double-click or Esc restores. Right-click opens the full menu —
+  since 4.6 it's a real popup window that grows past the mini's
+  edges, plus Align and size presets. M in fullscreen goes straight
+  to the mini.
 - **Glass** (settings) — the pane goes translucent: the beam draws
   over whatever is behind the window. Tint per theme, 1% steps.
   Pairs dangerously well with mini.

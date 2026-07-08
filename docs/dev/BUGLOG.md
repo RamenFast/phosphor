@@ -223,6 +223,35 @@ normal geometry, not fullscreen dims; dotted outline screenshot.
 Frame-inset drift + work-area clamp need a real WM — Ben's final
 round covers them.
 
+## #10 — The menu was jailed inside the window (fixed v4.6.0)
+
+**Symptom (Ben):** "the right click should be able to be bigger
+than/expand outside of the actual player window" — an egui popup
+physically cannot: it draws on the window's own surface.
+
+**The fix:** the context menu is a real OS window now (`MenuPopup`):
+X11 `PopupMenu`-typed, override-redirect, always-on-top, transparent
+canvas (submenus flare into the spare space), its own egui
+context/surface on the shared wgpu device, spawned at the global
+cursor after the frame (window creation needs the event loop).
+`context_menu_items` is the single menu body, `request_menu_close`
+closes both hosts (egui submenu + the popup window).
+
+**Laws learned building it:** (1) winit's per-window RedrawRequested
+never arrived for the override-redirect popup — it renders from
+about_to_wait on a ~16 ms wake instead; (2) an override-redirect
+window NEVER holds focus: winit reports `Focused(false)` at creation
+and closing on it killed the menu one frame in — close on main-window
+press/focus-loss/Escape/item-click, never on the popup's own focus
+events; (3) fullscreen→mini must be STAGED (un-fullscreen, then enter
+mini ~140 ms later once the WM lands the restore) — a same-tick
+shrink lost the race and cost a second M press.
+
+**Receipt (1440p):** the menu towers over a 280 px mini (screenshot);
+submenu click switched mode ring + closed the popup; FPS row clicked
+twice walking ■□→■■ with the menu staying open; Escape closed it with
+the app alive; F11→one M→mini probe-verified.
+
 ---
 
 ## Standing laws (older repeat families — one line each, don't relearn)

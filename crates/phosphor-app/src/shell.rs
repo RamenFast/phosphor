@@ -74,6 +74,9 @@ pub fn parse_args(arguments: &[String]) -> ShellArgs {
 struct Graphics {
     window: std::sync::Arc<Window>,
     surface: wgpu::Surface<'static>,
+    /// kept so the menu popup can open a surface on the same device
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
@@ -82,6 +85,54 @@ struct Graphics {
     egui_renderer: egui_wgpu::Renderer,
     scope_gpu: Option<GpuRenderer>,
     scope_cpu: Option<CpuScope>,
+}
+
+/// The context menu as a real OS-level popup window: it can be
+/// TALLER than the scope (Ben: "the right click should be able to
+/// expand outside the actual player window"). X11 PopupMenu-typed +
+/// override-redirect, transparent canvas — submenus paint into the
+/// spare canvas, the compositor shows the desktop through the rest.
+struct MenuPopup {
+    window: std::sync::Arc<Window>,
+    surface: wgpu::Surface<'static>,
+    config: wgpu::SurfaceConfiguration,
+    egui_ctx: egui::Context,
+    egui_state: egui_winit::State,
+    egui_renderer: egui_wgpu::Renderer,
+}
+
+/// The shared font stack (IBM Plex + JetBrains Mono + the icon
+/// font) — one definition for the main window AND the menu popup.
+fn phosphor_fonts() -> egui::FontDefinitions {
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "plex-sans".into(),
+        egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/IBMPlexSans-Regular.ttf")).into());
+    fonts.font_data.insert(
+        "plex-sans-medium".into(),
+        egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/IBMPlexSans-Medium.ttf")).into());
+    fonts.font_data.insert(
+        "jetbrains-mono".into(),
+        egui::FontData::from_static(include_bytes!(
+            "../assets/fonts/JetBrainsMono-Regular.ttf")).into());
+    if let Some(family) = fonts.families
+        .get_mut(&egui::FontFamily::Proportional)
+    {
+        family.insert(0, "plex-sans".into());
+    }
+    if let Some(family) = fonts.families
+        .get_mut(&egui::FontFamily::Monospace)
+    {
+        family.insert(0, "jetbrains-mono".into());
+    }
+    fonts.families.insert(
+        egui::FontFamily::Name("plex-medium".into()),
+        vec!["plex-sans-medium".into(), "plex-sans".into()]);
+    egui_phosphor::add_to_fonts(
+        &mut fonts, egui_phosphor::Variant::Regular);
+    fonts
 }
 
 struct CpuScope {
@@ -299,6 +350,16 @@ pub struct Shell {
     /// client a few px per round trip ("the window starts moving
     /// around on its own" — Ben, the last v4 bug)
     normal_restore: Option<(winit::dpi::PhysicalPosition<i32>, Instant)>,
+    /// fullscreen→mini is STAGED: un-fullscreen first, then enter the
+    /// mini once the WM has landed the restore (a same-tick
+    /// request_inner_size lost to Muffin's async un-fullscreen — Ben
+    /// needed TWO M presses). One keypress, two sequenced steps.
+    mini_pending: Option<Instant>,
+    /// the live context-menu popup window (None = no menu open)
+    menu_popup: Option<MenuPopup>,
+    /// a right-click asked for the menu at this GLOBAL position —
+    /// spawned after the frame (window creation needs the event loop)
+    menu_popup_spawn: Option<winit::dpi::PhysicalPosition<i32>>,
     /// cached _NET_WORKAREA (x, y, w, h) + when it was queried — the
     /// settle path reads this instead of shelling out to xprop every
     /// tick (a moved panel is rare; 30 s staleness is fine)
@@ -468,6 +529,9 @@ impl Shell {
             mini_resquare: None,
             mini_resize_axis: None,
             normal_restore: None,
+            mini_pending: None,
+            menu_popup: None,
+            menu_popup_spawn: None,
             workarea_cache: None,
             mini_drag_active: false,
             mini_entering: None,
@@ -613,37 +677,7 @@ impl Shell {
         // culprit (a thin face at small sizes) — JetBrains Mono for
         // DATA (the skill's mono rule), a Medium family for headings,
         // and the Phosphor icon font for glyphs (no raw-unicode tofu).
-        {
-            let mut fonts = egui::FontDefinitions::default();
-            fonts.font_data.insert(
-                "plex-sans".into(),
-                egui::FontData::from_static(include_bytes!(
-                    "../assets/fonts/IBMPlexSans-Regular.ttf")).into());
-            fonts.font_data.insert(
-                "plex-sans-medium".into(),
-                egui::FontData::from_static(include_bytes!(
-                    "../assets/fonts/IBMPlexSans-Medium.ttf")).into());
-            fonts.font_data.insert(
-                "jetbrains-mono".into(),
-                egui::FontData::from_static(include_bytes!(
-                    "../assets/fonts/JetBrainsMono-Regular.ttf")).into());
-            if let Some(family) = fonts.families
-                .get_mut(&egui::FontFamily::Proportional)
-            {
-                family.insert(0, "plex-sans".into());
-            }
-            if let Some(family) = fonts.families
-                .get_mut(&egui::FontFamily::Monospace)
-            {
-                family.insert(0, "jetbrains-mono".into());
-            }
-            fonts.families.insert(
-                egui::FontFamily::Name("plex-medium".into()),
-                vec!["plex-sans-medium".into(), "plex-sans".into()]);
-            egui_phosphor::add_to_fonts(
-                &mut fonts, egui_phosphor::Variant::Regular);
-            egui_ctx.set_fonts(fonts);
-        }
+        egui_ctx.set_fonts(phosphor_fonts());
         let egui_state = egui_winit::State::new(
             egui_ctx.clone(), egui::ViewportId::ROOT, &window, None,
             None, None);
@@ -666,8 +700,8 @@ impl Shell {
         };
 
         let mut graphics = Graphics {
-            window, surface, device, queue, config, egui_ctx,
-            egui_state, egui_renderer, scope_gpu, scope_cpu,
+            window, surface, instance, adapter, device, queue, config,
+            egui_ctx, egui_state, egui_renderer, scope_gpu, scope_cpu,
         };
         self.apply_render_settings(&mut graphics);
         self.graphics = Some(graphics);
@@ -979,17 +1013,20 @@ impl Shell {
                     // a menu left open across the switch would wear the
                     // old mode's geometry — ask it to close first
                     self.close_menu_request = true;
-                    // fullscreen → mini is ONE gesture (Ben: "when
-                    // clicking M from fullscreen it doesn't go to
-                    // miniplayer") — leave fullscreen first, then
-                    // shrink; the WM needs the un-fullscreen to land
-                    // before a resize request means anything
+                    // fullscreen → mini is ONE gesture, STAGED: leave
+                    // fullscreen now, enter the mini once the WM has
+                    // landed the restore (a same-tick shrink lost to
+                    // the async un-fullscreen — Ben needed two M
+                    // presses on Muffin). about_to_wait finishes it.
                     if !self.is_mini && self.is_fullscreen {
                         self.is_fullscreen = false;
                         graphics.window.set_fullscreen(None);
+                        self.mini_pending = Some(
+                            Instant::now() + Duration::from_millis(140));
+                    } else {
+                        let enable = !self.is_mini;
+                        self.set_mini_mode(enable, graphics);
                     }
-                    let enable = !self.is_mini;
-                    self.set_mini_mode(enable, graphics);
                 }
                 UiAction::PinToggle => {
                     self.settings.pinned = !self.settings.pinned;
@@ -1779,6 +1816,183 @@ impl Shell {
             }
         }
         self.apply_render_settings(graphics);
+    }
+
+    /// Spawn the context-menu popup at a global screen position: a
+    /// real X11 PopupMenu window — taller than the scope when it
+    /// needs to be. The canvas is transparent and generous so egui
+    /// submenus can flare into it; the menu panel paints top-left.
+    fn open_menu_popup(&mut self, event_loop: &ActiveEventLoop,
+                       at: winit::dpi::PhysicalPosition<i32>) {
+        use winit::platform::x11::{WindowAttributesExtX11, WindowType};
+        let Some(graphics) = &self.graphics else { return };
+        const CANVAS_W: u32 = 560;
+        const CANVAS_H: u32 = 840;
+        // clamp so the canvas lives on the monitor (flip above the
+        // cursor when the bottom would clip)
+        let (mut x, mut y) = (at.x, at.y);
+        if let Some(monitor) = graphics.window.current_monitor() {
+            let origin = monitor.position();
+            let size = monitor.size();
+            x = x.min(origin.x + size.width as i32 - CANVAS_W as i32)
+                .max(origin.x);
+            y = y.min(origin.y + size.height as i32 - CANVAS_H as i32)
+                .max(origin.y);
+        }
+        let attributes = Window::default_attributes()
+            .with_title("phosphor-menu")
+            .with_name("phosphor", "phosphor")
+            .with_decorations(false)
+            .with_resizable(false)
+            .with_transparent(true)
+            .with_window_level(winit::window::WindowLevel::AlwaysOnTop)
+            .with_inner_size(
+                winit::dpi::PhysicalSize::new(CANVAS_W, CANVAS_H))
+            .with_position(winit::dpi::PhysicalPosition::new(x, y))
+            .with_x11_window_type(vec![WindowType::PopupMenu])
+            .with_override_redirect(true);
+        let Ok(window) = event_loop.create_window(attributes) else {
+            return;
+        };
+        let window = std::sync::Arc::new(window);
+        let Ok(surface) =
+            graphics.instance.create_surface(window.clone())
+        else { return };
+        let capabilities = surface.get_capabilities(&graphics.adapter);
+        let alpha_mode = [wgpu::CompositeAlphaMode::PreMultiplied,
+                          wgpu::CompositeAlphaMode::PostMultiplied,
+                          wgpu::CompositeAlphaMode::Inherit]
+            .into_iter()
+            .find(|mode| capabilities.alpha_modes.contains(mode))
+            .unwrap_or(wgpu::CompositeAlphaMode::Opaque);
+        let format = capabilities.formats.iter().copied()
+            .find(|format| !format.is_srgb())
+            .unwrap_or(capabilities.formats[0]);
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format,
+            width: CANVAS_W,
+            height: CANVAS_H,
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode,
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        };
+        surface.configure(&graphics.device, &config);
+        let egui_ctx = egui::Context::default();
+        egui_ctx.set_fonts(phosphor_fonts());
+        let egui_state = egui_winit::State::new(
+            egui_ctx.clone(), egui::ViewportId::ROOT, &window,
+            None, None, None);
+        let egui_renderer = egui_wgpu::Renderer::new(
+            &graphics.device, config.format,
+            egui_wgpu::RendererOptions::default());
+        window.request_redraw();
+        self.menu_popup = Some(MenuPopup {
+            window, surface, config, egui_ctx, egui_state,
+            egui_renderer,
+        });
+        self.context_menu_open = true;
+        self.close_menu_request = false;
+    }
+
+    fn close_menu_popup(&mut self) {
+        self.menu_popup = None;
+        self.context_menu_open = false;
+        self.close_menu_request = false;
+        self.chrome_dirty = true;
+        if let Some(graphics) = &self.graphics {
+            graphics.window.request_redraw();
+        }
+    }
+
+    /// One egui pass + present for the popup window. The panel is a
+    /// fixed-width menu card at the canvas's top-left; the rest of
+    /// the canvas stays transparent (submenu overflow space).
+    fn render_menu_popup(&mut self) {
+        let Some(mut popup) = self.menu_popup.take() else { return };
+        let raw_input = popup.egui_state.take_egui_input(&popup.window);
+        let palette = self.active_palette;
+        palette.apply(&popup.egui_ctx, 255);
+        let panel_fill = popup.egui_ctx.style().visuals.panel_fill;
+        let egui_ctx = popup.egui_ctx.clone();
+        let full_output = egui_ctx.run(raw_input, |ctx| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    let card = egui::Frame::NONE
+                        .fill(panel_fill)
+                        .stroke(egui::Stroke::new(
+                            1.0, palette.line_strong))
+                        .inner_margin(egui::Margin::same(6));
+                    card.show(ui, |ui| {
+                        ui.set_width(230.0);
+                        // the popup IS the escape from window-height
+                        // jail: never compact here
+                        self.context_menu_items(ui, false);
+                    });
+                });
+        });
+        popup.egui_state.handle_platform_output(
+            &popup.window, full_output.platform_output);
+        let clipped = egui_ctx.tessellate(
+            full_output.shapes, full_output.pixels_per_point);
+        let frame = match popup.surface.get_current_texture() {
+            Ok(frame) => frame,
+            Err(_) => {
+                // transient (resize/outdated): try again next tick
+                self.menu_popup = Some(popup);
+                return;
+            }
+        };
+        let view = frame.texture.create_view(&Default::default());
+        let Some(graphics) = &self.graphics else { return };
+        let mut encoder = graphics.device
+            .create_command_encoder(&Default::default());
+        let screen = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [popup.config.width, popup.config.height],
+            pixels_per_point: full_output.pixels_per_point,
+        };
+        for (id, delta) in &full_output.textures_delta.set {
+            popup.egui_renderer.update_texture(
+                &graphics.device, &graphics.queue, *id, delta);
+        }
+        popup.egui_renderer.update_buffers(
+            &graphics.device, &graphics.queue, &mut encoder,
+            &clipped, &screen);
+        {
+            let pass = encoder.begin_render_pass(
+                &wgpu::RenderPassDescriptor {
+                    label: Some("menu popup"),
+                    color_attachments: &[Some(
+                        wgpu::RenderPassColorAttachment {
+                            view: &view,
+                            resolve_target: None,
+                            depth_slice: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(
+                                    wgpu::Color::TRANSPARENT),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                    ..Default::default()
+                });
+            let mut pass = pass.forget_lifetime();
+            popup.egui_renderer.render(&mut pass, &clipped, &screen);
+        }
+        for id in &full_output.textures_delta.free {
+            popup.egui_renderer.free_texture(id);
+        }
+        graphics.queue.submit([encoder.finish()]);
+        popup.window.pre_present_notify();
+        frame.present();
+        // menus are small and short-lived: keep the pass ticking so
+        // hovers/submenus stay live without frame-pacing machinery
+        popup.window.request_redraw();
+        self.menu_popup = Some(popup);
+        if self.close_menu_request {
+            self.close_menu_popup();
+        }
     }
 
     /// Snapshot + restore the undoable Custom-appearance state (the
@@ -2616,6 +2830,10 @@ impl Shell {
         self.player.tick_overlay();
         self.text_focus_ids.clear(); // chrome re-registers each frame
         let hide_chrome = self.is_mini || self.is_fullscreen;
+        // client-area origin in GLOBAL coords — the menu popup spawns
+        // at cursor + this (captured by the closure below)
+        let window_origin = graphics.window.inner_position()
+            .map(|p| (p.x, p.y)).unwrap_or((0, 0));
         let full_output = egui_ctx.run(raw_input, |ctx| {
             self.apply_ui_style(ctx);
             if !hide_chrome {
@@ -2650,36 +2868,18 @@ impl Shell {
                     scope_rect_out, ui.id().with("scope"),
                     egui::Sense::click_and_drag());
                 self.scope_hovered = scope_response.hovered();
-                // left-press outside an open menu dismisses it — the
-                // normal-view behavior, made to work in fullscreen and
-                // mini too (Ben's patch list). "Outside" = the press
-                // landed on a layer BELOW Order::Foreground: the menu
-                // and every submenu are Foreground popups, so item
-                // presses never count. (BUGLOG #1: testing a hovered
-                // flag measured via ui_contains_pointer at the TOP of
-                // the menu closure reads an empty min_rect → always
-                // false → every item press closed the menu before its
-                // release could land — "menu items don't work,
-                // hotkeys do".)
-                if self.context_menu_open
-                    && ui.ctx().input(|i| i.pointer.primary_pressed())
-                {
-                    // press_origin is None when the release arrived in
-                    // the same input batch (a fast click) — fall back
-                    // to interact_pos; the pointer hasn't moved between
-                    // the two within one frame in any way that matters
-                    let press_on_menu = ui.ctx()
-                        .input(|i| i.pointer.press_origin()
-                                    .or(i.pointer.interact_pos()))
-                        .and_then(|pos| ui.ctx().layer_id_at(pos))
-                        .is_some_and(|layer| {
-                            layer.order == egui::Order::Foreground
-                        });
-                    if !press_on_menu {
-                        self.close_menu_request = true;
-                    }
+                // right-click summons the NATIVE menu popup — a real
+                // OS window that expands past the scope's edges in
+                // every view (Ben: "the right click should be able to
+                // be bigger than the actual player window"). Spawned
+                // after this frame; needs the event loop.
+                if scope_response.secondary_clicked() {
+                    let (cx, cy) = self.cursor_position;
+                    self.menu_popup_spawn =
+                        Some(winit::dpi::PhysicalPosition::new(
+                            window_origin.0 + cx as i32,
+                            window_origin.1 + cy as i32));
                 }
-                self.ui_context_menu(&scope_response);
                 if scope_response.double_clicked() && self.is_mini {
                     self.actions.push(UiAction::MiniToggle);
                 }
@@ -3066,7 +3266,27 @@ impl ApplicationHandler<()> for Shell {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop,
-                    _id: WindowId, event: WindowEvent) {
+                    id: WindowId, event: WindowEvent) {
+        // menu-popup events belong to the popup's own egui world
+        if let Some(popup) = self.menu_popup.as_mut()
+            && popup.window.id() == id
+        {
+            let _ = popup.egui_state
+                .on_window_event(&popup.window, &event);
+            match event {
+                WindowEvent::RedrawRequested => {
+                    self.render_menu_popup();
+                }
+                // NOT Focused(false): an override-redirect popup never
+                // HOLDS focus — winit reports false at creation, which
+                // killed the menu one frame in
+                WindowEvent::CloseRequested => {
+                    self.close_menu_popup();
+                }
+                _ => {}
+            }
+            return;
+        }
         if let Some(graphics) = self.graphics.as_mut() {
             let response = graphics.egui_state
                 .on_window_event(&graphics.window, &event);
@@ -3078,6 +3298,24 @@ impl ApplicationHandler<()> for Shell {
                 self.chrome_dirty = true;
                 graphics.window.request_redraw();
             }
+        }
+        // any press or focus loss on the MAIN window closes the menu
+        // popup (a right-press closes it here, then respawns fresh at
+        // the new cursor on the click that follows). Mini presses are
+        // handled in their own arm — the dismiss press must also NOT
+        // start a WM drag there.
+        if self.menu_popup.is_some()
+            && (matches!(event, WindowEvent::Focused(false))
+                || (!self.is_mini
+                    && matches!(
+                        event,
+                        WindowEvent::MouseInput {
+                            state:
+                                winit::event::ElementState::Pressed,
+                            ..
+                        })))
+        {
+            self.close_menu_popup();
         }
         match event {
             WindowEvent::CloseRequested => {
@@ -3158,29 +3396,13 @@ impl ApplicationHandler<()> for Shell {
                 state: winit::event::ElementState::Pressed,
                 button: winit::event::MouseButton::Left, ..
             } if self.is_mini => {
-                // With the context menu open, a left-press OUTSIDE the
-                // menu dismisses it — and never starts a WM drag (the
-                // WM grab used to swallow the release egui needed). A
-                // press ON the menu (Foreground layer: menu + submenus)
-                // belongs to egui — starting a drag OR dismissing here
-                // ate every item click in mini (BUGLOG #1).
-                if self.context_menu_open {
-                    let on_menu = self.graphics.as_ref()
-                        .is_some_and(|graphics| {
-                            let ppp = graphics.egui_ctx
-                                .pixels_per_point();
-                            let (x, y) = self.cursor_position;
-                            let pos = egui::pos2(x as f32 / ppp,
-                                                 y as f32 / ppp);
-                            graphics.egui_ctx.layer_id_at(pos)
-                                .is_some_and(|layer| {
-                                    layer.order
-                                        == egui::Order::Foreground
-                                })
-                        });
-                    if !on_menu {
-                        self.close_menu_request = true;
-                    }
+                // With the menu popup open, a mini press dismisses it
+                // and must NOT become a WM drag (the grab used to
+                // swallow the release — BUGLOG #1 era). Item presses
+                // land on the POPUP WINDOW now, never here, so this
+                // close is unconditional.
+                if self.menu_popup.is_some() {
+                    self.close_menu_popup();
                     self.wake_render_loop();
                     return;
                 }
@@ -3275,6 +3497,15 @@ impl ApplicationHandler<()> for Shell {
                         || self.graphics.as_ref().is_some_and(
                             |g| egui::Popup::is_any_open(
                                 &g.egui_ctx)));
+                if escape_owned_by_popup
+                    && event.state
+                        == winit::event::ElementState::Pressed
+                    && self.menu_popup.is_some()
+                {
+                    // the native popup can't hear egui's close — do
+                    // it here (combos still self-close via egui)
+                    self.close_menu_popup();
+                }
                 if !editing && !escape_owned_by_popup
                     && event.state == winit::event::ElementState::Pressed
                 {
@@ -3400,6 +3631,13 @@ impl ApplicationHandler<()> for Shell {
                         graphics.window.request_redraw();
                     }
                 }
+                // a right-click asked for the menu: spawn the native
+                // popup now that the frame is presented (window
+                // creation needs the live event loop)
+                if let Some(at) = self.menu_popup_spawn.take() {
+                    self.close_menu_popup();
+                    self.open_menu_popup(event_loop, at);
+                }
                 if self.quit_requested {
                     self.settings.save(&default_path()).ok();
                     event_loop.exit();
@@ -3426,6 +3664,25 @@ impl ApplicationHandler<()> for Shell {
             {
                 graphics.window.set_outer_position(position);
             }
+        }
+        // staged fullscreen→mini, step two: the un-fullscreen has
+        // landed — NOW the mini geometry sticks (one M press total)
+        if let Some(due) = self.mini_pending
+            && Instant::now() >= due
+        {
+            self.mini_pending = None;
+            if !self.is_mini && !self.is_fullscreen
+                && let Some(mut graphics) = self.graphics.take()
+            {
+                self.set_mini_mode(true, &mut graphics);
+                self.graphics = Some(graphics);
+            }
+        }
+        // the menu popup renders on the idle tick — winit's
+        // per-window RedrawRequested proved unreliable for
+        // override-redirect popups, so the popup doesn't depend on it
+        if self.menu_popup.is_some() {
+            self.render_menu_popup();
         }
         // mini magnetism settle (fires even while the loop idles)
         if let Some(due) = self.mini_settle
@@ -3466,6 +3723,13 @@ impl ApplicationHandler<()> for Shell {
         }
         let mut wake_at = self.mini_settle;
         if let Some((_, due)) = self.normal_restore {
+            wake_at = Some(wake_at.map_or(due, |w| w.min(due)));
+        }
+        if let Some(due) = self.mini_pending {
+            wake_at = Some(wake_at.map_or(due, |w| w.min(due)));
+        }
+        if self.menu_popup.is_some() {
+            let due = Instant::now() + Duration::from_millis(16);
             wake_at = Some(wake_at.map_or(due, |w| w.min(due)));
         }
         if (self.render_loop_active || self.chrome_dirty)

@@ -1667,61 +1667,68 @@ impl Shell {
         }
     }
 
-    /// The context menu (§5.1 tree; items land as their passes do).
-    pub(crate) fn ui_context_menu(&mut self, response: &egui::Response) {
-        // One menu, one geometry, in every window mode: the fixed width
-        // and a scroll cap keep it inside the 200–520 px mini square,
-        // and in the full/fullscreen window the cap is far taller than
-        // the content so nothing scrolls — same look everywhere. The
-        // cap is sized from the LIVE scope response, not self.scope_rect:
-        // that cache is one frame stale right after a mini/fullscreen
-        // switch, which was the "menu opens with the other mode's
-        // geometry" glitch.
-        //
-        // `compact` gates CONTENT on the actual window height, never
-        // on is_mini (Ben: "many options are just missing when there
-        // is PLENTY of space" — a 520 px mini hid options a 280 px one
-        // physically can't fit; universal UI principle: hide only
-        // what genuinely cannot fit).
-        let compact =
-            response.ctx.content_rect().height() < 430.0;
-        let opened = response
-            .context_menu(|ui| {
-                // a click that landed OUTSIDE the menu asked it to
-                // close — honored here because ui.close() is the one
-                // dismissal that works even when a WM grab or the
-                // fullscreen surface eats the release egui waits for
-                if self.close_menu_request {
-                    self.close_menu_request = false;
-                    ui.close();
-                    return;
+    /// The FPS menu row: "FPS  (F)" + two fill-squares reading left
+    /// to right — ■□ = counter, ■■ = nerd HUD, □□ = off (Ben's spec).
+    /// Click advances the same cycle as the F key.
+    fn fps_menu_row(&mut self, ui: &mut egui::Ui) {
+        let width = ui.available_width().max(120.0);
+        let (rect, response) = ui.allocate_exact_size(
+            egui::vec2(width, 20.0), egui::Sense::click());
+        if ui.is_rect_visible(rect) {
+            let palette = &self.active_palette;
+            if response.hovered() {
+                ui.painter().rect_filled(
+                    rect, 0.0, ui.visuals().widgets.hovered.bg_fill);
+            }
+            ui.painter().text(
+                egui::pos2(rect.min.x + 4.0, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                "FPS  (F)",
+                egui::TextStyle::Button.resolve(ui.style()),
+                ui.visuals().widgets.inactive.fg_stroke.color);
+            let side = 10.0;
+            let gap = 5.0;
+            let filled = [self.settings.show_fps,
+                          self.settings.show_fps
+                              && self.settings.show_fps_detail];
+            for (index, on) in filled.into_iter().enumerate() {
+                let square = egui::Rect::from_min_size(
+                    egui::pos2(
+                        rect.max.x - 4.0
+                            - (2 - index) as f32 * (side + gap) + gap,
+                        rect.center().y - side / 2.0),
+                    egui::vec2(side, side));
+                if on {
+                    ui.painter().rect_filled(
+                        square, 0.0, palette.accent);
                 }
-                ui.set_max_width(230.0);
-                // The menu is FIXED-size on purpose: egui's find_best_align
-                // only flips a popup that doesn't fit, and a ScrollArea makes
-                // every placement "fit" by squishing — which pinned the menu
-                // below the cursor wearing a scrollbar. With fixed content
-                // the popup flips/translates to keep every option visible.
-                // Only when the whole WINDOW is shorter than the menu (tiny
-                // mini squares) does a scroll cage make physical sense.
-                let window_height = ui.ctx().content_rect().height();
-                let menu_estimate = if compact { 500.0 } else { 660.0 };
-                if window_height < menu_estimate {
-                    egui::ScrollArea::vertical()
-                        .max_height((window_height - 24.0).max(120.0))
-                        .show(ui, |ui| self.context_menu_items(ui, compact));
-                } else {
-                    self.context_menu_items(ui, compact);
-                }
-            })
-            .is_some();
-        self.context_menu_open = opened;
-        if !opened {
-            self.close_menu_request = false;
+                ui.painter().rect_stroke(
+                    square, 0.0,
+                    egui::Stroke::new(1.0, palette.line_strong),
+                    egui::StrokeKind::Inside);
+            }
+        }
+        if response
+            .on_hover_text("Cycles off → counter → nerd HUD, same as \
+                            the F key. First square = counter, both \
+                            = the nerd HUD.")
+            .clicked()
+        {
+            self.cycle_fps();
         }
     }
 
-    fn context_menu_items(&mut self, ui: &mut egui::Ui, compact: bool) {
+
+    /// Close whichever container hosts the menu items: egui's own
+    /// submenu (ui.close walks to it) AND the native popup window
+    /// (close_menu_request — honored after the popup's frame).
+    fn request_menu_close(&mut self, ui: &mut egui::Ui) {
+        ui.close();
+        self.close_menu_request = true;
+    }
+
+    pub(crate) fn context_menu_items(&mut self, ui: &mut egui::Ui,
+                                     compact: bool) {
         {
             let capture_label = if self.capture_on {
                 "Pause capture"
@@ -1734,7 +1741,7 @@ impl Shell {
                 } else {
                     UiAction::CaptureOn
                 });
-                ui.close();
+                self.request_menu_close(ui);
             }
             let app_target = self.settings.target_id.as_deref()
                 .map(|id| id.starts_with("app:")).unwrap_or(false);
@@ -1753,12 +1760,12 @@ impl Shell {
                     .clicked()
                 {
                     self.actions.push(UiAction::VacuumApp(vacuum_on));
-                    ui.close();
+                    self.request_menu_close(ui);
                 }
             }
             if !compact && ui.button("Play audio file…  (O)").clicked() {
                 self.actions.push(UiAction::OpenFile);
-                ui.close();
+                self.request_menu_close(ui);
             }
             if self.player.playing.is_some() {
                 let pause_label = if self.player.paused {
@@ -1768,7 +1775,7 @@ impl Shell {
                 };
                 if ui.button(pause_label).clicked() {
                     self.actions.push(UiAction::PlayerTogglePause);
-                    ui.close();
+                    self.request_menu_close(ui);
                 }
                 let many = self.player.playlist.len() > 1;
                 if ui.add_enabled(many, egui::Button::new(
@@ -1776,14 +1783,14 @@ impl Shell {
                     .clicked()
                 {
                     self.actions.push(UiAction::PlayerNext);
-                    ui.close();
+                    self.request_menu_close(ui);
                 }
                 if ui.add_enabled(many, egui::Button::new(
                         format!("Previous track  {}", icon::SKIP_BACK)))
                     .clicked()
                 {
                     self.actions.push(UiAction::PlayerPrevious);
-                    ui.close();
+                    self.request_menu_close(ui);
                 }
                 if many {
                     ui.menu_button("Tracks", |ui| {
@@ -1810,7 +1817,7 @@ impl Shell {
                         }
                         if let Some(path) = clicked {
                             self.actions.push(UiAction::PlayPath(path));
-                            ui.close();
+                            self.request_menu_close(ui);
                         }
                     });
                 }
@@ -1823,7 +1830,7 @@ impl Shell {
                     && ui.button("Export signal postcard…").clicked()
                 {
                     self.actions.push(UiAction::OpenPostcard);
-                    ui.close();
+                    self.request_menu_close(ui);
                 }
             }
             if !self.is_mini {
@@ -1831,14 +1838,14 @@ impl Shell {
                 // pointer draws; in mini the pointer moves the window)
                 if ui.button("Compose · draw a shape  (D)").clicked() {
                     self.actions.push(UiAction::ComposeToggle);
-                    ui.close();
+                    self.request_menu_close(ui);
                 }
                 if self.composing && self.compose_loop_points.is_some()
                     && ui.button("Export drawing as WAV  (10 s)")
                         .clicked()
                 {
                     self.actions.push(UiAction::ExportDrawing);
-                    ui.close();
+                    self.request_menu_close(ui);
                 }
             }
             // the playlist pane exists in EVERY view since 4.3 — so
@@ -1847,15 +1854,15 @@ impl Shell {
             if ui.checkbox(&mut panel, "Playlist panel  (L)").clicked() {
                 self.player.panel_open = panel;
                 self.settings.playlist_panel_open = panel;
-                ui.close();
+                self.request_menu_close(ui);
             }
             if ui.button("Snapshot  (S)").clicked() {
                 self.actions.push(UiAction::SaveSnapshot);
-                ui.close();
+                self.request_menu_close(ui);
             }
             if !compact && ui.button("Save last 10 s  (C)").clicked() {
                 self.actions.push(UiAction::SaveClip);
-                ui.close();
+                self.request_menu_close(ui);
             }
             ui.separator();
             ui.menu_button("Display mode", |ui| {
@@ -1865,11 +1872,14 @@ impl Shell {
                     {
                         self.settings.display_mode = id.to_string();
                         self.actions.push(UiAction::ModeChanged);
-                        ui.close();
+                        self.request_menu_close(ui);
                     }
                 }
             });
-            ui.menu_button("Theme", |ui| {
+            // "Beam color" — the PHOSPHOR presets (it said "Theme"
+            // while listing beam colors; the settings panel already
+            // says Beam — one name everywhere, Ben's catch)
+            ui.menu_button("Beam color", |ui| {
                 for name in THEME_NAMES {
                     if ui.selectable_label(
                         self.settings.theme_name == name, name).clicked()
@@ -1877,7 +1887,21 @@ impl Shell {
                         self.settings.theme_name = name.to_string();
                         self.actions.push(UiAction::RenderTuning);
                         self.actions.push(UiAction::SaveSettings);
-                        ui.close();
+                        self.request_menu_close(ui);
+                    }
+                }
+            });
+            // "Theme" — the CHROME rooms (missing from the menu
+            // entirely; same swatchless quick list as Display mode)
+            ui.menu_button("Theme", |ui| {
+                for palette in crate::theme::PALETTES {
+                    if ui.selectable_label(
+                        self.settings.ui_style == palette.id,
+                        palette.label).clicked()
+                    {
+                        self.settings.ui_style = palette.id.to_string();
+                        self.actions.push(UiAction::SaveSettings);
+                        self.request_menu_close(ui);
                     }
                 }
             });
@@ -1886,43 +1910,32 @@ impl Shell {
                     .clicked()
                 {
                     self.actions.push(UiAction::RenderTuning);
-                    ui.close();
+                    self.actions.push(UiAction::SaveSettings);
+                    self.request_menu_close(ui);
                 }
                 if ui.checkbox(&mut self.settings.auto_gain,
                                "Auto gain — fit to screen").clicked() {
                     self.actions.push(UiAction::SignalTuning);
-                    ui.close();
+                    self.actions.push(UiAction::SaveSettings);
+                    self.request_menu_close(ui);
                 }
             }
             // FPS rides the SAME cycle as the F key (off → counter →
-            // nerd HUD) — the old checkbox couldn't reach the HUD and
-            // hid in mini entirely (Ben's list). One step per menu
-            // visit (egui menus close on click); F walks it live.
-            let fps_state = match (self.settings.show_fps,
-                                   self.settings.show_fps_detail) {
-                (false, _) => "off",
-                (true, false) => "counter",
-                (true, true) => "nerd HUD",
-            };
-            if ui.button(format!("FPS: {fps_state}  (F)"))
-                .on_hover_text("Cycles off → counter → nerd HUD, \
-                                same as the F key")
-                .clicked()
-            {
-                self.cycle_fps();
-            }
+            // nerd HUD), shown as two fill-squares: ■□ counter, ■■
+            // nerd HUD, □□ off (Ben's spec). One step per menu visit.
+            self.fps_menu_row(ui);
             if ui.checkbox(&mut self.settings.scope_glass,
                            "Glass scope — transparent background")
                 .clicked()
             {
                 self.actions.push(UiAction::RenderTuning);
-                ui.close();
+                self.request_menu_close(ui);
             }
             if !compact {
                 let mut pinned = self.settings.pinned;
                 if ui.checkbox(&mut pinned, "Pin above  (P)").clicked() {
                     self.actions.push(UiAction::PinToggle);
-                    ui.close();
+                    self.request_menu_close(ui);
                 }
             }
             ui.separator();
@@ -1942,7 +1955,7 @@ impl Shell {
                         {
                             self.actions.push(
                                 UiAction::AlignMini(fx, fy));
-                            ui.close();
+                            self.request_menu_close(ui);
                         }
                     }
                 });
@@ -1950,17 +1963,17 @@ impl Shell {
                 for (label, size) in MINI_SIZE_PRESETS {
                     if ui.button(format!("Mini size: {label}")).clicked() {
                         self.actions.push(UiAction::MiniSizePreset(size));
-                        ui.close();
+                        self.request_menu_close(ui);
                     }
                 }
                 if ui.button("Restore window  (M)").clicked() {
                     self.actions.push(UiAction::MiniToggle);
-                    ui.close();
+                    self.request_menu_close(ui);
                 }
             } else {
                 if ui.button("Mini view  (M)").clicked() {
                     self.actions.push(UiAction::MiniToggle);
-                    ui.close();
+                    self.request_menu_close(ui);
                 }
                 let fullscreen_label = if self.is_fullscreen {
                     "Leave fullscreen  (F11)"
@@ -1969,13 +1982,13 @@ impl Shell {
                 };
                 if ui.button(fullscreen_label).clicked() {
                     self.actions.push(UiAction::FullscreenToggle);
-                    ui.close();
+                    self.request_menu_close(ui);
                 }
             }
             ui.separator();
             if ui.button("Quit  (Q)").clicked() {
                 self.actions.push(UiAction::Quit);
-                ui.close();
+                self.request_menu_close(ui);
             }
         }
     }
