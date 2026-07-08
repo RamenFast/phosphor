@@ -101,6 +101,15 @@ struct MenuPopup {
     egui_renderer: egui_wgpu::Renderer,
 }
 
+/// Where a mode switch WANTS the window: re-applied until the WM
+/// actually delivers it (see Shell::geometry_goal).
+struct GeometryGoal {
+    size: winit::dpi::PhysicalSize<u32>,
+    position: Option<winit::dpi::PhysicalPosition<i32>>,
+    deadline: Instant,
+    last_apply: Instant,
+}
+
 /// The shared font stack (IBM Plex + JetBrains Mono + the icon
 /// font) — one definition for the main window AND the menu popup.
 fn phosphor_fonts() -> egui::FontDefinitions {
@@ -344,12 +353,12 @@ pub struct Shell {
     /// re-square honors the axis the USER dragged (edge-shrinks used
     /// to snap back because max(w,h) always kept the larger side)
     mini_resize_axis: Option<winit::window::ResizeDirection>,
-    /// one-shot re-assert of the normal window's position after a
-    /// mini→normal switch: set_outer_position lands before the WM
-    /// finishes re-adding decorations, so frame insets shifted the
-    /// client a few px per round trip ("the window starts moving
-    /// around on its own" — Ben, the last v4 bug)
-    normal_restore: Option<(winit::dpi::PhysicalPosition<i32>, Instant)>,
+    /// mode-switch geometry CONVERGES instead of racing: every
+    /// ~120 ms the goal re-applies until the window actually matches
+    /// it (or 1.2 s passes). One-shot deferred asserts (140/160 ms
+    /// guesses) lost to Muffin under load — the wander, the stuck
+    /// tiny window, and the double-M were all the same lost race.
+    geometry_goal: Option<GeometryGoal>,
     /// fullscreen→mini is STAGED: un-fullscreen first, then enter the
     /// mini once the WM has landed the restore (a same-tick
     /// request_inner_size lost to Muffin's async un-fullscreen — Ben
@@ -528,7 +537,7 @@ impl Shell {
             text_focus_ids: std::collections::HashSet::new(),
             mini_resquare: None,
             mini_resize_axis: None,
-            normal_restore: None,
+            geometry_goal: None,
             mini_pending: None,
             menu_popup: None,
             menu_popup_spawn: None,
@@ -1645,8 +1654,20 @@ impl Shell {
                     winit::dpi::PhysicalPosition::new(x as i32, y as i32));
             }
             let size = self.settings.mini_size.clamp(140, 1000) as u32;
-            let _ = window.request_inner_size(
-                winit::dpi::PhysicalSize::new(size, size));
+            let goal_size = winit::dpi::PhysicalSize::new(size, size);
+            let _ = window.request_inner_size(goal_size);
+            self.geometry_goal = Some(GeometryGoal {
+                size: goal_size,
+                position: match (self.settings.mini_x,
+                                 self.settings.mini_y) {
+                    (Some(x), Some(y)) => Some(
+                        winit::dpi::PhysicalPosition::new(
+                            x as i32, y as i32)),
+                    _ => None,
+                },
+                deadline: Instant::now() + Duration::from_millis(1200),
+                last_apply: Instant::now(),
+            });
         } else {
             // remember where the mini lived (v3 persists on leave)
             if let Ok(position) = window.outer_position() {
@@ -1669,14 +1690,17 @@ impl Shell {
             let _ = window.request_inner_size(size);
             if let Some(position) = position {
                 window.set_outer_position(position);
-                // the WM re-adds the frame ASYNC: a position applied
-                // now lands on the undecorated client and the frame
-                // insets shift it a few px every round trip. Re-assert
-                // the same absolute position once the frame is on.
-                self.normal_restore =
-                    Some((position,
-                          Instant::now() + Duration::from_millis(160)));
             }
+            // converge: the WM re-adds decorations ASYNC and resize/
+            // position requests get lost under load — keep re-applying
+            // until the window MATCHES ("sometimes stays tiny", the
+            // per-round-trip drift)
+            self.geometry_goal = Some(GeometryGoal {
+                size,
+                position,
+                deadline: Instant::now() + Duration::from_millis(1200),
+                last_apply: Instant::now(),
+            });
         }
         self.apply_window_level(graphics);
         self.chrome_dirty = true;
@@ -3360,7 +3384,12 @@ impl ApplicationHandler<()> for Shell {
                     if size.width != size.height && !entering {
                         self.mini_resquare = Some(side);
                     }
-                    self.settings.mini_size = side;
+                    // persist ONLY settled squares: a mid-flight WM
+                    // restore (fullscreen exit, mode switch) arrives
+                    // rectangular and was clobbering mini_size
+                    if size.width == size.height {
+                        self.settings.mini_size = side;
+                    }
                     self.mini_settle = Some(
                         Instant::now() + Duration::from_millis(180));
                 }
@@ -3409,6 +3438,9 @@ impl ApplicationHandler<()> for Shell {
                 // Mini owns left-press: corner 26 px = WM resize, a
                 // quick second click = restore, anywhere else = WM
                 // move (v3: drag moves the mini; drag never orbits).
+                // a user grab OWNS the geometry from here — the
+                // convergence goal must never fight a live drag
+                self.geometry_goal = None;
                 if let Some(graphics) = &self.graphics {
                     // claim keyboard focus BEFORE the WM grab: the
                     // press instantly becomes a move-grab below, so
@@ -3653,16 +3685,36 @@ impl ApplicationHandler<()> for Shell {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        // deferred normal-position re-assert (mini→normal): the WM
-        // has its frame on by now — same absolute coords, no drift
-        if let Some((position, due)) = self.normal_restore
-            && Instant::now() >= due
+        // geometry convergence: re-apply the mode-switch goal until
+        // the WM actually delivers it (positions within 8 px — frame
+        // insets shift outer coords; sizes exact)
+        if let Some(goal) = self.geometry_goal.as_mut()
+            && let Some(graphics) = &self.graphics
         {
-            self.normal_restore = None;
-            if !self.is_mini && !self.is_fullscreen
-                && let Some(graphics) = &self.graphics
+            let now = Instant::now();
+            let size_ok = {
+                let size = graphics.window.inner_size();
+                size == goal.size
+            };
+            let position_ok = goal.position.is_none_or(|want| {
+                graphics.window.outer_position().is_ok_and(|have| {
+                    (have.x - want.x).abs() <= 8
+                        && (have.y - want.y).abs() <= 8
+                })
+            });
+            if (size_ok && position_ok) || now >= goal.deadline {
+                self.geometry_goal = None;
+            } else if now.duration_since(goal.last_apply)
+                >= Duration::from_millis(120)
             {
-                graphics.window.set_outer_position(position);
+                goal.last_apply = now;
+                if !size_ok {
+                    let _ = graphics.window
+                        .request_inner_size(goal.size);
+                }
+                if !position_ok && let Some(position) = goal.position {
+                    graphics.window.set_outer_position(position);
+                }
             }
         }
         // staged fullscreen→mini, step two: the un-fullscreen has
@@ -3716,13 +3768,19 @@ impl ApplicationHandler<()> for Shell {
                                 side as u32, side as u32));
                     }
                     self.mini_resize_axis = None;
-                    self.snap_mini_to_edges(&graphics);
+                    // never snap while a mode-switch goal is still
+                    // converging — two authorities moved the window
+                    // in opposite directions ("moving on its own")
+                    if self.geometry_goal.is_none() {
+                        self.snap_mini_to_edges(&graphics);
+                    }
                     self.graphics = Some(graphics);
                 }
             }
         }
         let mut wake_at = self.mini_settle;
-        if let Some((_, due)) = self.normal_restore {
+        if self.geometry_goal.is_some() {
+            let due = Instant::now() + Duration::from_millis(120);
             wake_at = Some(wake_at.map_or(due, |w| w.min(due)));
         }
         if let Some(due) = self.mini_pending {
