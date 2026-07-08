@@ -343,6 +343,15 @@ impl Palette {
         style.spacing.button_padding = egui::vec2(8.0, 4.0);
         style.spacing.item_spacing = egui::vec2(7.0, 5.0);
         style.spacing.window_margin = egui::Margin::same(8);
+        // egui's default combo popup cap is a fixed 200 px — every
+        // dropdown (mode, beam, theme, source) wore a scrollbar with
+        // hundreds of free pixels below it (Ben: "why are they
+        // squished and needing a scrollbar??"). The cap now tracks
+        // the live window: popups grow until the window itself is
+        // the limit, and only then scroll (universal-UI law: hide/
+        // squish only what genuinely cannot fit).
+        style.spacing.combo_height =
+            (ctx.content_rect().height() - 60.0).max(200.0);
         // the type scale: Plex body at a readable size (egui default
         // was 14 in a thin face), mono for data, Medium for headings
         style.text_styles.insert(

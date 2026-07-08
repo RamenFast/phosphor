@@ -251,6 +251,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn glass_alpha_carries_the_pane_and_opaque_bytes_hold() {
+        // AMOLED black + grid off: zero background brightness, so the
+        // pane alpha is EXACTLY scope_alpha (the glass law) and the
+        // beam is the only light. Drive the beam to steady state so
+        // its core saturates the alpha raise.
+        let mut renderer = CpuRenderer::new(64, 64, 1);
+        renderer.theme =
+            Theme::preset("P7 Green").unwrap().with_amoled();
+        renderer.grid_enabled = false;
+        for _ in 0..50 {
+            renderer.advance(&[[16.0, 16.0, 48.0, 48.0, 0.9]]);
+        }
+        let baseline = renderer.composite().to_vec();
+        assert!(baseline.chunks(4).all(|px| px[3] == 255),
+                "default composite must stay fully opaque");
+
+        // golden safety: scope_alpha 1.0 (set explicitly, and with the
+        // live path's premultiply) is byte-identical to the default
+        renderer.scope_alpha = 1.0;
+        renderer.premultiplied = true;
+        assert_eq!(renderer.composite(), &baseline[..],
+                   "opaque premultiplied composite changed bytes");
+        renderer.premultiplied = false;
+
+        // glass: background carries the pane, the beam stays lit
+        renderer.scope_alpha = 0.5;
+        let glass = renderer.composite().to_vec();
+        for (before, after) in
+            baseline.chunks(4).zip(glass.chunks(4)) {
+            assert_eq!(&before[..3], &after[..3],
+                       "straight-alpha glass must not touch RGB");
+        }
+        // corner (0,0) is > 3.5σ from the segment: pure background
+        assert_eq!(glass[3], 128,
+                   "background alpha must be the pane (0.5 → 128)");
+        let alpha_peak = glass.chunks(4)
+            .map(|px| px[3]).max().unwrap();
+        assert_eq!(alpha_peak, 255,
+                   "the beam core must raise the pane to opaque");
+
+        // premultiplied glass: black background stays black, the beam
+        // survives the multiply (what the live upload paints)
+        renderer.premultiplied = true;
+        let premultiplied = renderer.composite().to_vec();
+        assert_eq!(&premultiplied[..4], &[0, 0, 0, 128],
+                   "premultiplied AMOLED background must be 0,0,0,pane");
+        let beam_peak = premultiplied.chunks(4)
+            .map(|px| px[..3].iter().copied().max().unwrap())
+            .max().unwrap();
+        assert!(beam_peak > 200,
+                "premultiply dimmed the beam core to {beam_peak}");
+    }
+
+    #[test]
     fn energy_decays_to_true_zero() {
         let mut renderer = CpuRenderer::new(64, 64, 1);
         renderer.advance(&[[10.0, 10.0, 50.0, 50.0, 0.9]]);

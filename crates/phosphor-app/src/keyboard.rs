@@ -138,6 +138,25 @@ fn escape_step(composing: bool, fullscreen: bool, mini: bool)
 }
 
 impl Shell {
+    /// F and the context-menu FPS item share ONE state machine:
+    /// off → fps counter → nerd HUD → off (the menu used to be a
+    /// bare show_fps checkbox that couldn't reach the HUD).
+    pub(crate) fn cycle_fps(&mut self) {
+        match (self.settings.show_fps, self.settings.show_fps_detail) {
+            (false, _) => {
+                self.settings.show_fps = true;
+                self.settings.show_fps_detail = false;
+            }
+            (true, false) => {
+                self.settings.show_fps_detail = true;
+            }
+            (true, true) => {
+                self.settings.show_fps = false;
+                self.settings.show_fps_detail = false;
+            }
+        }
+    }
+
     pub(crate) fn handle_key(&mut self, key: &Key) -> KeyOutcome {
         // ---- Konami (always, before everything) ----
         let (progress, fired) =
@@ -204,22 +223,7 @@ impl Shell {
                 self.settings.playlist_panel_open = self.player.panel_open;
             }
             Some(KeyCommand::FpsToggle) => {
-                // F cycles: off → fps → nerd HUD → off
-                match (self.settings.show_fps,
-                       self.settings.show_fps_detail)
-                {
-                    (false, _) => {
-                        self.settings.show_fps = true;
-                        self.settings.show_fps_detail = false;
-                    }
-                    (true, false) => {
-                        self.settings.show_fps_detail = true;
-                    }
-                    (true, true) => {
-                        self.settings.show_fps = false;
-                        self.settings.show_fps_detail = false;
-                    }
-                }
+                self.cycle_fps();
             }
             Some(KeyCommand::Quit) => return KeyOutcome::CloseRequested,
             Some(KeyCommand::FullscreenToggle) => {

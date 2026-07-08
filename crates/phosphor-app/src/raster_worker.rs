@@ -27,6 +27,9 @@ pub(crate) struct RasterJob {
     pub grid_enabled: bool,
     pub grid_spacing_fraction: f32,
     pub display_scale: f32,
+    /// 1 = opaque scope; lower = the live glass pane. Offline renders
+    /// never pass through here — their CpuRenderer stays at 1.0.
+    pub scope_alpha: f32,
 }
 
 pub(crate) struct RasterFrame {
@@ -129,6 +132,12 @@ fn worker_loop(slots: &Arc<(Mutex<Slots>, Condvar)>) {
         target.grid_enabled = job.grid_enabled;
         target.grid_spacing_fraction = job.grid_spacing_fraction;
         target.display_scale = job.display_scale;
+        target.scope_alpha = job.scope_alpha;
+        // gamma-space premultiply — the form the GPU glass shader
+        // emits and egui's (One, OneMinusSrcAlpha) blend consumes;
+        // identity at scope_alpha 1.0, so glass-off frames keep
+        // today's bytes exactly
+        target.premultiplied = true;
         target.advance(&job.segments);
         let pixels = target.composite().to_vec();
         sequence += 1;
@@ -161,6 +170,7 @@ mod tests {
             grid_enabled: false,
             grid_spacing_fraction: 0.1125,
             display_scale: 1.0,
+            scope_alpha: 1.0,
         }
     }
 
@@ -206,5 +216,30 @@ mod tests {
         let worker = RasterWorker::spawn();
         worker.submit(job(64, 0.1));
         drop(worker); // must not hang
+    }
+
+    #[test]
+    fn glass_job_publishes_translucent_frames() {
+        // opaque job first: every pixel must stay A=255 (glass off)
+        let mut worker = RasterWorker::spawn();
+        worker.submit(job(64, 0.4));
+        let take = |worker: &mut RasterWorker| loop {
+            if let Some(frame) = worker.take_frame() {
+                break frame;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        };
+        let opaque = take(&mut worker);
+        assert!(opaque.pixels.chunks(4).all(|px| px[3] == 255),
+                "opaque job leaked translucency");
+
+        // glass job: the background corner (far from the beam) must
+        // carry the pane's alpha, not 255
+        let mut glass = job(64, 0.4);
+        glass.scope_alpha = 0.5;
+        worker.submit(glass);
+        let frame = take(&mut worker);
+        assert!(frame.pixels[3] < 255,
+                "glass scope_alpha never reached the worker's renderer");
     }
 }

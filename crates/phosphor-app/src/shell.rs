@@ -201,6 +201,19 @@ impl BeamSource {
     }
 }
 
+/// One undoable snapshot of the Custom appearance (see
+/// `appearance_state`); PartialEq so no-op gestures never bank.
+#[derive(Clone, PartialEq)]
+pub(crate) struct AppearanceState {
+    pub beam: [f32; 3],
+    pub beam_2: [f32; 3],
+    pub beam_3: [f32; 3],
+    pub grid: [f32; 3],
+    pub count: i64,
+    pub seconds: f64,
+    pub mode: String,
+}
+
 pub struct Shell {
     pub(crate) args: ShellArgs,
     pub(crate) settings: Settings,
@@ -342,9 +355,12 @@ pub struct Shell {
     /// photosensitivity prompt (holds the value the user asked for;
     /// the applied setting stays pinned at 1.0 s meanwhile)
     pub(crate) epilepsy_prompt: Option<f64>,
-    /// sub-1 s transitions were confirmed once this session — the
-    /// prompt returns next launch (safety over convenience)
-    pub(crate) epilepsy_ack: bool,
+    /// appearance undo/redo (Ben: "remembers last 5 choices") — each
+    /// entry is the Custom-appearance state BEFORE a gesture; drags
+    /// coalesce via `appearance_last_push`
+    pub(crate) appearance_undo: Vec<AppearanceState>,
+    pub(crate) appearance_redo: Vec<AppearanceState>,
+    pub(crate) appearance_last_push: Option<Instant>,
     /// track-mode cycle: which color slot the beam is resting on
     pub(crate) cycle_song_index: usize,
     /// a song-change crossfade is in flight since this instant (the
@@ -469,7 +485,9 @@ impl Shell {
             last_frame_time: None,
             started: Instant::now(),
             epilepsy_prompt: None,
-            epilepsy_ack: false,
+            appearance_undo: Vec::new(),
+            appearance_redo: Vec::new(),
+            appearance_last_push: None,
             cycle_song_index: 0,
             cycle_song_fade: None,
             fps_frames: 0,
@@ -949,6 +967,15 @@ impl Shell {
                     // a menu left open across the switch would wear the
                     // old mode's geometry — ask it to close first
                     self.close_menu_request = true;
+                    // fullscreen → mini is ONE gesture (Ben: "when
+                    // clicking M from fullscreen it doesn't go to
+                    // miniplayer") — leave fullscreen first, then
+                    // shrink; the WM needs the un-fullscreen to land
+                    // before a resize request means anything
+                    if !self.is_mini && self.is_fullscreen {
+                        self.is_fullscreen = false;
+                        graphics.window.set_fullscreen(None);
+                    }
                     let enable = !self.is_mini;
                     self.set_mini_mode(enable, graphics);
                 }
@@ -1697,6 +1724,51 @@ impl Shell {
         self.apply_render_settings(graphics);
     }
 
+    /// Snapshot + restore the undoable Custom-appearance state (the
+    /// beam slots, the grid, the cycle shape). Undo/redo apply these.
+    pub(crate) fn appearance_state(&self) -> AppearanceState {
+        AppearanceState {
+            beam: self.settings.custom_beam_color,
+            beam_2: self.settings.custom_beam_color_2,
+            beam_3: self.settings.custom_beam_color_3,
+            grid: self.settings.custom_grid_color,
+            count: self.settings.beam_cycle_count,
+            seconds: self.settings.beam_cycle_seconds,
+            mode: self.settings.beam_cycle_mode.clone(),
+        }
+    }
+
+    pub(crate) fn apply_appearance_state(&mut self,
+                                         state: AppearanceState) {
+        self.settings.custom_beam_color = state.beam;
+        self.settings.custom_beam_color_2 = state.beam_2;
+        self.settings.custom_beam_color_3 = state.beam_3;
+        self.settings.custom_grid_color = state.grid;
+        self.settings.beam_cycle_count = state.count;
+        self.settings.beam_cycle_seconds = state.seconds;
+        self.settings.beam_cycle_mode = state.mode;
+        self.actions.push(UiAction::RenderTuning);
+        self.actions.push(UiAction::SaveSettings);
+    }
+
+    /// A gesture changed the appearance: bank the BEFORE state.
+    /// Changes within a second coalesce (a color-picker drag emits
+    /// per-frame changed() — one gesture, one undo step). 5 deep.
+    pub(crate) fn push_appearance_undo(&mut self,
+                                       before: AppearanceState) {
+        let coalescing = self.appearance_last_push
+            .is_some_and(|t| t.elapsed().as_secs_f64() < 1.0);
+        self.appearance_last_push = Some(Instant::now());
+        if coalescing {
+            return;
+        }
+        self.appearance_redo.clear();
+        self.appearance_undo.push(before);
+        if self.appearance_undo.len() > 5 {
+            self.appearance_undo.remove(0);
+        }
+    }
+
     /// The beam-cycle ring phase right now (see
     /// `cycle_beam_color_phase`): timer mode reads the wall clock;
     /// track mode rests on a slot and sweeps one unit per song change.
@@ -1727,6 +1799,20 @@ impl Shell {
             build_theme_phase(&self.settings, self.beam_cycle_phase())
         } else {
             build_theme(&self.settings)
+        }
+    }
+
+    /// The live pane opacity: 1 = opaque scope; with glass on, the
+    /// per-style tint (glass_tints keyed by ui_style, falling back to
+    /// the shared glass_tint). One law for the surface clear, the GPU
+    /// compositor, AND the raster jobs — the CPU scope reads the same
+    /// pane the GPU scope does.
+    fn live_glass_alpha(&self) -> f32 {
+        if self.settings.scope_glass {
+            *self.settings.glass_tints.get(&self.settings.ui_style)
+                .unwrap_or(&self.settings.glass_tint)
+        } else {
+            1.0
         }
     }
 
@@ -2431,6 +2517,7 @@ impl Shell {
                         phosphor_beam::grid_spacing_fraction(
                             self.grid_gain),
                     display_scale: pixels_per_point * fraction,
+                    scope_alpha: self.live_glass_alpha(),
                 });
             }
         }
@@ -2442,7 +2529,10 @@ impl Shell {
         {
             cpu.frame_size = (frame.width, frame.height);
             cpu.raster_ms = Some(frame.raster_ms);
-            let image = egui::ColorImage::from_rgba_unmultiplied(
+            // the worker emits gamma-premultiplied RGBA (the GPU glass
+            // shader's exact output form) — from_rgba_unmultiplied here
+            // would premultiply a second time and dim the glass pane
+            let image = egui::ColorImage::from_rgba_premultiplied(
                 [frame.width, frame.height], &frame.pixels);
             match cpu.texture.as_mut() {
                 Some(texture) => texture.set(image, Default::default()),
@@ -2808,13 +2898,7 @@ impl Shell {
         // clock, track mode per song (v4.2) — so the clear color, the
         // GPU renderer, and the raster jobs all read the same instant.
         let theme = self.current_theme();
-        let glass_alpha = if self.settings.scope_glass {
-            let style = &self.settings.ui_style;
-            (*self.settings.glass_tints.get(style)
-                .unwrap_or(&self.settings.glass_tint)) as f64
-        } else {
-            1.0
-        };
+        let glass_alpha = self.live_glass_alpha() as f64;
         let background = wgpu::Color {
             r: (theme.background_color[0] as f64).powf(2.2) * glass_alpha,
             g: (theme.background_color[1] as f64).powf(2.2) * glass_alpha,
@@ -2848,6 +2932,14 @@ impl Shell {
         {
             let load = if graphics.scope_gpu.is_some() {
                 wgpu::LoadOp::Load
+            } else if glass_alpha < 1.0 && cpu_texture_id.is_some() {
+                // CPU glass: the frame texture carries the pane's
+                // alpha and covers the whole central panel — a tinted
+                // clear UNDER it would stack a second pane (alpha
+                // T + T(1-T), not T) and halve the desktop bleed.
+                // Transparent beneath, the egui blend lands exactly
+                // where the GPU compositor does.
+                wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT)
             } else {
                 wgpu::LoadOp::Clear(background)
             };
@@ -3008,6 +3100,12 @@ impl ApplicationHandler<()> for Shell {
                 // quick second click = restore, anywhere else = WM
                 // move (v3: drag moves the mini; drag never orbits).
                 if let Some(graphics) = &self.graphics {
+                    // claim keyboard focus BEFORE the WM grab: the
+                    // press instantly becomes a move-grab below, so
+                    // this click never focuses the undecorated window
+                    // by itself — F/G/L in mini were dead unless
+                    // focus arrived some other way (BUGLOG #5)
+                    graphics.window.focus_window();
                     let now = Instant::now();
                     let double = self.mini_last_click
                         .is_some_and(|t| now.duration_since(t)
@@ -3070,7 +3168,21 @@ impl ApplicationHandler<()> for Shell {
                 let editing = self.graphics.as_ref()
                     .and_then(|g| g.egui_ctx.memory(|m| m.focused()))
                     .is_some_and(|id| self.text_focus_ids.contains(&id));
-                if !editing
+                // Escape with ANY popup open (combo dropdown, our
+                // context menu) belongs to the popup — egui closes it
+                // with this same press; the leave-cascade waits for a
+                // clean Escape. Without this, closing a dropdown with
+                // Escape QUIT THE APP from a normal window (bit our
+                // own receipt rig before it bit a user).
+                let escape_owned_by_popup =
+                    event.logical_key
+                        == winit::keyboard::Key::Named(
+                            winit::keyboard::NamedKey::Escape)
+                    && (self.context_menu_open
+                        || self.graphics.as_ref().is_some_and(
+                            |g| egui::Popup::is_any_open(
+                                &g.egui_ctx)));
+                if !editing && !escape_owned_by_popup
                     && event.state == winit::event::ElementState::Pressed
                 {
                     match self.handle_key(&event.logical_key) {

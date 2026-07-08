@@ -51,6 +51,10 @@ pub struct Settings {
     /// "timer" = legs advance on the clock · "track" = one advance per
     /// song change (the crossfade still takes `beam_cycle_seconds`)
     pub beam_cycle_mode: String,
+    /// the photosensitivity warning was explicitly accepted — never
+    /// prompt again, across launches AND versions (Ben's ruling; the
+    /// warning stays for users who never accepted)
+    pub epilepsy_acknowledged: bool,
     pub amoled_background: bool,
     pub grid_enabled: bool,
     pub scope_glass: bool,
@@ -117,6 +121,7 @@ impl Default for Settings {
             beam_cycle_count: 1,
             beam_cycle_seconds: 3.0,
             beam_cycle_mode: "timer".into(),
+            epilepsy_acknowledged: false,
             amoled_background: false,
             grid_enabled: true,
             scope_glass: false,
@@ -187,6 +192,7 @@ const OWNED_KEYS: &[&str] = &[
     "compose_frequency_hz", "theme_name", "custom_beam_color",
     "custom_grid_color", "custom_beam_color_2", "custom_beam_color_3",
     "beam_cycle_count", "beam_cycle_seconds", "beam_cycle_mode",
+    "epilepsy_acknowledged",
     "amoled_background", "grid_enabled",
     "scope_glass", "glass_tint", "glass_tints", "ui_style", "kit_path",
     "kit_enabled", "renderer", "gl_supersample", "cairo_resolution",
@@ -266,6 +272,8 @@ impl Settings {
               |value: &serde_json::Value| value.as_str()
               .filter(|mode| ["timer", "track"].contains(mode))
               .map(str::to_string));
+        take!("epilepsy_acknowledged", settings.epilepsy_acknowledged,
+              serde_json::Value::as_bool);
         take!("amoled_background", settings.amoled_background,
               serde_json::Value::as_bool);
         take!("grid_enabled", settings.grid_enabled,
@@ -387,6 +395,8 @@ impl Settings {
                        .unwrap_or(serde_json::Value::Null));
         map.insert("beam_cycle_mode".into(),
                    self.beam_cycle_mode.clone().into());
+        map.insert("epilepsy_acknowledged".into(),
+                   self.epilepsy_acknowledged.into());
         map.insert("amoled_background".into(),
                    self.amoled_background.into());
         map.insert("grid_enabled".into(), self.grid_enabled.into());
@@ -503,6 +513,24 @@ mod tests {
         let reloaded = Settings::load(&path);
         assert_eq!(reloaded.beam_cycle_count, 3);
         assert_eq!(reloaded.custom_beam_color_2, [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn epilepsy_ack_persists_forever() {
+        let directory = std::env::temp_dir()
+            .join("phosphor-proto-settings-ack-test");
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("settings.json");
+        assert!(!Settings::default().epilepsy_acknowledged,
+                "the guard is ON for fresh installs");
+        let settings = Settings {
+            epilepsy_acknowledged: true,
+            ..Settings::default()
+        };
+        settings.save(&path).unwrap();
+        // a version upgrade is just another load of the same file —
+        // the acceptance must survive it (Ben's ruling)
+        assert!(Settings::load(&path).epilepsy_acknowledged);
     }
 
     #[test]

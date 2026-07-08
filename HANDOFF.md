@@ -1,5 +1,38 @@
 # Handoff — next session starts here
 
+## v4.4.0 SHIPPED (July 7, 2026 — Ben's major-feedback pass, nine corrections)
+
+Ben's list, every item root-caused (BUGLOG #4–#8 carry the stories):
+glass on CPU (RasterJob never carried scope_alpha — Opus subagent
+root-caused + fixed live-path-only, goldens byte-held, ONE
+`live_glass_alpha()` law now feeds clear+GPU+raster; compositor
+visual on a real desktop still owed); every combo un-squished
+(egui's fixed 200 px `combo_height` default → now tracks the live
+window height per frame); context-menu content gates on MEASURED
+height, never is_mini (520 px minis show everything); FPS menu row
+cycles the F key's exact state machine (`cycle_fps()`, one step per
+menu visit); F dead in mini root-caused (interior press became a WM
+move-grab before the click could focus the undecorated window →
+`focus_window()` first); M from fullscreen lands in mini directly
+(un-fullscreen composes into the same gesture); kit hover-cards
+(lazy per-row load: name — author + each stage op_description; the
+receipt caught kits listing twice repo+deb → dedupe by stem);
+epilepsy ack now a PERSISTED setting (`epilepsy_acknowledged`, never
+re-asks across launches/versions, proto test pins it); appearance
+undo/redo (5 gestures, 1 s drag-coalescing, redo clears on new
+change, undo/redo never self-bank). Found along the way: Escape
+with an open popup QUIT the app (cascade fell through) — popups now
+own Escape (`any_popup_open` guard, BUGLOG #8).
+
+**NEW STANDING LAW: UI receipts run at 2560×1440** (Ben: "you need
+to be testing this app in a higher resolution… universal UI
+principles") — in BUGLOG's standing laws. Receipted this release at
+1440p: all combos fully expanded (12-room theme picker, 11 modes),
+menu complete with FPS row walking off→counter→nerd HUD→off,
+F11→M→280×280 mini, F cycling inside the mini, prompt accept →
+restart → silent sub-1 s, undo/redo probe-verified (3→2→3→2), kit
+card screenshot, Escape-guard alive-check.
+
 ## v4.3.0 SHIPPED (July 7, 2026 — the guestbook: Fable's room, the resting beam, one pane everywhere)
 
 Ben's closing checklist + a free hand ("pick something subtle I'm not

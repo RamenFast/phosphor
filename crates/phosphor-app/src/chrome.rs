@@ -546,6 +546,39 @@ impl Shell {
             let count = self.settings.beam_cycle_count.clamp(1, 3);
             let mut retune = false;
             let mut save = false;
+            // the BEFORE state — banked at the end iff this frame
+            // changed anything (undo/redo, 5 gestures deep)
+            let appearance_before = self.appearance_state();
+            ui.horizontal(|ui| {
+                let can_undo = !self.appearance_undo.is_empty();
+                let can_redo = !self.appearance_redo.is_empty();
+                if ui.add_enabled(
+                        can_undo,
+                        egui::Button::new(icon::ARROW_COUNTER_CLOCKWISE))
+                    .on_hover_text("Undo the last appearance change \
+                                    (5 remembered)")
+                    .clicked()
+                    && let Some(previous) = self.appearance_undo.pop()
+                {
+                    self.appearance_redo.push(
+                        self.appearance_state());
+                    self.apply_appearance_state(previous);
+                }
+                if ui.add_enabled(
+                        can_redo,
+                        egui::Button::new(icon::ARROW_CLOCKWISE))
+                    .on_hover_text("Redo the undone appearance change")
+                    .clicked()
+                    && let Some(next) = self.appearance_redo.pop()
+                {
+                    self.appearance_undo.push(
+                        self.appearance_state());
+                    self.apply_appearance_state(next);
+                }
+                ui.label(egui::RichText::new("undo · redo")
+                    .small()
+                    .color(self.active_palette.muted));
+            });
             ui.horizontal(|ui| {
                 ui.label(if count == 1 { "Custom beam" }
                          else { "Beam colors" });
@@ -649,7 +682,8 @@ impl Shell {
                                 self.settings.beam_cycle_mode =
                                     "timer".into();
                                 if self.settings.beam_cycle_seconds < 1.0
-                                    && !self.epilepsy_ack
+                                    && !self.settings
+                                        .epilepsy_acknowledged
                                 {
                                     self.epilepsy_prompt = Some(
                                         self.settings.beam_cycle_seconds);
@@ -694,7 +728,8 @@ impl Shell {
                                         photosensitivity confirmation.")
                         .changed()
                     {
-                        if seconds < 1.0 && !self.epilepsy_ack
+                        if seconds < 1.0
+                            && !self.settings.epilepsy_acknowledged
                             && self.settings.beam_cycle_mode != "track"
                         {
                             // pin at 1 s until the prompt is answered.
@@ -726,6 +761,13 @@ impl Shell {
             }
             if save {
                 self.actions.push(UiAction::SaveSettings);
+            }
+            // bank the gesture for undo — only real changes (undo/
+            // redo themselves bypass retune/save, so they never bank)
+            if (retune || save)
+                && self.appearance_state() != appearance_before
+            {
+                self.push_appearance_undo(appearance_before);
             }
         }
         // Theme selector: the six palettes (theme.rs). The v3 aero-
@@ -792,7 +834,12 @@ impl Shell {
     }
 
     fn ui_settings_kit(&mut self, ui: &mut egui::Ui) {
-        section(ui, "SIGNAL KIT", self.active_palette.muted);
+        section(ui, "SIGNAL KIT", self.active_palette.muted)
+            .on_hover_text(
+                "Tiny shareable signal-transform chains (.phoskit): \
+                 each stage bends the audio before it becomes light — \
+                 rotation, stereo width, ring-mod, wobble, delays. \
+                 Hover any kit in the list to see its stages.");
         let mut kits: Vec<std::path::PathBuf> = Vec::new();
         let mut scan = |dir: std::path::PathBuf| {
             if let Ok(entries) = std::fs::read_dir(dir) {
@@ -813,7 +860,15 @@ impl Shell {
         // dir keeps repo-cwd development working
         scan(std::path::PathBuf::from("/usr/share/phosphor/kits"));
         scan(std::path::PathBuf::from("kits"));
-        kits.sort();
+        // one row per kit NAME (sort by stem so duplicates from
+        // different dirs sit adjacent for dedup — running from the
+        // repo with the deb installed listed every starter twice,
+        // caught by the 4.4.0 hover-card receipt); stem order is
+        // also the alphabetical display order users expect
+        kits.sort_by_key(|path| (path.file_stem()
+            .map(|stem| stem.to_os_string()), path.clone()));
+        kits.dedup_by_key(|path| path.file_stem()
+            .map(|stem| stem.to_os_string()));
         let selected = self.settings.kit_path.clone();
         let selected_name = selected.as_deref()
             .and_then(|p| std::path::Path::new(p).file_stem()
@@ -828,7 +883,30 @@ impl Shell {
                         .unwrap_or_default();
                     let is_selected = selected.as_deref()
                         == Some(kit.to_string_lossy().as_ref());
-                    if ui.selectable_label(is_selected, name).clicked() {
+                    // hover = the kit's card: author + each stage's op
+                    // explained (Ben: "the options inside should tell
+                    // you more about what they do"). Loaded lazily —
+                    // only the hovered row reads its ~300-byte file.
+                    let row = ui.selectable_label(is_selected, name);
+                    let row = row.on_hover_ui(|ui| {
+                        match phosphor_proto::phoskit::load(kit) {
+                            Ok(loaded) => {
+                                ui.label(egui::RichText::new(format!(
+                                    "{} — by {}",
+                                    loaded.name, loaded.author))
+                                    .strong());
+                                for (op, _) in &loaded.stages {
+                                    ui.label(format!(
+                                        "{op} — {}",
+                                        phosphor_proto::phoskit::op_description(op)));
+                                }
+                            }
+                            Err(error) => {
+                                ui.label(format!("unreadable: {error}"));
+                            }
+                        }
+                    });
+                    if row.clicked() {
                         self.settings.kit_path =
                             Some(kit.to_string_lossy().to_string());
                         self.actions.push(UiAction::KitChanged);
@@ -837,13 +915,15 @@ impl Shell {
             })
             .response
             .on_hover_text(
-                "A .phoskit transform chain bent into whatever plays —                  rotate,
-widen, ring-mod, delay… Friends send these;                  drop one on the
-window to import it.");
+                "A .phoskit transform chain bent into whatever plays — \
+                 rotate, widen, ring-mod, delay… Friends send these; \
+                 drop one on the window to import it. Hover a kit for \
+                 what's inside.");
         if ui.checkbox(&mut self.settings.kit_enabled, "Apply kit")
             .on_hover_text(
-                "Run the chosen kit's ops on the signal before every                  display
-mode — the figure, the goniometer, the                  tunnel, all of it")
+                "Run the chosen kit's ops on the signal before every \
+                 display mode — the figure, the goniometer, the \
+                 tunnel, all of it")
             .changed()
         {
             self.actions.push(UiAction::KitChanged);
@@ -1539,8 +1619,9 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
 
     /// Photosensitivity confirmation: a sub-1 s beam-color transition
     /// was requested. The setting stays pinned at 1.0 s until the user
-    /// explicitly keeps the faster value; confirming holds for this
-    /// session only — next launch asks again (safety over convenience).
+    /// explicitly keeps the faster value; accepting persists FOREVER
+    /// (settings.epilepsy_acknowledged survives launches and version
+    /// upgrades — Ben's ruling; users who never accept keep the guard).
     pub(crate) fn ui_epilepsy_prompt(&mut self, ctx: &egui::Context) {
         let Some(requested) = self.epilepsy_prompt else { return };
         let mut open = true;
@@ -1573,7 +1654,7 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                     {
                         self.settings.beam_cycle_seconds =
                             requested.clamp(0.1, 60.0);
-                        self.epilepsy_ack = true;
+                        self.settings.epilepsy_acknowledged = true;
                         self.actions.push(UiAction::RenderTuning);
                         decided = true;
                     }
@@ -1595,8 +1676,15 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
         // cap is sized from the LIVE scope response, not self.scope_rect:
         // that cache is one frame stale right after a mini/fullscreen
         // switch, which was the "menu opens with the other mode's
-        // geometry" glitch. Item content still adapts via `compact`.
-        let compact = self.is_mini;
+        // geometry" glitch.
+        //
+        // `compact` gates CONTENT on the actual window height, never
+        // on is_mini (Ben: "many options are just missing when there
+        // is PLENTY of space" — a 520 px mini hid options a 280 px one
+        // physically can't fit; universal UI principle: hide only
+        // what genuinely cannot fit).
+        let compact =
+            response.ctx.content_rect().height() < 430.0;
         let opened = response
             .context_menu(|ui| {
                 // a click that landed OUTSIDE the menu asked it to
@@ -1617,7 +1705,7 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                 // Only when the whole WINDOW is shorter than the menu (tiny
                 // mini squares) does a scroll cage make physical sense.
                 let window_height = ui.ctx().content_rect().height();
-                let menu_estimate = if compact { 440.0 } else { 620.0 };
+                let menu_estimate = if compact { 500.0 } else { 660.0 };
                 if window_height < menu_estimate {
                     egui::ScrollArea::vertical()
                         .max_height((window_height - 24.0).max(120.0))
@@ -1739,6 +1827,8 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                 }
             }
             if !self.is_mini {
+                // compose stays desktop-only BY DESIGN (v3 law: the
+                // pointer draws; in mini the pointer moves the window)
                 if ui.button("Compose · draw a shape  (D)").clicked() {
                     self.actions.push(UiAction::ComposeToggle);
                     ui.close();
@@ -1750,12 +1840,14 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                     self.actions.push(UiAction::ExportDrawing);
                     ui.close();
                 }
-                let mut panel = self.player.panel_open;
-                if ui.checkbox(&mut panel, "Playlist panel  (L)").clicked() {
-                    self.player.panel_open = panel;
-                    self.settings.playlist_panel_open = panel;
-                    ui.close();
-                }
+            }
+            // the playlist pane exists in EVERY view since 4.3 — so
+            // does its menu item (it was space-gated, not law-gated)
+            let mut panel = self.player.panel_open;
+            if ui.checkbox(&mut panel, "Playlist panel  (L)").clicked() {
+                self.player.panel_open = panel;
+                self.settings.playlist_panel_open = panel;
+                ui.close();
             }
             if ui.button("Snapshot  (S)").clicked() {
                 self.actions.push(UiAction::SaveSnapshot);
@@ -1796,16 +1888,28 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
                     self.actions.push(UiAction::RenderTuning);
                     ui.close();
                 }
-                if ui.checkbox(&mut self.settings.show_fps, "Show FPS  (F)")
-                    .clicked()
-                {
-                    ui.close();
-                }
                 if ui.checkbox(&mut self.settings.auto_gain,
                                "Auto gain — fit to screen").clicked() {
                     self.actions.push(UiAction::SignalTuning);
                     ui.close();
                 }
+            }
+            // FPS rides the SAME cycle as the F key (off → counter →
+            // nerd HUD) — the old checkbox couldn't reach the HUD and
+            // hid in mini entirely (Ben's list). One step per menu
+            // visit (egui menus close on click); F walks it live.
+            let fps_state = match (self.settings.show_fps,
+                                   self.settings.show_fps_detail) {
+                (false, _) => "off",
+                (true, false) => "counter",
+                (true, true) => "nerd HUD",
+            };
+            if ui.button(format!("FPS: {fps_state}  (F)"))
+                .on_hover_text("Cycles off → counter → nerd HUD, \
+                                same as the F key")
+                .clicked()
+            {
+                self.cycle_fps();
             }
             if ui.checkbox(&mut self.settings.scope_glass,
                            "Glass scope — transparent background")
@@ -1902,10 +2006,14 @@ mode — the figure, the goniometer, the                  tunnel, all of it")
 
 /// A settings section header — muted, mono, letter-spaced (the
 /// terminal/NFO "quiet structural label" the design system wants).
-fn section(ui: &mut egui::Ui, title: &str, muted: egui::Color32) {
+fn section(ui: &mut egui::Ui, title: &str, muted: egui::Color32)
+    -> egui::Response
+{
     ui.add_space(12.0);
-    ui.label(egui::RichText::new(title).monospace().small().color(muted));
+    let response = ui.label(
+        egui::RichText::new(title).monospace().small().color(muted));
     ui.separator();
+    response
 }
 
 /// v3's add_slider: [Label][Scale][percent spin][%] with two-way sync.

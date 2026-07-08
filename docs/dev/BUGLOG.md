@@ -89,6 +89,110 @@ there would destroy a seeded list.
 **Receipt:** ctl open Acid Rain → 53-row playlist, gapless next
 queued, fullscreen pane populated.
 
+## #4 — Every dropdown wears a scrollbar despite acres of room (fixed v4.4.0)
+
+**Symptom (Ben):** "Selecting scope art isn't fully expanded when
+there's plenty of room… theme selector and scope selector, why are
+they squished and needing a scrollbar?? … you need to be testing this
+app in a higher resolution. Universal UI principles."
+
+**Root cause:** egui's `Spacing::combo_height` defaults to a fixed
+200 px — every ComboBox popup (mode, beam, theme, source, max-fps)
+scroll-caged at 200 px regardless of available space. Separately, the
+context menu gated content on `is_mini` (a 520 px mini hid what a
+280 px mini can't fit) and receipts were taken on a 1600×1000 Xvfb.
+
+**The law:** popups grow until the WINDOW is the limit —
+`combo_height` tracks `content_rect().height()` per frame; content
+gates key off measured space (`compact = height < threshold`), NEVER
+off a window-mode flag. **And receipts run at Ben's resolution:
+2560×1440 Xvfb** — a popup that fits a test rig proves nothing about
+a squish law.
+
+**Receipt:** mode/beam/theme combos fully expanded at 2560×1440 and
+980×640; 520 px mini shows the full menu, 280 px mini still cages.
+
+## #5 — F dead in mini; right-click FPS can't reach the nerd HUD (fixed v4.4.0)
+
+**Symptom (Ben):** "f hotkey doesn't work in Mini player but works in
+fullscreen and normal… right click doesn't toggle through nerd mode…
+options like FPS are just missing from the right click menu."
+
+**Root cause, three parts:** (1) the mini's left-press handler starts
+a WM `drag_window()` on ANY interior press — the click that would
+give the undecorated window keyboard focus becomes a move-grab, so
+the mini rarely HOLDS focus and plain-character keys land elsewhere;
+(2) the menu's FPS entry was a bare `show_fps` checkbox — no path to
+`show_fps_detail` (the HUD cycle lived only in the F key);
+(3) the entry was `compact`-gated and compact == is_mini (see #4).
+
+**The law:** the mini press handler calls `focus_window()` BEFORE
+starting any WM grab; UI affordances that mirror a hotkey share the
+hotkey's exact state machine (one `cycle_fps()`, two callers).
+
+**Receipt:** F cycles off→counter→HUD inside a focused mini; the
+menu's `FPS: <state> (F)` row walks the same three states.
+
+## #6 — M in fullscreen doesn't reach the mini (fixed v4.4.0)
+
+**Symptom (Ben):** "When clicking M from fullscreen, it doesn't go to
+miniplayer, have to exit fullscreen first."
+
+**Root cause:** `MiniToggle` called `set_mini_mode` while the window
+was still fullscreen — the WM ignores resize/undecorate requests on a
+fullscreen surface, so the mini geometry never landed.
+
+**The law:** mode transitions COMPOSE: entering mini from fullscreen
+un-fullscreens first (one gesture, both steps), same as the Escape
+cascade walks one layer at a time deliberately.
+
+**Receipt:** F11 → M lands directly in a square mini; M again
+restores; fullscreen state fully cleared.
+
+## #7 — Glass scope dead on the CPU renderer (fixed v4.4.0)
+
+**Symptom (Ben):** "Glass scope doesn't work on CPU mode."
+
+**Root cause:** `RasterJob` never carried `scope_alpha`, so the
+worker's `CpuRenderer` stayed at its constructor default 1.0 — the
+shared composite law (`alpha = scope_alpha + (1−scope_alpha)·b·2`)
+always emitted A=255 and the frame painted opaque over the correctly
+tinted surface. Two secondary eaters: the frame uploaded as
+UNmultiplied (double-premultiply once alpha existed) and the chrome
+pass re-cleared with the tinted background under the frame (pane
+stacking: `T + T(1−T)` instead of `T`).
+
+**The law:** ONE glass-alpha resolution (`live_glass_alpha()`) feeds
+surface clear + GPU compositor + raster jobs; CPU frames premultiply
+in gamma space (bit-identical to the GPU glass shader's output form);
+offline paths never touch `scope_alpha` — 1.0 is the identity, and
+the goldens are the gate that proves it.
+
+**Receipt:** unit tests (bytes identical at 1.0; background alpha
+exactly 128 at 0.5 with the beam surviving), goldens 3/3 + snapshots
+5/5 byte-held, live smoke on Xvfb. Compositor-visual check on a real
+desktop still owed (Xvfb composites nothing).
+
+## #8 — Escape with a dropdown open quit the whole app (fixed v4.4.0)
+
+**Symptom:** pressing Escape to close a combo popup in a plain normal
+window fell through to the leave-cascade's last step — Close — and
+quit Phosphor. Found when the 4.4.0 receipt rig killed itself.
+
+**The law:** Escape belongs to an open popup first: if
+`Memory::any_popup_open()` (combos; ComboBox registers there) or our
+`context_menu_open` is true, the window-level handler stands down and
+egui closes the popup with that same press. The cascade only ever
+sees a CLEAN Escape.
+
+**Receipt:** combo open → Escape → popup closed, `running:true`;
+plain window → Escape → quit (cascade intact).
+
+Also fixed in passing (caught BY the hover-card receipt): kits listed
+twice when the repo `kits/` and the installed
+`/usr/share/phosphor/kits` both resolve — rows now dedupe by file
+stem, earliest dir wins.
+
 ---
 
 ## Standing laws (older repeat families — one line each, don't relearn)
@@ -115,6 +219,10 @@ queued, fullscreen pane populated.
 - **Repaint law:** honor `viewport_output.repaint_delay` via
   `next_frame_due`; `Resized` must set `chrome_dirty` or exposed
   regions band black.
+- **Resolution law:** UI receipts run on a **2560×1440** Xvfb (Ben's
+  panel) — space bugs (scroll cages, hidden options, squished popups)
+  are invisible on small test screens. Windowed AND the tight cases
+  both get receipts; "fits on my rig" is not a receipt.
 - **Receipt tooling:** winit DROPS xdotool `--window` synthetic keys —
   focus the window (`windowfocus` on WM-less Xvfb, `windowactivate`
   otherwise) and send XTEST. `xdotool click 4` = TWO LineDelta events.

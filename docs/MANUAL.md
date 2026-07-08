@@ -107,7 +107,11 @@ exactly — exports re-live the colors you watched. Agents can poll it:
 Setting the transition **below 1 s** asks for an explicit
 photosensitivity confirmation first — rapid whole-scope color flashing
 can trigger seizures in people with photosensitive epilepsy. The timer
-holds at 1 s unless you accept, and the question returns next launch.
+holds at 1 s unless you accept; accepting is remembered permanently
+(across launches and upgrades), and anyone who never accepts keeps
+the guard. The Custom section also carries **undo/redo** for your
+last five appearance changes, and a live gradient strip previewing
+the ring.
 
 ## Compose — draw your own oscilloscope music
 
