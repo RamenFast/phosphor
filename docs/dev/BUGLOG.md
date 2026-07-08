@@ -193,6 +193,36 @@ twice when the repo `kits/` and the installed
 `/usr/share/phosphor/kits` both resolve — rows now dedupe by file
 stem, earliest dir wins.
 
+## #9 — The mini wanders; resize grows past the screen (fixed v4.5.0)
+
+**Symptom (Ben):** "switching in/out of m, the window starts moving
+around on its own / not remembering its place… resizing the
+miniplayer is a bit glitchy, bottom extends out a bit."
+
+**Root cause, three independent movers:** (1) entering mini FROM
+FULLSCREEN banked the fullscreen dims as `normal_geometry`, so
+mini-leave "restored" to 2560×1440@0,0; (2) mini-leave applied
+`set_outer_position` while the WM was still re-adding decorations —
+frame insets shifted the client a few px EVERY round trip;
+(3) the re-square used `max(w,h)` (an edge drag could never shrink
+the mini) and nothing kept the grown square inside the work area
+(bottom extended past the screen near the lower edge).
+
+**The law:** geometry banks at the moment it is TRUE —
+FullscreenToggle banks normal geometry on the way in, set_mini_mode
+never clobbers an existing bank, plain F11-out drops it (the WM
+restores itself); position restores get ONE deferred re-assert
+(~160 ms) after the frame is back; the re-square follows the axis
+the user dragged and the settle clamps the square inside the work
+area. Glass minis wear a dashed hairline so an undecorated
+transparent square has visible edges.
+
+**Receipt (1440p):** three M round-trips position-stable to the
+pixel (300,200 ↔ 2100,1000); F11→M→M chain restores the banked
+normal geometry, not fullscreen dims; dotted outline screenshot.
+Frame-inset drift + work-area clamp need a real WM — Ben's final
+round covers them.
+
 ---
 
 ## Standing laws (older repeat families — one line each, don't relearn)

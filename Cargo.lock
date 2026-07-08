@@ -2300,7 +2300,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phosphor-app"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "egui",
  "egui-phosphor",
@@ -2326,7 +2326,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-audio"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "phosphor-proto",
  "pipewire",
@@ -2337,11 +2337,11 @@ dependencies = [
 
 [[package]]
 name = "phosphor-beam"
-version = "4.4.0"
+version = "4.5.0"
 
 [[package]]
 name = "phosphor-dsp"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "phosphor-proto",
  "proptest",
@@ -2352,7 +2352,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-proto"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2361,7 +2361,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-render-cpu"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "phosphor-beam",
  "rayon",
@@ -2370,7 +2370,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-render-gpu"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "phosphor-beam",
  "phosphor-dsp",
@@ -2381,7 +2381,7 @@ dependencies = [
 
 [[package]]
 name = "phosphor-studio"
-version = "4.4.0"
+version = "4.5.0"
 dependencies = [
  "phosphor-proto",
 ]

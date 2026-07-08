@@ -289,6 +289,16 @@ pub struct Shell {
     pub(crate) text_focus_ids: std::collections::HashSet<egui::Id>,
     /// pending square-enforcement side after a mini corner resize
     mini_resquare: Option<i64>,
+    /// which edge/corner the current mini WM-resize grabbed — the
+    /// re-square honors the axis the USER dragged (edge-shrinks used
+    /// to snap back because max(w,h) always kept the larger side)
+    mini_resize_axis: Option<winit::window::ResizeDirection>,
+    /// one-shot re-assert of the normal window's position after a
+    /// mini→normal switch: set_outer_position lands before the WM
+    /// finishes re-adding decorations, so frame insets shifted the
+    /// client a few px per round trip ("the window starts moving
+    /// around on its own" — Ben, the last v4 bug)
+    normal_restore: Option<(winit::dpi::PhysicalPosition<i32>, Instant)>,
     /// cached _NET_WORKAREA (x, y, w, h) + when it was queried — the
     /// settle path reads this instead of shelling out to xprop every
     /// tick (a moved panel is rare; 30 s staleness is fine)
@@ -456,6 +466,8 @@ impl Shell {
             quit_requested: false,
             text_focus_ids: std::collections::HashSet::new(),
             mini_resquare: None,
+            mini_resize_axis: None,
+            normal_restore: None,
             workarea_cache: None,
             mini_drag_active: false,
             mini_entering: None,
@@ -988,6 +1000,21 @@ impl Shell {
                     // mode switch with stale geometry
                     self.close_menu_request = true;
                     self.is_fullscreen = !self.is_fullscreen;
+                    if self.is_fullscreen {
+                        // bank the real normal geometry NOW — if M
+                        // enters mini from fullscreen, this (not the
+                        // fullscreen dims) is what mini-leave restores
+                        if !self.is_mini {
+                            self.normal_geometry = Some((
+                                graphics.window.inner_size(),
+                                graphics.window.outer_position().ok(),
+                            ));
+                        }
+                    } else {
+                        // plain F11 out: the WM restores geometry
+                        // itself — a stale bank would fight it later
+                        self.normal_geometry = None;
+                    }
                     graphics.window.set_fullscreen(
                         if self.is_fullscreen {
                             Some(winit::window::Fullscreen::Borderless(None))
@@ -1557,10 +1584,17 @@ impl Shell {
         self.is_mini = enable;
         let window = &graphics.window;
         if enable {
-            self.normal_geometry = Some((
-                window.inner_size(),
-                window.outer_position().ok(),
-            ));
+            // entering from fullscreen (M in fullscreen): the live
+            // window still wears fullscreen geometry — the TRUE
+            // normal geometry was banked by FullscreenToggle on the
+            // way in; never clobber it with 2560×1440@0,0 (that was
+            // half of "the window moves around on its own")
+            if self.normal_geometry.is_none() {
+                self.normal_geometry = Some((
+                    window.inner_size(),
+                    window.outer_position().ok(),
+                ));
+            }
             // order to minimise the Resized/Moved thrash: decorations
             // off first, then position, then ONE request_inner_size.
             // The grace stamps NOW so the burst these calls provoke is
@@ -1583,11 +1617,28 @@ impl Shell {
                 self.settings.mini_y = Some(position.y as i64);
             }
             window.set_decorations(true);
-            if let Some((size, position)) = self.normal_geometry.take() {
-                let _ = window.request_inner_size(size);
-                if let Some(position) = position {
-                    window.set_outer_position(position);
-                }
+            let restored = self.normal_geometry.take()
+                // started life in mini (start_in_mini/crash): no
+                // banked geometry — fall back to the settings size
+                // at the mini's spot instead of staying 280 px with
+                // decorations bolted on
+                .unwrap_or_else(|| (
+                    winit::dpi::PhysicalSize::new(
+                        self.settings.window_width.max(320) as u32,
+                        self.settings.window_height.max(240) as u32),
+                    None,
+                ));
+            let (size, position) = restored;
+            let _ = window.request_inner_size(size);
+            if let Some(position) = position {
+                window.set_outer_position(position);
+                // the WM re-adds the frame ASYNC: a position applied
+                // now lands on the undecorated client and the frame
+                // insets shift it a few px every round trip. Re-assert
+                // the same absolute position once the frame is on.
+                self.normal_restore =
+                    Some((position,
+                          Instant::now() + Duration::from_millis(160)));
             }
         }
         self.apply_window_level(graphics);
@@ -1650,6 +1701,12 @@ impl Shell {
         } else if ((area_y + area_h) - (y + size.height as i32)).abs() <= SNAP {
             y = area_y + area_h - size.height as i32;
         }
+        // the square must LIVE inside the work area: a re-square near
+        // the bottom/right grew the window past the edge ("bottom
+        // extends out a bit" — the other half of the resize glitch).
+        // Pull back inside; never past the top-left origin.
+        x = x.min(area_x + area_w - size.width as i32).max(area_x);
+        y = y.min(area_y + area_h - size.height as i32).max(area_y);
         if (x, y) != (position.x, position.y) {
             window.set_outer_position(
                 winit::dpi::PhysicalPosition::new(x, y));
@@ -2746,6 +2803,27 @@ impl Shell {
                     ui.ctx().animate_bool_with_time(
                         egui::Id::new("resting-beam"), false, 0.2);
                 }
+                // glass mini: a steady dotted outline marks the
+                // window's true edges — an undecorated transparent
+                // square is otherwise invisible to grab or size
+                // (Ben: "so you can see where the borders are")
+                if self.is_mini && self.settings.scope_glass {
+                    let border = ui.ctx().content_rect().shrink(0.5);
+                    let stroke = egui::Stroke::new(
+                        1.0, self.active_palette.line_strong);
+                    let corners = [border.left_top(),
+                                   border.right_top(),
+                                   border.right_bottom(),
+                                   border.left_bottom(),
+                                   border.left_top()];
+                    for pair in corners.windows(2) {
+                        for shape in egui::Shape::dashed_line(
+                            pair, stroke, 4.0, 4.0)
+                        {
+                            ui.painter().add(shape);
+                        }
+                    }
+                }
                 // fps overlay: top-right of the scope, mono, all modes
                 // (mini + fullscreen included — Ben's requested home)
                 if self.settings.show_fps {
@@ -3026,8 +3104,18 @@ impl ApplicationHandler<()> for Shell {
                     let entering = self.mini_entering.is_some_and(|t| {
                         t.elapsed() < Duration::from_millis(400)
                     });
-                    let side = size.width.max(size.height)
-                        .clamp(140, 1000) as i64;
+                    // the square side follows the axis the USER
+                    // dragged: east/west = width, north/south =
+                    // height, corners = the larger. max() alone
+                    // meant an edge drag could never SHRINK the mini
+                    // (the untouched axis always won) — half of
+                    // "resizing is a bit glitchy"
+                    use winit::window::ResizeDirection as Dir;
+                    let side = match self.mini_resize_axis {
+                        Some(Dir::East | Dir::West) => size.width,
+                        Some(Dir::North | Dir::South) => size.height,
+                        _ => size.width.max(size.height),
+                    }.clamp(140, 1000) as i64;
                     // a skew only counts as a user corner-drag when it
                     // is NOT part of the set_mini_mode entry burst —
                     // otherwise our own request_inner_size loops
@@ -3122,10 +3210,15 @@ impl ApplicationHandler<()> for Shell {
                         match mini_resize_zone(x, y, size.width as f64,
                                                size.height as f64) {
                             Some(dir) => {
+                                // remember the grabbed axis: the
+                                // re-square follows the side the
+                                // user actually dragged
+                                self.mini_resize_axis = Some(dir);
                                 let _ = graphics.window
                                     .drag_resize_window(dir);
                             }
                             None => {
+                                self.mini_resize_axis = None;
                                 let _ = graphics.window.drag_window();
                             }
                         }
@@ -3322,6 +3415,18 @@ impl ApplicationHandler<()> for Shell {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // deferred normal-position re-assert (mini→normal): the WM
+        // has its frame on by now — same absolute coords, no drift
+        if let Some((position, due)) = self.normal_restore
+            && Instant::now() >= due
+        {
+            self.normal_restore = None;
+            if !self.is_mini && !self.is_fullscreen
+                && let Some(graphics) = &self.graphics
+            {
+                graphics.window.set_outer_position(position);
+            }
+        }
         // mini magnetism settle (fires even while the loop idles)
         if let Some(due) = self.mini_settle
             && Instant::now() >= due
@@ -3353,12 +3458,16 @@ impl ApplicationHandler<()> for Shell {
                             winit::dpi::PhysicalSize::new(
                                 side as u32, side as u32));
                     }
+                    self.mini_resize_axis = None;
                     self.snap_mini_to_edges(&graphics);
                     self.graphics = Some(graphics);
                 }
             }
         }
         let mut wake_at = self.mini_settle;
+        if let Some((_, due)) = self.normal_restore {
+            wake_at = Some(wake_at.map_or(due, |w| w.min(due)));
+        }
         if (self.render_loop_active || self.chrome_dirty)
             && let Some(due) = self.next_frame_due
         {

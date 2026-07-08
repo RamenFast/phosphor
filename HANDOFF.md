@@ -1,5 +1,28 @@
 # Handoff — next session starts here
 
+## v4.5.0 SHIPPED (July 7, 2026 — the release-candidate pass; Ben's final v4 test round is NEXT)
+
+Ben: "almost ready for an official end/stable release for version 4…
+one bug left." The mini-wander family, root-caused three ways
+(BUGLOG #9): fullscreen→mini banked fullscreen dims as normal
+geometry (FullscreenToggle now banks on the way IN, set_mini_mode
+never clobbers, F11-out drops the bank); mini-leave position raced
+the WM's re-decoration (one deferred re-assert ~160 ms, wired into
+about_to_wait's wake); re-square now follows the DRAGGED axis
+(max(w,h) could never shrink) + the settle clamps the square inside
+the work area ("bottom extends out"). Glass minis wear a dashed
+line_strong outline (Ben's ask — undecorated transparent squares
+need visible edges). Applet audit: wave-3.1 polish holds — repo ==
+installed byte-for-byte, live on the panel, frozen feed contract,
+16/16 protocol tests; its color is its OWN setting by design (feed
+carries samples, not colors — the cycle doesn't propagate).
+
+**OWED TO BEN'S FINAL ROUND (real WM/compositor, receipts can't):**
+frame-inset drift on Muffin (the deferred re-assert), work-area
+clamp at the bottom edge, CPU-glass see-through, mini keyboard
+focus after a click. If his round is clean: v4 STABLE — likely
+retag/re-release as the official end release.
+
 ## v4.4.0 SHIPPED (July 7, 2026 — Ben's major-feedback pass, nine corrections)
 
 Ben's list, every item root-caused (BUGLOG #4–#8 carry the stories):
