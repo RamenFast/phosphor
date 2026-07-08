@@ -78,6 +78,9 @@ PhosphorScopeApplet.prototype = {
         this._fpsCount = 0;
         this._fpsSince = Date.now();
         this._measuredFps = 0;
+        this._feedStopping = false;   // true = WE cut the feed (no respawn)
+        this._restartTimerId = 0;
+        this._restartCount = 0;       // consecutive unhealthy restarts
 
         this.settings = new Settings.AppletSettings(this, UUID, instanceId);
         this.settings.bind("colorMode", "colorMode", () => this._repaintAll());
@@ -264,11 +267,14 @@ PhosphorScopeApplet.prototype = {
 
     _powerOn: function() {
         this._stopCrtTimer();
+        this._stopRestartTimer();
+        this._restartCount = 0;        // a manual power-on is a clean slate
         this._powering = null;
         this._displayOn = true;
         this.settings.setValue("lastPowerState", true);
         this._frameHistory = [];
         if (this._powerItem) this._powerItem.label.text = "⏻  Turn off display";
+        this.set_applet_tooltip("");   // clear any "feed unavailable" notice
         this._startFeed();
         this._repaintAll();
     },
@@ -280,6 +286,7 @@ PhosphorScopeApplet.prototype = {
     // -- the feed subprocess -------------------------------------------------
 
     _startFeed: function() {
+        this._feedStopping = false;
         this._cancellable = new Gio.Cancellable();
         try {
             let launcher = new Gio.SubprocessLauncher({
@@ -306,12 +313,53 @@ PhosphorScopeApplet.prototype = {
             try {
                 [line] = stream.read_line_finish_utf8(result);
             } catch (e) {
-                return;   // cancelled or stream gone
+                // A cancellation is OUR stop (no respawn); anything else is
+                // the feed dying under us — recover it.
+                if (!this._feedStopping) this._onFeedDied();
+                return;
             }
-            if (line === null) return;   // EOF
+            if (line === null) {          // EOF: the feed exited
+                if (!this._feedStopping) this._onFeedDied();
+                return;
+            }
             this._onFeedLine(line);
             this._readNextLine();
         });
+    },
+
+    // The feed process died on its own (killed by an app relaunch, a
+    // `pkill phosphor`, a crash). The applet used to freeze on its last
+    // frame forever and only a power-cycle brought it back — which read
+    // as "the applet crashed". Now it self-heals: one restart after a
+    // short delay, backing off, and giving up (with a tooltip) only
+    // after several rapid failures so a genuinely-missing binary can't
+    // spin a respawn storm.
+    _onFeedDied: function() {
+        this._teardownFeedStreams();
+        if (!this._displayOn || this._restartTimerId) return;
+        if (this._restartCount >= 5) {
+            this.set_applet_tooltip("Phosphor Scope: feed unavailable — toggle the display to retry");
+            return;
+        }
+        let delay = 800 + this._restartCount * 700;   // 0.8s → 3.6s
+        this._restartCount++;
+        this._restartTimerId = Mainloop.timeout_add(delay, () => {
+            this._restartTimerId = 0;
+            if (this._displayOn && !this._feedStopping) this._startFeed();
+            return false;
+        });
+    },
+
+    _teardownFeedStreams: function() {
+        if (this._cancellable) { this._cancellable.cancel(); this._cancellable = null; }
+        try { if (this._proc) this._proc.force_exit(); } catch (e) {}
+        this._proc = null;
+        this._stdin = null;
+        this._stdout = null;
+    },
+
+    _stopRestartTimer: function() {
+        if (this._restartTimerId) { Mainloop.source_remove(this._restartTimerId); this._restartTimerId = 0; }
     },
 
     _onFeedLine: function(line) {
@@ -325,6 +373,7 @@ PhosphorScopeApplet.prototype = {
             global.logError("[phosphor-scope] feed: " + data.error);
             return;
         }
+        this._restartCount = 0;   // a healthy line proves the feed is back
         this._frameHistory.push(data.s || []);
         // Keep a roughly constant ~150ms persistence window regardless of fps
         // (so high refresh rates still show a dense trace), capped for cost.
@@ -405,8 +454,23 @@ PhosphorScopeApplet.prototype = {
         }
     },
 
+    // Paint boundary: a DrawingArea "repaint" handler that throws takes
+    // the whole applet down (Cinnamon unloads it — reads as a crash).
+    // Nothing in the trace math should throw, but a malformed frame or a
+    // Cairo edge case must never be fatal: catch, log, and always
+    // dispose the context exactly once.
     _paint: function(area, isPopup) {
         let cr = area.get_context();
+        try {
+            this._paintInner(cr, area, isPopup);
+        } catch (e) {
+            global.logError("[phosphor-scope] paint: " + e);
+        } finally {
+            try { cr.$dispose(); } catch (e2) {}
+        }
+    },
+
+    _paintInner: function(cr, area, isPopup) {
         let [width, height] = area.get_surface_size();
         let rgb = this._traceColour();
         let r = rgb[0] / 255, g = rgb[1] / 255, b = rgb[2] / 255;
@@ -438,12 +502,10 @@ PhosphorScopeApplet.prototype = {
             cr.setSourceRGBA(r, g, b, 0.18);
             cr.arc(width / 2, height / 2, Math.max(1, height * 0.025), 0, 2 * Math.PI);
             cr.fill();
-            cr.$dispose();
-            return;
+            return;   // _paint disposes
         }
         if (this._powering === "off") {
             this._paintCrtCollapse(cr, width, height, r, g, b, isPopup);
-            cr.$dispose();
             return;
         }
 
@@ -457,7 +519,6 @@ PhosphorScopeApplet.prototype = {
             cr.setSourceRGBA(r, g, b, 0.45);
             cr.arc(width / 2, height / 2, Math.max(1, height * 0.03), 0, 2 * Math.PI);
             cr.fill();
-            cr.$dispose();
             return;
         }
 
@@ -493,28 +554,26 @@ PhosphorScopeApplet.prototype = {
             cr.moveTo(3, height - 3);
             cr.showText(String(this._measuredFps));
         }
-
-        cr.$dispose();
+        // _paint disposes the context
     },
 
     // -- teardown ------------------------------------------------------------
 
     _stopFeed: function() {
-        if (this._cancellable) { this._cancellable.cancel(); this._cancellable = null; }
+        // WE are cutting it: mark stopping so the read-callback doesn't
+        // treat the resulting EOF/cancel as a crash and respawn.
+        this._feedStopping = true;
+        this._stopRestartTimer();
         try {
             if (this._stdin) { this._stdin.put_string("quit\n", null); this._stdin.flush(null); }
         } catch (e) {}
-        try {
-            if (this._proc) this._proc.force_exit();
-        } catch (e) {}
-        this._proc = null;
-        this._stdin = null;
-        this._stdout = null;
+        this._teardownFeedStreams();
     },
 
     on_applet_removed_from_panel: function() {
         this._cancelClose();
         this._stopCrtTimer();
+        this._stopRestartTimer();
         this._stopFeed();
         if (this.settings) this.settings.finalize();
     }
