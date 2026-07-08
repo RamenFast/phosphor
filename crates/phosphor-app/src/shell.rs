@@ -33,6 +33,31 @@ const QUIET_PEAK_THRESHOLD: f32 = 1e-4;
 const QUIET_FRAMES_BEFORE_SLEEP: u32 = 120;
 const FADE_OUT_FRAMES: u32 = 90;
 
+/// PHOSPHOR_GEOM_LOG=1 — trace every window-geometry decision to
+/// stderr. WM races are invisible to Xvfb receipts and one-shot
+/// timing guesses always lose (BUGLOG #9/#10 era law): when a
+/// geometry bug survives to a real desktop, this log IS the receipt.
+/// Env-gated, zero cost off; ships in release builds on purpose.
+fn geom_log_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("PHOSPHOR_GEOM_LOG").is_some())
+}
+
+fn geom_log_t0() -> Instant {
+    static T0: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *T0.get_or_init(Instant::now)
+}
+
+macro_rules! geom_log {
+    ($($arg:tt)*) => {
+        if geom_log_enabled() {
+            eprintln!("[geom {:>8.3}] {}",
+                      geom_log_t0().elapsed().as_secs_f64(),
+                      format_args!($($arg)*));
+        }
+    };
+}
+
 pub struct ShellArgs {
     pub fps_log: bool,
     pub exit_after: Option<f64>,
@@ -615,8 +640,30 @@ impl Shell {
             attributes = attributes.with_position(
                 winit::dpi::PhysicalPosition::new(x as i32, y as i32));
         }
+        geom_log!("launch: want pos {:?},{:?} size {}x{}",
+                  self.settings.window_x, self.settings.window_y,
+                  self.settings.window_width.max(320),
+                  self.settings.window_height.max(240));
         let window = std::sync::Arc::new(
             event_loop.create_window(attributes).expect("window"));
+        geom_log!("launch: created at outer {:?} inner {:?}",
+                  window.outer_position().ok(), window.inner_size());
+        // the launch restore obeys the convergence law too: a one-shot
+        // with_position loses to a WM placing windows under load. The
+        // goal is position-only — size rides the create request (and
+        // goal sizes are PHYSICAL; the attribute was logical, so on
+        // HiDPI a size goal here would fight the scale factor).
+        if let (Some(x), Some(y)) =
+            (self.settings.window_x, self.settings.window_y)
+        {
+            self.geometry_goal = Some(GeometryGoal {
+                size: window.inner_size(),
+                position: Some(winit::dpi::PhysicalPosition::new(
+                    x as i32, y as i32)),
+                deadline: Instant::now() + Duration::from_millis(1200),
+                last_apply: Instant::now(),
+            });
+        }
 
         let instance = wgpu::Instance::default();
         let surface = instance.create_surface(window.clone())
@@ -1019,6 +1066,7 @@ impl Shell {
                     self.export_compose_drawing();
                 }
                 UiAction::MiniToggle => {
+                    geom_log!("drain MiniToggle (is_mini={})", self.is_mini);
                     // a menu left open across the switch would wear the
                     // old mode's geometry — ask it to close first
                     self.close_menu_request = true;
@@ -1028,6 +1076,8 @@ impl Shell {
                     // the async un-fullscreen — Ben needed two M
                     // presses on Muffin). about_to_wait finishes it.
                     if !self.is_mini && self.is_fullscreen {
+                        geom_log!("MiniToggle: staged un-fullscreen, \
+                                   mini in 140ms");
                         self.is_fullscreen = false;
                         graphics.window.set_fullscreen(None);
                         self.mini_pending = Some(
@@ -1055,10 +1105,13 @@ impl Shell {
                                 graphics.window.inner_size(),
                                 graphics.window.outer_position().ok(),
                             ));
+                            geom_log!("fullscreen-in: banked {:?}",
+                                      self.normal_geometry);
                         }
                     } else {
                         // plain F11 out: the WM restores geometry
                         // itself — a stale bank would fight it later
+                        geom_log!("fullscreen-out: bank dropped");
                         self.normal_geometry = None;
                     }
                     graphics.window.set_fullscreen(
@@ -1629,6 +1682,10 @@ impl Shell {
         }
         self.is_mini = enable;
         let window = &graphics.window;
+        geom_log!("set_mini_mode({enable}): outer {:?} inner {:?} \
+                   banked {:?}",
+                  window.outer_position().ok(), window.inner_size(),
+                  self.normal_geometry);
         if enable {
             // entering from fullscreen (M in fullscreen): the live
             // window still wears fullscreen geometry — the TRUE
@@ -1668,12 +1725,26 @@ impl Shell {
                 deadline: Instant::now() + Duration::from_millis(1200),
                 last_apply: Instant::now(),
             });
+            geom_log!("mini-enter goal: {size}x{size} at {:?},{:?}",
+                      self.settings.mini_x, self.settings.mini_y);
         } else {
             // remember where the mini lived (v3 persists on leave)
             if let Ok(position) = window.outer_position() {
                 self.settings.mini_x = Some(position.x as i64);
                 self.settings.mini_y = Some(position.y as i64);
             }
+            // the settle/re-square/snap machinery is MINI-ONLY: a
+            // pending settle surviving the leave fired ~180 ms later
+            // on the RESTORED window — snapping the normal window to
+            // an edge and stamping ITS position into mini_x/y (the
+            // mini then "switched location" on the next M). The
+            // double-click restore gesture armed this every time:
+            // click one's release arms the settle, click two leaves
+            // mini (BUGLOG #11).
+            self.mini_settle = None;
+            self.mini_resquare = None;
+            self.mini_resize_axis = None;
+            self.mini_drag_active = false;
             window.set_decorations(true);
             let restored = self.normal_geometry.take()
                 // started life in mini (start_in_mini/crash): no
@@ -1701,6 +1772,10 @@ impl Shell {
                 deadline: Instant::now() + Duration::from_millis(1200),
                 last_apply: Instant::now(),
             });
+            geom_log!("mini-leave goal: {}x{} at {position:?} \
+                       (mini spot persisted {:?},{:?})",
+                      size.width, size.height,
+                      self.settings.mini_x, self.settings.mini_y);
         }
         self.apply_window_level(graphics);
         self.chrome_dirty = true;
@@ -1769,6 +1844,7 @@ impl Shell {
         x = x.min(area_x + area_w - size.width as i32).max(area_x);
         y = y.min(area_y + area_h - size.height as i32).max(area_y);
         if (x, y) != (position.x, position.y) {
+            geom_log!("snap: {},{} -> {x},{y}", position.x, position.y);
             window.set_outer_position(
                 winit::dpi::PhysicalPosition::new(x, y));
         }
@@ -1940,6 +2016,7 @@ impl Shell {
         palette.apply(&popup.egui_ctx, 255);
         let panel_fill = popup.egui_ctx.style().visuals.panel_fill;
         let egui_ctx = popup.egui_ctx.clone();
+        let actions_before = self.actions.len();
         let full_output = egui_ctx.run(raw_input, |ctx| {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
@@ -1959,6 +2036,18 @@ impl Shell {
         });
         popup.egui_state.handle_platform_output(
             &popup.window, full_output.platform_output);
+        // a menu click acts on the MAIN window (HUD state, theme,
+        // mode…) but the popup is its own OS window — nothing woke
+        // the main pass, so the change sat invisible until the next
+        // natural repaint ("takes a bit of time to update", the FPS
+        // squares). Any action this frame pushed wakes the main
+        // window NOW, mirroring the key-press path exactly.
+        if self.actions.len() > actions_before
+            && let Some(graphics) = &self.graphics
+        {
+            self.chrome_dirty = true;
+            graphics.window.request_redraw();
+        }
         let clipped = egui_ctx.tessellate(
             full_output.shapes, full_output.pixels_per_point);
         let frame = match popup.surface.get_current_texture() {
@@ -2904,9 +2993,13 @@ impl Shell {
                             window_origin.0 + cx as i32,
                             window_origin.1 + cy as i32));
                 }
-                if scope_response.double_clicked() && self.is_mini {
-                    self.actions.push(UiAction::MiniToggle);
-                }
+                // double-click-in-mini restore is owned by the winit
+                // press handler ALONE (it must run before the WM move
+                // grab). An egui double_clicked() here fired a SECOND
+                // MiniToggle for the same physical gesture — the mini
+                // left and re-entered in one drain, reading as
+                // "double-click does nothing / flashes" (BUGLOG #11;
+                // latent since #1 stopped eating mini presses).
                 // compose: the pointer draws (desktop only, like v3);
                 // compose forces XY so orbit-drag can't collide
                 if self.composing && !self.is_mini {
@@ -3359,6 +3452,12 @@ impl ApplicationHandler<()> for Shell {
                     self.chrome_dirty = true;
                     graphics.window.request_redraw();
                 }
+                geom_log!("Resized({}x{}) mini={} entering={} goal={}",
+                          size.width, size.height, self.is_mini,
+                          self.mini_entering.is_some_and(|t| {
+                              t.elapsed() < Duration::from_millis(400)
+                          }),
+                          self.geometry_goal.is_some());
                 // mini stays square: a WM corner-resize can skew it —
                 // re-square once the drag settles (shares the
                 // magnetism settle timer)
@@ -3380,8 +3479,13 @@ impl ApplicationHandler<()> for Shell {
                     }.clamp(140, 1000) as i64;
                     // a skew only counts as a user corner-drag when it
                     // is NOT part of the set_mini_mode entry burst —
-                    // otherwise our own request_inner_size loops
-                    if size.width != size.height && !entering {
+                    // otherwise our own request_inner_size loops. A
+                    // rectangle mid-goal is the WM's transient, not a
+                    // drag (user presses kill the goal): never arm
+                    // a re-square against a converging switch.
+                    if size.width != size.height && !entering
+                        && self.geometry_goal.is_none()
+                    {
                         self.mini_resquare = Some(side);
                     }
                     // persist ONLY settled squares: a mid-flight WM
@@ -3392,6 +3496,23 @@ impl ApplicationHandler<()> for Shell {
                     }
                     self.mini_settle = Some(
                         Instant::now() + Duration::from_millis(180));
+                } else if !self.is_fullscreen
+                    && self.geometry_goal.is_none()
+                    && self.mini_pending.is_none()
+                {
+                    // persist the normal-window SIZE — it was read at
+                    // launch but never written back: any resize was
+                    // forgotten on quit ("not remembering last
+                    // location", the size half). Same guards as the
+                    // position: no transients, no maximized dims.
+                    let maximized = self.graphics.as_ref()
+                        .is_some_and(|g| g.window.is_maximized());
+                    if !maximized && size.width >= 320
+                        && size.height >= 240
+                    {
+                        self.settings.window_width = size.width as i64;
+                        self.settings.window_height = size.height as i64;
+                    }
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -3453,6 +3574,7 @@ impl ApplicationHandler<()> for Shell {
                         .is_some_and(|t| now.duration_since(t)
                                      < Duration::from_millis(400));
                     self.mini_last_click = Some(now);
+                    geom_log!("mini press: double={double}");
                     if double {
                         self.actions.push(UiAction::MiniToggle);
                         graphics.window.request_redraw();
@@ -3501,7 +3623,10 @@ impl ApplicationHandler<()> for Shell {
                 // resize hint no longer applies
                 self.mini_drag_active = false;
             }
-            WindowEvent::KeyboardInput { event, .. } => {
+            WindowEvent::KeyboardInput { event, is_synthetic, .. } => {
+                geom_log!("key {:?} state={:?} synthetic={} repeat={}",
+                          event.logical_key, event.state, is_synthetic,
+                          event.repeat);
                 // v3 law: the window handles keys unless a text entry
                 // is being edited. egui grabs widget focus liberally
                 // (buttons included), so gate ONLY on an egui widget
@@ -3538,7 +3663,15 @@ impl ApplicationHandler<()> for Shell {
                     // it here (combos still self-close via egui)
                     self.close_menu_popup();
                 }
-                if !editing && !escape_owned_by_popup
+                // X11 SYNTHESIZES key events around focus changes (the
+                // WM re-decorating on a mode switch is a focus dance)
+                // and winit forwards them flagged is_synthetic. They
+                // are state-sync noise, not user keystrokes: a
+                // synthetic M-Pressed re-delivered during leave-mini
+                // re-toggled the mini 7 ms after the real press —
+                // "pressing M does nothing / the window flashes"
+                // (BUGLOG #11; receipted live on nested Muffin).
+                if !editing && !escape_owned_by_popup && !is_synthetic
                     && event.state == winit::event::ElementState::Pressed
                 {
                     match self.handle_key(&event.logical_key) {
@@ -3609,11 +3742,27 @@ impl ApplicationHandler<()> for Shell {
                 self.ctrl_down = modifiers.state().control_key();
             }
             WindowEvent::Moved(position) => {
+                geom_log!("Moved({},{}) mini={} fs={} goal={} pending={}",
+                          position.x, position.y, self.is_mini,
+                          self.is_fullscreen, self.geometry_goal.is_some(),
+                          self.mini_pending.is_some());
+                // a mode switch in flight emits TRANSIENT positions
+                // (the WM re-decorating, the goal re-asserting) —
+                // recording those poisoned the remembered location
+                let converging = self.geometry_goal.is_some()
+                    || self.mini_pending.is_some();
                 if self.is_mini {
                     // magnetism: settle 180 ms after the LAST move
                     self.mini_settle = Some(
                         Instant::now() + Duration::from_millis(180));
-                } else if !self.is_fullscreen {
+                    // the mini's spot follows its drags directly —
+                    // waiting for the settle's snap lost the position
+                    // when a quit or M beat the 180 ms timer
+                    if !converging {
+                        self.settings.mini_x = Some(position.x as i64);
+                        self.settings.mini_y = Some(position.y as i64);
+                    }
+                } else if !self.is_fullscreen && !converging {
                     // persist the normal-window position (v3 law: not
                     // while tiled/maximized/mini) — restored at launch
                     let maximized = self.graphics.as_ref()
@@ -3703,11 +3852,23 @@ impl ApplicationHandler<()> for Shell {
                 })
             });
             if (size_ok && position_ok) || now >= goal.deadline {
+                geom_log!("goal done: size_ok={size_ok} pos_ok={} \
+                           expired={} outer {:?} inner {:?}",
+                          position_ok, now >= goal.deadline,
+                          graphics.window.outer_position().ok(),
+                          graphics.window.inner_size());
                 self.geometry_goal = None;
             } else if now.duration_since(goal.last_apply)
                 >= Duration::from_millis(120)
             {
                 goal.last_apply = now;
+                geom_log!("goal re-apply: size_ok={size_ok} \
+                           pos_ok={position_ok} want {}x{} at {:?} \
+                           have outer {:?} inner {:?}",
+                          goal.size.width, goal.size.height,
+                          goal.position,
+                          graphics.window.outer_position().ok(),
+                          graphics.window.inner_size());
                 if !size_ok {
                     let _ = graphics.window
                         .request_inner_size(goal.size);
@@ -3740,7 +3901,12 @@ impl ApplicationHandler<()> for Shell {
         if let Some(due) = self.mini_settle
             && Instant::now() >= due
         {
-            if self.context_menu_open {
+            if !self.is_mini {
+                // belt to set_mini_mode's braces: a settle must never
+                // act on a non-mini window (BUGLOG #11)
+                self.mini_settle = None;
+                self.mini_resquare = None;
+            } else if self.context_menu_open {
                 // never re-square/snap under an OPEN menu — the window
                 // sliding out from beneath it was the mini right-click
                 // glitch. Defer until the menu closes.
@@ -3763,6 +3929,7 @@ impl ApplicationHandler<()> for Shell {
                     // it), then snap to the work-area edges — ONE of
                     // each, now that the drag has truly ended
                     if let Some(side) = self.mini_resquare.take() {
+                        geom_log!("settle re-square to {side}");
                         let _ = graphics.window.request_inner_size(
                             winit::dpi::PhysicalSize::new(
                                 side as u32, side as u32));

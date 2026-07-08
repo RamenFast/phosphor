@@ -252,6 +252,100 @@ submenu click switched mode ring + closed the popup; FPS row clicked
 twice walking ■□→■■ with the menu staying open; Escape closed it with
 the app alive; F11→one M→mini probe-verified.
 
+## #11 — The mini toggle flaps; the window forgets itself (fixed v4.6.2)
+
+**Symptom (Ben):** "Window behavior is very buggy — not remembering
+last location; miniplayer on/off toggle switches location/bugs out."
+
+**Root cause, FOUR independent movers** (each receipted live on a
+nested Muffin 6.6.3 rig — see the receipt):
+
+1. **X11 synthetic key events reached the shortcut table.** X11
+   synthesizes key events around focus changes; the WM re-decorating
+   on a mode switch IS a focus dance, and winit forwards the noise
+   flagged `is_synthetic`. A synthetic M-Pressed re-delivered ~7 ms
+   after the real press re-toggled the mini in the very next drain —
+   leave + instant re-enter, reading as "M does nothing / flashes".
+   Non-deterministic (focus-timing dependent), which is why receipts
+   kept passing while Ben kept hurting.
+2. **Two owners for the double-click-in-mini gesture.** The winit
+   press handler detects it (it must — it runs before the WM move
+   grab), and the egui scope response ALSO pushed MiniToggle on
+   `double_clicked() && is_mini`. One physical double-click = two
+   toggles. Latent since #1's fix stopped eating mini presses (the
+   egui path could never fire before that).
+3. **The settle machinery outlived the mini.** The re-square/snap
+   settle had no `is_mini` ownership at fire time: the first click of
+   a double-click (or any drag release) armed it, the second click
+   left mini, and ~180 ms later the settle SNAPPED THE RESTORED
+   NORMAL WINDOW to a work-area edge and stamped its position into
+   `mini_x/mini_y`. The next M then opened the mini at the normal
+   window's spot — "the toggle switches location".
+4. **Persistence recorded half-truths.** `window_width/height` were
+   read at launch but never written back (any resize was forgotten on
+   quit); `Moved` events during mode-switch convergence recorded the
+   WM's transients as "the last location"; the mini's own spot only
+   reached settings at snap time, so a quit or a fast M inside the
+   180 ms settle window lost the drag.
+
+**The laws:**
+- Synthetic key events are state-sync noise, not keystrokes: the
+  shortcut table takes only `!is_synthetic` presses.
+- ONE owner per gesture — double-click-in-mini belongs to the winit
+  press handler alone; egui never mirrors a winit-owned gesture.
+- The settle/re-square/snap machinery is mini-ONLY: cleared inside
+  `set_mini_mode(false)`, guarded again at fire (`!is_mini` → drop).
+- Geometry persistence records only settled user truth: never while
+  a GeometryGoal converges or a staged switch is pending; sizes
+  persist exactly like positions; the mini's spot follows its drags
+  directly. The LAUNCH placement converges through the same
+  GeometryGoal as mode switches (a one-shot `with_position` is still
+  a timing guess).
+- `PHOSPHOR_GEOM_LOG=1` ships in release builds: every geometry
+  decision to stderr. When a WM race survives to a real desktop, the
+  log IS the receipt — no more guessing.
+
+**Receipt (2026-07-07):** `tests/receipts/w2-wm-geometry.sh` — a
+REAL reparenting WM inside the rig (Xvfb 2560×1440 + dbus-run-session
+`muffin --x11`, Ben's actual WM), 10/10: relaunch restores client
+position AND size to the pixel; 3 mini round-trips under a
+SIGSTOP-pulsed (hitching) Muffin, client-stable to the pixel;
+double-click restore = exactly one toggle; drag-then-instant-M leaves
+the restored window untouched; the next M returns the mini to its
+dragged spot; F11 → ONE M → square mini → M → banked normal; quit
+from mini relaunches normal with the mini spot surviving. The
+synthetic-key delivery was caught live in the geom log
+(`state=Released synthetic=true` during a mode switch).
+
+## #12 — Menu-popup clicks act a beat late (fixed v4.6.2)
+
+**Symptom (Ben):** "The ui takes a bit of time to update, slow when
+switching fps view."
+
+**Root cause:** the context menu became its own OS window in 4.6.0
+(#10) — so a click on the FPS row mutated settings and queued
+actions, but NOTHING woke the main window: no input event, no
+repaint request. The change sat queued until the main window's next
+natural frame — imperceptible with the beam advancing, a visible
+beat (or "until I move the mouse") with the scope quiet-asleep. The
+F key never lagged because key input repaints by itself; only the
+popup path was starved.
+
+**The law:** any action pushed by the menu popup's frame wakes the
+main window immediately (`chrome_dirty = true` + `request_redraw()`),
+mirroring the key-press path exactly. Every menu row pushes an
+action, so the wake needs no per-row wiring — and hover-only popup
+frames wake nothing (no idle cost).
+
+**Receipt (2026-07-07, quiet-asleep scope on the Muffin rig):** FPS
+row clicked in the popup → the fps plate is on the main window in
+the +350 ms screenshot (988 px changed in the corner crop);
+two more clicks walked ■■ then □□ with the menu staying open;
+Escape closed the popup with the app alive (#8 law re-receipted).
+Also in this release: the squares moved to the row's LEFT, sitting
+in the same column as the sibling checkbox boxes (Ben: "moved to
+the left with the other boxes").
+
 ---
 
 ## Standing laws (older repeat families — one line each, don't relearn)

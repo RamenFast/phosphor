@@ -1,5 +1,31 @@
 # Handoff — next session starts here
 
+## v4.6.2 BUILT (July 7, 2026 — the WM rig round; Ben's polish list toward the clean user release)
+
+Ben: FPS squares left + slow fps-view switching; "window behavior is
+very buggy — not remembering last location; mini toggle switches
+location/bugs out." The breakthrough: **muffin runs NESTED on Xvfb**
+(`dbus-run-session muffin --x11 --sm-disable`) — Ben's actual WM in a
+receipt rig at 2560×1440, so WM races are finally VISIBLE without his
+desktop. Plus `PHOSPHOR_GEOM_LOG=1` (env-gated stderr geometry
+tracer, ships in release) — when a bug survives to a real desktop,
+the log is the receipt. BUGLOG #11 (four movers: synthetic X11 keys
+reached the shortcut table and re-toggled the mini ~7 ms after a real
+M; egui's double_clicked duplicated the winit double-click-restore
+owner; the settle/snap machinery outlived the mini and stamped the
+NORMAL window's position into mini_x/y; window size was NEVER
+persisted + Moved/mini-spot recording trusted transients) and #12
+(the 4.6.0 native popup never woke the main window — menu clicks sat
+invisible until the next natural frame; now any popup-pushed action
+wakes it, key-path style). FPS squares moved to the row's LEFT in the
+checkbox column. Receipts: `tests/receipts/w2-wm-geometry.sh`
+(self-contained rig, 10/10 twice — including SIGSTOP-pulsed muffin
+round-trips, drag+instant-M, double-click restore, quit-from-mini
+relaunch), FPS popup walk ■□→■■→□□ with +350 ms wake screenshot on a
+quiet-asleep scope, 20/20 suites, clippy silent. The launch restore
+also converges now (GeometryGoal at init — a one-shot with_position
+is still a timing guess).
+
 ## v4.6.0 SHIPPED (July 7, 2026 — the menu leaves the window; Ben's second RC round)
 
 Ben's polish list, mid-final-testing: (1) **the context menu is a

@@ -1667,9 +1667,12 @@ impl Shell {
         }
     }
 
-    /// The FPS menu row: "FPS  (F)" + two fill-squares reading left
+    /// The FPS menu row: two fill-squares + "FPS  (F)" reading left
     /// to right — ■□ = counter, ■■ = nerd HUD, □□ = off (Ben's spec).
-    /// Click advances the same cycle as the F key.
+    /// The squares sit on the LEFT, in the same column the checkbox
+    /// rows wear their boxes (Ben: "moved to the left with the other
+    /// boxes" — they lived at the row's right edge before). Click
+    /// advances the same cycle as the F key.
     fn fps_menu_row(&mut self, ui: &mut egui::Ui) {
         let width = ui.available_width().max(120.0);
         let (rect, response) = ui.allocate_exact_size(
@@ -1680,22 +1683,15 @@ impl Shell {
                 ui.painter().rect_filled(
                     rect, 0.0, ui.visuals().widgets.hovered.bg_fill);
             }
-            ui.painter().text(
-                egui::pos2(rect.min.x + 4.0, rect.center().y),
-                egui::Align2::LEFT_CENTER,
-                "FPS  (F)",
-                egui::TextStyle::Button.resolve(ui.style()),
-                ui.visuals().widgets.inactive.fg_stroke.color);
             let side = 10.0;
-            let gap = 5.0;
+            let gap = 4.0;
             let filled = [self.settings.show_fps,
                           self.settings.show_fps
                               && self.settings.show_fps_detail];
             for (index, on) in filled.into_iter().enumerate() {
                 let square = egui::Rect::from_min_size(
                     egui::pos2(
-                        rect.max.x - 4.0
-                            - (2 - index) as f32 * (side + gap) + gap,
+                        rect.min.x + index as f32 * (side + gap),
                         rect.center().y - side / 2.0),
                     egui::vec2(side, side));
                 if on {
@@ -1707,6 +1703,13 @@ impl Shell {
                     egui::Stroke::new(1.0, palette.line_strong),
                     egui::StrokeKind::Inside);
             }
+            ui.painter().text(
+                egui::pos2(rect.min.x + 2.0 * (side + gap) + 4.0,
+                           rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                "FPS  (F)",
+                egui::TextStyle::Button.resolve(ui.style()),
+                ui.visuals().widgets.inactive.fg_stroke.color);
         }
         if response
             .on_hover_text("Cycles off → counter → nerd HUD, same as \
