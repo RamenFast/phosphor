@@ -30,6 +30,12 @@ pub(crate) struct RasterJob {
     /// 1 = opaque scope; lower = the live glass pane. Offline renders
     /// never pass through here — their CpuRenderer stays at 1.0.
     pub scope_alpha: f32,
+    /// false = restyle-only: re-composite the EXISTING energy planes
+    /// under new style params (theme, glass, grid) without advancing
+    /// decay. An idle scope used to keep presenting its stale frame
+    /// forever — theme and glass changes never appeared on the CPU
+    /// path until new signal arrived ("stays in AMOLED").
+    pub advance: bool,
 }
 
 pub(crate) struct RasterFrame {
@@ -38,6 +44,9 @@ pub(crate) struct RasterFrame {
     pub height: usize,
     /// advance+composite cost on the worker — the HUD's raster number
     pub raster_ms: f32,
+    /// this frame is a restyle-only recomposite (advance=false job) —
+    /// the shell's restyle-pending loop keys off it
+    pub restyle: bool,
     sequence: u64,
 }
 
@@ -138,7 +147,9 @@ fn worker_loop(slots: &Arc<(Mutex<Slots>, Condvar)>) {
         // identity at scope_alpha 1.0, so glass-off frames keep
         // today's bytes exactly
         target.premultiplied = true;
-        target.advance(&job.segments);
+        if job.advance {
+            target.advance(&job.segments);
+        }
         let pixels = target.composite().to_vec();
         sequence += 1;
 
@@ -147,6 +158,7 @@ fn worker_loop(slots: &Arc<(Mutex<Slots>, Condvar)>) {
             width: job.width,
             height: job.height,
             raster_ms: started.elapsed().as_secs_f32() * 1e3,
+            restyle: !job.advance,
             sequence,
         };
         let (lock, _) = &**slots;
@@ -171,6 +183,7 @@ mod tests {
             grid_spacing_fraction: 0.1125,
             display_scale: 1.0,
             scope_alpha: 1.0,
+            advance: true,
         }
     }
 
@@ -241,5 +254,39 @@ mod tests {
         let frame = take(&mut worker);
         assert!(frame.pixels[3] < 255,
                 "glass scope_alpha never reached the worker's renderer");
+    }
+
+    #[test]
+    fn restyle_job_recomposites_without_advancing() {
+        // a restyle-only job re-composites the SAME planes under new
+        // style params: the theme lands, the pane alpha lands, and the
+        // deposited energy is untouched (advance would decay it)
+        let mut worker = RasterWorker::spawn();
+        worker.submit(job(64, 0.9));
+        let take = |worker: &mut RasterWorker| loop {
+            if let Some(frame) = worker.take_frame() {
+                break frame;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        };
+        let lit = take(&mut worker);
+
+        let mut restyle = job(64, 0.0);
+        restyle.segments = Vec::new();
+        restyle.advance = false;
+        restyle.scope_alpha = 0.5;
+        restyle.theme =
+            phosphor_beam::Theme::preset("Vaporwave").unwrap();
+        worker.submit(restyle);
+        let frame = take(&mut worker);
+        assert!(frame.pixels[3] < 255,
+                "restyle glass alpha never landed");
+        // the beam's energy survived: some pixel is still lit well
+        // above the pane floor
+        let max_alpha = frame.pixels.chunks(4)
+            .map(|px| px[3]).max().unwrap();
+        assert!(max_alpha > 200,
+                "restyle decayed/erased the planes (max A {max_alpha})");
+        drop(lit);
     }
 }

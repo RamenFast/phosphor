@@ -1,6 +1,59 @@
 # Handoff — next session starts here
 
-## v4.6.2 BUILT (July 7, 2026 — the WM rig round; Ben's polish list toward the clean user release)
+## v4.6.2 FINAL (July 8, 2026 — audio + CPU-restyle + applet self-heal; the clean user release)
+
+Ben's real-machine round after the WM rig work: "theme isn't applying
+to CPU mode… glass isn't tinted with the theme" and "local playback
+plays but doesn't output to speakers." Both root-caused (BUGLOG
+#13/#14) and folded into 4.6.2, plus the Cinnamon applet (#15).
+- **Volume (#13):** `set_control(SPA_PROP_volume)` is a no-op AFTER
+  connect (PW 1.0.5) and WirePlumber re-applied a remembered 12.5%
+  soft-volume at connect → near-silent playback the app couldn't fix.
+  Now Phosphor OWNS its volume: the stream data-callback multiplies by
+  an atomic gain (lock-free, one load/cycle), and `state.restore-props
+  = false` opts out of WirePlumber's memory. Scope ring is fed
+  upstream → beam always full signal. NEW diagnostic
+  `PHOSPHOR_AUDIO_LOG=1` (sibling of GEOM_LOG).
+- **CPU restyle (#14):** the cairo worker only re-composited on new
+  segments, so an IDLE scope kept its stale theme/glass ("stuck in
+  AMOLED"). Now a `RasterStyle` stamp triggers a restyle-only job
+  (`advance:false` — recomposite existing energy, no decay) on any
+  style change while idle. Unit-test receipted.
+- **Applet 2.1.0 (#15):** the feed had NO respawn on death (v3 design)
+  → a killed feed froze the applet forever = "crashed." Now it
+  self-heals (backoff restart, `_feedStopping` distinguishes our stop),
+  paint can never throw to Cinnamon's unload boundary (wrapped +
+  single dispose), and icon.png regenerated to the current 4-color
+  icon (the picker uses icon.png, which overrides metadata). Live
+  receipt via Cinnamon Eval: killed feed → self-healed in 2.5s.
+Ben confirmed the app works on his real machine (the isolated rig
+reads false negatives on audio through nested-PipeWire — skill gotcha,
+NOT a regression). Installed deb == working tree == published 4.6.2.
+Gates: all suites pass (+restyle test), clippy silent.
+
+## v4.6.2 (earlier that session — the WM rig round; geometry/menu/FPS)
+
+Ben: FPS squares left + slow fps-view switching; "window behavior is
+very buggy — not remembering last location; mini toggle switches
+location/bugs out." The breakthrough: **muffin runs NESTED on Xvfb**
+(`dbus-run-session muffin --x11 --sm-disable`) — Ben's actual WM in a
+receipt rig at 2560×1440, so WM races are finally VISIBLE without his
+desktop. Plus `PHOSPHOR_GEOM_LOG=1` (env-gated stderr geometry
+tracer, ships in release) — when a bug survives to a real desktop,
+the log is the receipt. BUGLOG #11 (four movers: synthetic X11 keys
+reached the shortcut table and re-toggled the mini ~7 ms after a real
+M; egui's double_clicked duplicated the winit double-click-restore
+owner; the settle/snap machinery outlived the mini and stamped the
+NORMAL window's position into mini_x/y; window size was NEVER
+persisted + Moved/mini-spot recording trusted transients) and #12
+(the 4.6.0 native popup never woke the main window — menu clicks sat
+invisible until the next natural frame; now any popup-pushed action
+wakes it, key-path style). FPS squares moved to the row's LEFT in the
+checkbox column. Receipts: `tests/receipts/w2-wm-geometry.sh`
+(self-contained rig, 10/10 twice — including SIGSTOP-pulsed muffin
+round-trips, drag+instant-M, double-click restore, quit-from-mini
+relaunch), FPS popup walk ■□→■■→□□ with +350 ms wake screenshot on a
+quiet-asleep scope, 20/20 suites, clippy silent. The launch restore
 
 Ben: FPS squares left + slow fps-view switching; "window behavior is
 very buggy — not remembering last location; mini toggle switches

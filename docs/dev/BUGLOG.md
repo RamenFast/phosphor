@@ -346,6 +346,121 @@ Also in this release: the squares moved to the row's LEFT, sitting
 in the same column as the sibling checkbox boxes (Ben: "moved to
 the left with the other boxes").
 
+## #13 — Local playback plays but no sound; the live volume slider is dead (fixed v4.6.2)
+
+**Symptom (Ben):** "The local music playback functionality is
+broken… it plays the audio but doesn't output to speakers."
+
+**Root cause, two layers:**
+1. **WirePlumber memorizes per-app stream volume and re-applies it at
+   connect.** Ben's `~/.local/state/wireplumber/restore-stream` held
+   `application.name:Phosphor:channelVolumes=0.125;0.125` — every new
+   playback stream came up at 12.5% (near-silent) regardless of what
+   the app asked for.
+2. **Volume changes couldn't fix it live.** `set_volume` rode
+   `pw_stream_set_control(SPA_PROP_volume)`. That is honored only
+   BEFORE `connect`; after connect it is a silent no-op (PW 1.0.5 +
+   pipewire-rs 0.9.2 — receipted: the slider moved, the stream volume
+   didn't). So the app couldn't override WirePlumber's memory.
+
+**The law:** Phosphor OWNS its playback volume — the stream's data
+callback multiplies samples by an atomically-published gain
+(`AtomicU32` of `f32::to_bits`, one load per RT cycle, lock-free).
+Nothing external (WirePlumber, pavucontrol memory) can silence it,
+and the change is instant. The stream also sets `state.restore-props
+= false` so WirePlumber stops re-applying its soft-volume memory at
+connect. The scope ring is fed UPSTREAM of the gain — the beam always
+draws the full signal regardless of listening volume. (Deliberately
+NOT `state.restore-target = false`: that made session-manager
+re-routes bounce back to the default sink within a second — the
+playback stream never targets the vacuum sink anyway.)
+
+**Receipt (2026-07-08):** the process callback's gain, traced via the
+new `PHOSPHOR_AUDIO_LOG=1`, followed `ctl volume` live
+(0.729→0.001…) with a stable Arc pointer; the audible stream's PW
+volume stays 100% (WirePlumber memory inert); the beam is unaffected.
+The isolated-rig monitor capture read false negatives through the
+nested-PipeWire isolation (the phosphor skill's known audio gotcha) —
+Ben's real machine is the acceptance receipt.
+
+**Diagnostic that ships:** `PHOSPHOR_AUDIO_LOG=1` — the audio sibling
+of `PHOSPHOR_GEOM_LOG`, tracing the volume/stream story to stderr.
+Audio bugs are the hardest to receipt headlessly; the log is the
+receipt on a real machine.
+
+## #14 — Theme/glass changes don't apply on the CPU (cairo) renderer (fixed v4.6.2)
+
+**Symptom (Ben):** "The theme isn't applying to cpu mode, it just
+stays in amoled when it's on glass tint, the glass isn't tinted with
+the theme."
+
+**Root cause:** the GPU renderer re-reads the theme + glass alpha
+EVERY frame (they ride the composite uniforms). The CPU raster worker
+only produced a new frame when new SEGMENTS arrived — a `RasterJob`
+was submitted solely inside the `advancing` branch. So on a paused or
+silent scope (no new segments) the last-composited frame stayed on
+screen forever: toggling glass or switching beam color did nothing
+until audio moved again. The stale frame kept whatever theme/alpha it
+was baked with — "stuck in AMOLED".
+
+**The law:** the CPU path re-composites on a STYLE change even when
+the scope is idle. A `RasterStyle` tuple (theme, glass alpha, grid,
+grid spacing, beam focus, persistence, display scale, w, h) is
+stamped each advancing frame; when it changes with no advancing
+frame, the shell submits a **restyle-only** job (`advance: false`) —
+the worker re-composites the EXISTING energy planes under the new
+style without advancing decay (advancing would decay/erase the
+picture). A pending flag keeps the redraw loop alive one extra tick
+so the recomposited frame lands past the idle early-out.
+
+**Receipt:** unit test `restyle_job_recomposites_without_advancing`
+(raster_worker) — a restyle job carries the new theme + glass alpha
+(pane A < 255) while the deposited energy survives (max A > 200,
+i.e. NOT decayed). Live: on a paused cairo+glass scope, `ctl theme`
+repaints the beam in the new color (GPU path was always correct —
+it re-reads per frame).
+
+## #15 — The Cinnamon applet "crashed" on a scope-view change; stale icon (fixed applet 2.1.0)
+
+**Symptom (Ben):** "The cinnamon applet crashed when I changed scope
+views… and the icon for the applet is the old version in the applet
+picker."
+
+**Root cause (crash):** the applet spawns `phosphor feed` and, by the
+original v3-verbatim design, did NOT respawn it if it died — "power-
+cycle recovers". When the feed process is killed out from under the
+applet (an app relaunch, a `pkill -x phosphor` — its comm is
+"phosphor", a documented foot-gun; a feed crash), the applet froze on
+its last frame forever and only a manual power-cycle brought it back.
+That reads as "the applet crashed". (Reproduction proved the feed
+itself is clean through every mode, exit 0, and the applet JS never
+throws on `_setMode`/`_paint` — verified live via Cinnamon Eval. The
+failure is the un-respawned dead feed.)
+
+**Root cause (icon):** the applet-picker (cinnamon-settings) resolves
+its icon as `icon.png` in the applet dir — and that file overrides
+the metadata `icon` field (ExtensionCore.py: the icon.png branch runs
+last and wins). The shipped `icon.png` was the OLD all-green 4-panel
+icon, pre-dating the v4.2 four-color-quadrant icon.
+
+**The laws:** (1) the applet self-heals — an unexpected feed EOF/error
+(distinguished from OUR intentional stop by a `_feedStopping` flag)
+schedules ONE restart with backoff (0.8s→3.6s), giving up after 5
+rapid failures with a tooltip so a truly-missing binary can't spin a
+respawn storm; a healthy line resets the counter. (2) the paint
+handler can NEVER throw to Cinnamon's applet-unload boundary — the
+`repaint` body is wrapped, logs on error, and disposes the Cairo
+context exactly once in `finally`. (3) the applet icon.png is
+regenerated from the current `packaging/phosphor4-scope.svg` (RGBA)
+whenever the app icon changes; metadata `icon` points at
+`phosphor-scope` (the deb's hicolor icon) for consistency.
+
+**Receipt (2026-07-08, Ben's live Cinnamon via Eval):** killed the
+feed → `proc=null restartTimer=pending restartCount=1` → 2.5s later a
+NEW feed pid, `proc=alive frames=10 fps=60 restartCount=0`. The
+applet survived every mode cycle with the popup open. Installed
+icon.png md5-matches the repo (RGBA, four colors).
+
 ---
 
 ## Standing laws (older repeat families — one line each, don't relearn)

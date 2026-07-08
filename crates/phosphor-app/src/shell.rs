@@ -126,6 +126,15 @@ struct MenuPopup {
     egui_renderer: egui_wgpu::Renderer,
 }
 
+/// Everything that styles a CPU raster frame WITHOUT new signal:
+/// (theme, glass alpha, grid on, grid spacing, beam focus,
+/// persistence, display scale, trace w, trace h). When any of it
+/// changes while the scope idles, the worker gets a restyle-only job
+/// (re-composite, no decay) — theme/glass/grid changes used to sit
+/// invisible on the CPU path until new signal arrived.
+type RasterStyle =
+    (phosphor_beam::Theme, f32, bool, f32, f32, f32, f32, usize, usize);
+
 /// Where a mode switch WANTS the window: re-applied until the WM
 /// actually delivers it (see Shell::geometry_goal).
 struct GeometryGoal {
@@ -389,6 +398,13 @@ pub struct Shell {
     /// request_inner_size lost to Muffin's async un-fullscreen — Ben
     /// needed TWO M presses). One keypress, two sequenced steps.
     mini_pending: Option<Instant>,
+    /// style params the last CPU RasterJob carried — a change while
+    /// the scope idles triggers a restyle-only job (see RasterStyle)
+    raster_style_stamp: Option<RasterStyle>,
+    /// a restyle job is in flight: keep the redraw loop ticking until
+    /// its frame publishes (the idle early-out would otherwise strand
+    /// the freshly composited frame in the worker's mailbox)
+    raster_restyle_pending: bool,
     /// the live context-menu popup window (None = no menu open)
     menu_popup: Option<MenuPopup>,
     /// a right-click asked for the menu at this GLOBAL position —
@@ -564,6 +580,8 @@ impl Shell {
             mini_resize_axis: None,
             geometry_goal: None,
             mini_pending: None,
+            raster_style_stamp: None,
+            raster_restyle_pending: false,
             menu_popup: None,
             menu_popup_spawn: None,
             workarea_cache: None,
@@ -2902,7 +2920,52 @@ impl Shell {
                             self.grid_gain),
                     display_scale: pixels_per_point * fraction,
                     scope_alpha: self.live_glass_alpha(),
+                    advance: true,
                 });
+            }
+        }
+        // CPU restyle: theme/glass/grid changes must land on an IDLE
+        // scope too. The GPU path re-reads them per frame; the CPU
+        // frame only changed when new segments forced a job — so a
+        // paused scope kept its stale look forever (glass toggled on
+        // showed an opaque pane "stuck in AMOLED"). When the style
+        // stamp changes without an advancing frame, submit a
+        // restyle-only job: same planes, new composite.
+        if graphics.scope_cpu.is_some() {
+            let fraction =
+                self.settings.cairo_resolution.clamp(0.25, 1.0);
+            let style: RasterStyle = (
+                self.current_theme(),
+                self.live_glass_alpha(),
+                self.settings.grid_enabled,
+                phosphor_beam::grid_spacing_fraction(self.grid_gain),
+                self.settings.beam_focus,
+                self.settings.persistence,
+                pixels_per_point * fraction,
+                trace_w as usize,
+                trace_h as usize,
+            );
+            if advancing {
+                // the job above carried exactly this style
+                self.raster_style_stamp = Some(style);
+            } else if self.raster_style_stamp != Some(style) {
+                self.raster_style_stamp = Some(style);
+                self.raster_restyle_pending = true;
+                if let Some(cpu) = graphics.scope_cpu.as_mut() {
+                    cpu.worker.submit(crate::raster_worker::RasterJob {
+                        segments: Vec::new(),
+                        width: trace_w as usize,
+                        height: trace_h as usize,
+                        beam_focus: self.settings.beam_focus,
+                        persistence: self.settings.persistence,
+                        theme: style.0,
+                        grid_enabled: self.settings.grid_enabled,
+                        grid_spacing_fraction: style.3,
+                        display_scale: style.6,
+                        scope_alpha: style.1,
+                        advance: false,
+                    });
+                }
             }
         }
 
@@ -2911,6 +2974,12 @@ impl Shell {
         if let Some(cpu) = graphics.scope_cpu.as_mut()
             && let Some(frame) = cpu.worker.take_frame()
         {
+            // pending clears on the restyle's OWN frame (or on any
+            // advancing frame — its job carried the fresh style); a
+            // stale pre-restyle frame must not end the loop early
+            if frame.restyle || advancing {
+                self.raster_restyle_pending = false;
+            }
             cpu.frame_size = (frame.width, frame.height);
             cpu.raster_ms = Some(frame.raster_ms);
             // the worker emits gamma-premultiplied RGBA (the GPU glass
@@ -3362,6 +3431,13 @@ impl Shell {
         graphics.queue.submit([encoder.finish()]);
         graphics.window.pre_present_notify();
         frame.present();
+        // a restyle frame is still baking in the worker: keep the
+        // redraw loop alive past the idle early-out until it lands
+        // (bounded by one raster's duration)
+        if self.raster_restyle_pending {
+            self.chrome_dirty = true;
+            graphics.window.request_redraw();
+        }
         true
     }
 }

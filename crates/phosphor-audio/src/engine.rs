@@ -24,6 +24,14 @@ use crate::mirror::{GraphMirror, NodeClass};
 use crate::ring::SampleRing;
 use crate::targets::{self, CaptureTarget, ConnectSpec};
 
+/// PHOSPHOR_AUDIO_LOG=1 — trace the playback volume/stream story to
+/// stderr (the audio sibling of PHOSPHOR_GEOM_LOG).
+fn audio_log_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(
+        || std::env::var_os("PHOSPHOR_AUDIO_LOG").is_some())
+}
+
 /// Events the engine reports back to the shell (poll each frame).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AudioEvent {
@@ -48,11 +56,10 @@ enum Command {
     CreatePlayback {
         rate: u32,
         ring: Arc<crate::playback::AudibleRing>,
-        volume: f32,
+        gain: Arc<std::sync::atomic::AtomicU32>,
     },
     DestroyPlayback,
     SetPlaybackActive(bool),
-    SetVolume(f32),
     /// Multi-app mixing: N app streams, each into its own member
     /// buffer; the facade folds them into the scope ring at drain
     /// time (new in v4 — V4PLAN step 8).
@@ -85,7 +92,15 @@ pub struct AudioEngine {
     sample_rate: std::sync::atomic::AtomicU32,
     playback: Mutex<Option<crate::playback::PlayerSession>>,
     playback_paused: AtomicBool,
-    volume: Mutex<f32>,
+    /// Playback gain as f32 bits, applied IN-PROCESS by the stream's
+    /// data callback. It used to ride pw_stream_set_control(volume):
+    /// that works before connect and is a silent no-op after (PW
+    /// 1.0.5 + pipewire-rs 0.9.2, receipted) — the slider went dead
+    /// for the live track. Worse, WirePlumber MEMORIZES stream soft
+    /// volume per app and re-applies it at connect (Ben's machine
+    /// remembered 12.5%), so streams came up near-silent no matter
+    /// what the app asked. In-process scaling answers to nobody.
+    playback_gain: Arc<std::sync::atomic::AtomicU32>,
     /// pactl module id of the live vacuum sink (the hatch — see the
     /// vacuum section below).
     vacuum_module: Mutex<Option<String>>,
@@ -140,7 +155,8 @@ impl AudioEngine {
                 sample_rate: std::sync::atomic::AtomicU32::new(sample_rate),
                 playback: Mutex::new(None),
                 playback_paused: AtomicBool::new(false),
-                volume: Mutex::new(1.0),
+                playback_gain: Arc::new(std::sync::atomic::AtomicU32::new(
+                    1.0f32.to_bits())),
                 vacuum_module: Mutex::new(None),
                 mix_members: Mutex::new(Vec::new()),
                 thread: Some(thread),
@@ -240,7 +256,7 @@ impl AudioEngine {
             let _ = self.commands.send(Command::CreatePlayback {
                 rate: pipe_rate,
                 ring: ring.clone(),
-                volume: *self.volume.lock().unwrap(),
+                gain: self.playback_gain.clone(),
             });
         }
         let session = crate::playback::spawn_player(
@@ -333,10 +349,17 @@ impl AudioEngine {
         }
     }
 
-    /// Playback volume (0.0–1.0), applied to the PW stream.
+    /// Playback volume (0.0–1.0), applied in-process by the stream's
+    /// data callback — instant, and immune to WirePlumber's per-app
+    /// soft-volume memory. The scope ring is fed upstream of this:
+    /// the beam always draws the full signal.
     pub fn set_volume(&self, volume: f32) {
-        *self.volume.lock().unwrap() = volume;
-        let _ = self.commands.send(Command::SetVolume(volume));
+        if audio_log_enabled() {
+            eprintln!("[audio] set_volume({volume}) arc={:p}",
+                      std::sync::Arc::as_ptr(&self.playback_gain));
+        }
+        self.playback_gain.store(
+            volume.to_bits(), std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn current_track_metadata(&self) -> Option<crate::metadata::TrackMetadata> {
@@ -740,11 +763,11 @@ fn run_loop(
                 stop_capture(&state, &flags);
                 ring.lock().unwrap().clear_pending();
             }
-            Command::CreatePlayback { rate, ring, volume } => {
+            Command::CreatePlayback { rate, ring, gain } => {
                 if let Some(old) = state.borrow_mut().playback.take() {
                     let _ = old.stream.disconnect();
                 }
-                match build_playback_stream(&core, rate, ring, volume) {
+                match build_playback_stream(&core, rate, ring, gain) {
                     Ok(holder) => state.borrow_mut().playback = Some(holder),
                     Err(error) => {
                         eprintln!("phosphor-audio: playback stream failed: {error}");
@@ -759,14 +782,6 @@ fn run_loop(
             Command::SetPlaybackActive(active) => {
                 if let Some(holder) = state.borrow().playback.as_ref() {
                     let _ = holder.stream.set_active(active);
-                }
-            }
-            Command::SetVolume(volume) => {
-                if let Some(holder) = state.borrow().playback.as_ref() {
-                    let _ = holder.stream.set_control(
-                        pw::spa::sys::SPA_PROP_volume,
-                        &[volume],
-                    );
                 }
             }
             Command::SweepVacuum(reply) => {
@@ -1375,7 +1390,7 @@ fn build_playback_stream(
     core: &pw::core::CoreRc,
     sample_rate: u32,
     ring: Arc<crate::playback::AudibleRing>,
-    volume: f32,
+    gain: Arc<std::sync::atomic::AtomicU32>,
 ) -> Result<PlaybackHolder, pw::Error> {
     use pw::properties::properties;
 
@@ -1384,6 +1399,18 @@ fn build_playback_stream(
     // buffer and consumption drops below realtime (measured: 0.35×,
     // pw-top showed 16 cycles/s). pacat forced --latency-msec for the
     // same reason (v3 law: 60 ms; we run tighter).
+    //
+    // state.restore-props=false: WirePlumber remembers per-app stream
+    // volume/mute and re-applies the memory at connect — a remembered
+    // 12.5% silenced playback on Ben's machine no matter what the app
+    // asked ("plays but doesn't output to speakers"). Phosphor owns
+    // its volume (in-process gain in the process callback), so the
+    // soft-volume memory has nothing legitimate to say. Deliberately
+    // NOT restore-target=false: it made session-manager moves BOUNCE
+    // (a pactl/pavucontrol re-route snapped back to the default sink
+    // within a second — receipted on the rig), and the playback
+    // stream can never target the vacuum sink anyway (vacuum playback
+    // creates no audible stream at all).
     let latency_frames = 1024u32;
     let props = properties! {
         *pw::keys::MEDIA_TYPE => "Audio",
@@ -1392,14 +1419,26 @@ fn build_playback_stream(
         *pw::keys::APP_NAME => "Phosphor",
         *pw::keys::NODE_NAME => "phosphor-playback",
         *pw::keys::NODE_LATENCY => format!("{latency_frames}/{sample_rate}").as_str(),
+        "state.restore-props" => "false",
     };
     let stream = pw::stream::StreamRc::new(core.clone(), "phosphor-playback", props)?;
 
     let listener = {
         let mut scratch: Vec<f32> = Vec::new();
+        let mut cycle = 0u64;
         stream
             .add_local_listener::<()>()
             .process(move |stream, _data| {
+                // one atomic load per cycle — RT-safe, no locks
+                let volume = f32::from_bits(
+                    gain.load(std::sync::atomic::Ordering::Relaxed));
+                if audio_log_enabled() {
+                    cycle += 1;
+                    if cycle % 100 == 1 {
+                        eprintln!("[audio] cycle {cycle}: gain={volume} \
+                                   arc={:p}", std::sync::Arc::as_ptr(&gain));
+                    }
+                }
                 while let Some(mut buffer) = stream.dequeue_buffer() {
                     let requested_frames = buffer.requested() as usize;
                     let datas = buffer.datas_mut();
@@ -1419,7 +1458,8 @@ fn build_playback_stream(
                     for (quad, value) in
                         slice.chunks_exact_mut(4).zip(scratch.iter())
                     {
-                        quad.copy_from_slice(&value.to_le_bytes());
+                        quad.copy_from_slice(
+                            &(value * volume).to_le_bytes());
                     }
                     let chunk = data.chunk_mut();
                     *chunk.offset_mut() = 0;
@@ -1465,7 +1505,6 @@ fn build_playback_stream(
             | pw::stream::StreamFlags::RT_PROCESS,
         &mut params,
     )?;
-    let _ = stream.set_control(pw::spa::sys::SPA_PROP_volume, &[volume]);
 
     Ok(PlaybackHolder {
         stream,
