@@ -142,16 +142,16 @@ fn main() {
             // emit silence
             if let Some(mut buffer) = stream.dequeue_buffer() {
                 let datas = buffer.datas_mut();
-                if let Some(data) = datas.first_mut() {
-                    if let Some(slice) = data.data() {
-                        for b in slice.iter_mut().take(4096) {
-                            *b = 0;
-                        }
-                        let chunk = data.chunk_mut();
-                        *chunk.offset_mut() = 0;
-                        *chunk.stride_mut() = 8;
-                        *chunk.size_mut() = 4096;
+                if let Some(data) = datas.first_mut()
+                    && let Some(slice) = data.data()
+                {
+                    for b in slice.iter_mut().take(4096) {
+                        *b = 0;
                     }
+                    let chunk = data.chunk_mut();
+                    *chunk.offset_mut() = 0;
+                    *chunk.stride_mut() = 8;
+                    *chunk.size_mut() = 4096;
                 }
             }
         })
