@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+//! STATUS: EXPERIMENTAL STUB — no code yet. The studio tier returns
+//! after 4.0 (issue #1); `phosphor studio` exits 2 with a pointer to
+//! the roadmap until then. The doc below is the contract it ports.
+//!
 //! Scene compiler (port of phosphor_studio.py: shape_points →
 //! constant-speed traversal → animate → frames; one-engine rule — the
 //! compose resampler lives in phosphor-dsp, never a third path) plus
@@ -14,3 +18,26 @@
 
 pub mod scene {}
 pub mod timeline {}
+
+/// The stub contract: this crate ships empty modules and nothing else.
+/// If real code lands, this test is the reminder to remove the
+/// EXPERIMENTAL STUB status header and `publish = false`.
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn stub_contract_lib_has_no_public_items_yet() {
+        let source = include_str!("lib.rs");
+        assert!(
+            source.contains("EXPERIMENTAL STUB"),
+            "status header must survive until studio returns"
+        );
+        let placeholder_modules = source
+            .lines()
+            .filter(|line| line.starts_with("pub mod "))
+            .count();
+        assert_eq!(
+            placeholder_modules, 2,
+            "still just the two empty placeholder modules"
+        );
+    }
+}

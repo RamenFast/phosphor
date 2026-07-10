@@ -607,7 +607,6 @@ struct NodeWatch {
 }
 
 struct MetadataHold {
-    #[allow(dead_code)] // vacuum routing writes through this (A4)
     proxy: pw::metadata::Metadata,
     _listener: pw::metadata::MetadataListener,
     global_id: u32,

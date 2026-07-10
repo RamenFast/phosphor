@@ -256,7 +256,6 @@ pub(crate) enum UiAction {
 pub(crate) enum BeamSource {
     Capture { combo_id: String },
     /// several app streams folded (engine-ready; UI in the ensemble wave)
-    #[allow(dead_code)]
     Mix { combo_ids: Vec<String> },
     Player { path: std::path::PathBuf },
     #[default]

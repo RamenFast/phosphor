@@ -37,7 +37,15 @@ mod shell;
 mod signals;
 mod theme;
 
-const PENDING: &[&str] = &["studio"];
+/// Promised-return commands: (name, per-name fix hint). Each prints
+/// the same "not built yet" contract and exits 2.
+const PENDING: &[(&str, &str)] = &[
+    ("studio", "see the roadmap issues on GitHub"),
+    (
+        "--screensaver",
+        "run `phosphor` normally, or `phosphor --mini` for the tiny scope",
+    ),
+];
 
 /// `--background`: run the GUI on a private Xvfb display so it renders
 /// (and serves the control socket, feed, tap) without ever mapping a
@@ -116,18 +124,17 @@ fn main() -> ExitCode {
         Some("ctl") => agent::run_ctl(&arguments[1..]),
         Some("kit") => kit::run(&arguments[1..]),
         Some("schema") => agent::run_schema(&arguments[1..]),
-        Some("--screensaver") => {
-            eprintln!(
-                "phosphor --screensaver: not built yet (returns \
-                       after 4.0)\nfix: run `phosphor` normally, or \
-                       `phosphor --mini` for the tiny scope"
-            );
-            2
-        }
-        Some(name) if PENDING.contains(&name) => {
+        Some(name)
+            if PENDING.iter().any(|(pending, _)| pending == &name) =>
+        {
+            let hint = PENDING
+                .iter()
+                .find(|(pending, _)| pending == &name)
+                .map(|(_, hint)| *hint)
+                .unwrap_or_default();
             eprintln!(
                 "phosphor {name}: not built yet (returns after \
-                       4.0)\nfix: see the roadmap issues on GitHub"
+                       4.0)\nfix: {hint}"
             );
             2
         }

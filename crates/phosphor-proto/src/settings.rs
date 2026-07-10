@@ -33,7 +33,6 @@ pub struct Settings {
     pub beam_energy: f32,
     pub beam_focus: f32,
     pub scope_sample_rate: u32,
-    pub precompute_enabled: bool,
     pub compose_frequency_hz: f32,
     // look
     pub theme_name: String,
@@ -109,7 +108,6 @@ impl Default for Settings {
             beam_energy: 8.0,
             beam_focus: 1.6,
             scope_sample_rate: 96_000,
-            precompute_enabled: false,
             compose_frequency_hz: 80.0,
             theme_name: "P7 Green".into(),
             custom_beam_color: [0.42, 1.0, 0.55],
@@ -164,9 +162,11 @@ fn color(value: &serde_json::Value) -> Option<[f32; 3]> {
     if list.len() != 3 {
         return None;
     }
-    Some([list[0].as_f64()? as f32,
-          list[1].as_f64()? as f32,
-          list[2].as_f64()? as f32])
+    Some([
+        list[0].as_f64()? as f32,
+        list[1].as_f64()? as f32,
+        list[2].as_f64()? as f32,
+    ])
 }
 
 fn optional_string(value: &serde_json::Value) -> Option<Option<String>> {
@@ -185,22 +185,58 @@ fn optional_int(value: &serde_json::Value) -> Option<Option<i64>> {
 
 /// The keys v4 owns (everything else round-trips through `unknown`).
 const OWNED_KEYS: &[&str] = &[
-    "window_width", "window_height", "window_x", "window_y",
-    "start_in_mini", "mini_size", "mini_x", "mini_y",
-    "display_mode", "gain", "auto_gain", "persistence", "beam_energy",
-    "beam_focus", "scope_sample_rate", "precompute_enabled",
-    "compose_frequency_hz", "theme_name", "custom_beam_color",
-    "custom_grid_color", "custom_beam_color_2", "custom_beam_color_3",
-    "beam_cycle_count", "beam_cycle_seconds", "beam_cycle_mode",
+    "window_width",
+    "window_height",
+    "window_x",
+    "window_y",
+    "start_in_mini",
+    "mini_size",
+    "mini_x",
+    "mini_y",
+    "display_mode",
+    "gain",
+    "auto_gain",
+    "persistence",
+    "beam_energy",
+    // "precompute_enabled" was a v3 key with no v4 consumer — no longer
+    // owned, so a legacy file's value round-trips via `unknown` (§5).
+    "beam_focus",
+    "scope_sample_rate",
+    "compose_frequency_hz",
+    "theme_name",
+    "custom_beam_color",
+    "custom_grid_color",
+    "custom_beam_color_2",
+    "custom_beam_color_3",
+    "beam_cycle_count",
+    "beam_cycle_seconds",
+    "beam_cycle_mode",
     "epilepsy_acknowledged",
-    "amoled_background", "grid_enabled",
-    "scope_glass", "glass_tint", "glass_tints", "ui_style", "kit_path",
-    "kit_enabled", "renderer", "gl_supersample", "cairo_resolution",
-    "show_pin_button", "show_fps", "show_fps_detail", "max_fps",
-    "target_id", "pinned",
-    "show_now_playing", "track_notifications", "playback_volume",
-    "shuffle", "repeat_mode",
-    "playlist_panel_open", "postcard_credit", "vacuum_enabled",
+    "amoled_background",
+    "grid_enabled",
+    "scope_glass",
+    "glass_tint",
+    "glass_tints",
+    "ui_style",
+    "kit_path",
+    "kit_enabled",
+    "renderer",
+    "gl_supersample",
+    "cairo_resolution",
+    "show_pin_button",
+    "show_fps",
+    "show_fps_detail",
+    "max_fps",
+    "target_id",
+    "pinned",
+    "show_now_playing",
+    "track_notifications",
+    "playback_volume",
+    "shuffle",
+    "repeat_mode",
+    "playlist_panel_open",
+    "postcard_credit",
+    "vacuum_enabled",
 ];
 
 impl Settings {
@@ -209,11 +245,12 @@ impl Settings {
         let Ok(text) = std::fs::read_to_string(path) else {
             return settings;
         };
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
-        else {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
             return settings;
         };
-        let Some(map) = value.as_object() else { return settings };
+        let Some(map) = value.as_object() else {
+            return settings;
+        };
 
         macro_rules! take {
             ($key:literal, $slot:expr, $convert:expr) => {
@@ -224,105 +261,138 @@ impl Settings {
                 }
             };
         }
-        let float = |value: &serde_json::Value| {
-            value.as_f64().map(|number| number as f32)
-        };
+        let float = |value: &serde_json::Value| value.as_f64().map(|number| number as f32);
         let integer = serde_json::Value::as_i64;
-        let string = |value: &serde_json::Value| {
-            value.as_str().map(str::to_string)
-        };
+        let string = |value: &serde_json::Value| value.as_str().map(str::to_string);
 
         take!("window_width", settings.window_width, integer);
         take!("window_height", settings.window_height, integer);
         take!("window_x", settings.window_x, optional_int);
         take!("window_y", settings.window_y, optional_int);
-        take!("start_in_mini", settings.start_in_mini,
-              serde_json::Value::as_bool);
+        take!(
+            "start_in_mini",
+            settings.start_in_mini,
+            serde_json::Value::as_bool
+        );
         take!("mini_size", settings.mini_size, integer);
         take!("mini_x", settings.mini_x, optional_int);
         take!("mini_y", settings.mini_y, optional_int);
         take!("display_mode", settings.display_mode, string);
         take!("gain", settings.gain, float);
-        take!("auto_gain", settings.auto_gain,
-              serde_json::Value::as_bool);
+        take!("auto_gain", settings.auto_gain, serde_json::Value::as_bool);
         take!("persistence", settings.persistence, float);
         take!("beam_energy", settings.beam_energy, float);
         take!("beam_focus", settings.beam_focus, float);
-        take!("scope_sample_rate", settings.scope_sample_rate,
-              |value: &serde_json::Value| value.as_u64()
-              .map(|number| number as u32));
-        take!("precompute_enabled", settings.precompute_enabled,
-              serde_json::Value::as_bool);
-        take!("compose_frequency_hz", settings.compose_frequency_hz,
-              float);
+        take!(
+            "scope_sample_rate",
+            settings.scope_sample_rate,
+            |value: &serde_json::Value| value.as_u64().map(|number| number as u32)
+        );
+        take!("compose_frequency_hz", settings.compose_frequency_hz, float);
         take!("theme_name", settings.theme_name, string);
         take!("custom_beam_color", settings.custom_beam_color, color);
         take!("custom_grid_color", settings.custom_grid_color, color);
-        take!("custom_beam_color_2", settings.custom_beam_color_2,
-              color);
-        take!("custom_beam_color_3", settings.custom_beam_color_3,
-              color);
-        take!("beam_cycle_count", settings.beam_cycle_count,
-              |value: &serde_json::Value| value.as_i64()
-              .map(|number| number.clamp(1, 3)));
-        take!("beam_cycle_seconds", settings.beam_cycle_seconds,
-              |value: &serde_json::Value| value.as_f64()
-              .map(|number| number.clamp(0.1, 60.0)));
-        take!("beam_cycle_mode", settings.beam_cycle_mode,
-              |value: &serde_json::Value| value.as_str()
-              .filter(|mode| ["timer", "track"].contains(mode))
-              .map(str::to_string));
-        take!("epilepsy_acknowledged", settings.epilepsy_acknowledged,
-              serde_json::Value::as_bool);
-        take!("amoled_background", settings.amoled_background,
-              serde_json::Value::as_bool);
-        take!("grid_enabled", settings.grid_enabled,
-              serde_json::Value::as_bool);
-        take!("scope_glass", settings.scope_glass,
-              serde_json::Value::as_bool);
+        take!("custom_beam_color_2", settings.custom_beam_color_2, color);
+        take!("custom_beam_color_3", settings.custom_beam_color_3, color);
+        take!(
+            "beam_cycle_count",
+            settings.beam_cycle_count,
+            |value: &serde_json::Value| value.as_i64().map(|number| number.clamp(1, 3))
+        );
+        take!(
+            "beam_cycle_seconds",
+            settings.beam_cycle_seconds,
+            |value: &serde_json::Value| value.as_f64().map(|number| number.clamp(0.1, 60.0))
+        );
+        take!(
+            "beam_cycle_mode",
+            settings.beam_cycle_mode,
+            |value: &serde_json::Value| value
+                .as_str()
+                .filter(|mode| ["timer", "track"].contains(mode))
+                .map(str::to_string)
+        );
+        take!(
+            "epilepsy_acknowledged",
+            settings.epilepsy_acknowledged,
+            serde_json::Value::as_bool
+        );
+        take!(
+            "amoled_background",
+            settings.amoled_background,
+            serde_json::Value::as_bool
+        );
+        take!(
+            "grid_enabled",
+            settings.grid_enabled,
+            serde_json::Value::as_bool
+        );
+        take!(
+            "scope_glass",
+            settings.scope_glass,
+            serde_json::Value::as_bool
+        );
         take!("glass_tint", settings.glass_tint, float);
-        if let Some(map) = map.get("glass_tints")
-            .and_then(|value| value.as_object())
-        {
+        if let Some(map) = map.get("glass_tints").and_then(|value| value.as_object()) {
             settings.glass_tints = map
                 .iter()
-                .filter_map(|(key, value)| {
-                    value.as_f64().map(|v| (key.clone(), v as f32))
-                })
+                .filter_map(|(key, value)| value.as_f64().map(|v| (key.clone(), v as f32)))
                 .collect();
         }
         take!("ui_style", settings.ui_style, string);
         take!("kit_path", settings.kit_path, optional_string);
-        take!("kit_enabled", settings.kit_enabled,
-              serde_json::Value::as_bool);
+        take!(
+            "kit_enabled",
+            settings.kit_enabled,
+            serde_json::Value::as_bool
+        );
         take!("renderer", settings.renderer, string);
-        take!("gl_supersample", settings.gl_supersample,
-              |value: &serde_json::Value| value.as_u64()
-              .map(|number| (number as u32).clamp(1, 3)));
+        take!(
+            "gl_supersample",
+            settings.gl_supersample,
+            |value: &serde_json::Value| value.as_u64().map(|number| (number as u32).clamp(1, 3))
+        );
         take!("cairo_resolution", settings.cairo_resolution, float);
-        take!("show_pin_button", settings.show_pin_button,
-              serde_json::Value::as_bool);
-        take!("show_fps", settings.show_fps,
-              serde_json::Value::as_bool);
-        take!("show_fps_detail", settings.show_fps_detail,
-              serde_json::Value::as_bool);
-        take!("max_fps", settings.max_fps,
-              |value: &serde_json::Value| value.as_i64()
-              .map(|number| number.clamp(-1, 1000))); // -1 = Uncapped (v4)
+        take!(
+            "show_pin_button",
+            settings.show_pin_button,
+            serde_json::Value::as_bool
+        );
+        take!("show_fps", settings.show_fps, serde_json::Value::as_bool);
+        take!(
+            "show_fps_detail",
+            settings.show_fps_detail,
+            serde_json::Value::as_bool
+        );
+        take!("max_fps", settings.max_fps, |value: &serde_json::Value| {
+            value.as_i64().map(|number| number.clamp(-1, 1000))
+        }); // -1 = Uncapped (v4)
         take!("target_id", settings.target_id, optional_string);
         take!("pinned", settings.pinned, serde_json::Value::as_bool);
-        take!("show_now_playing", settings.show_now_playing,
-              serde_json::Value::as_bool);
-        take!("track_notifications", settings.track_notifications,
-              serde_json::Value::as_bool);
+        take!(
+            "show_now_playing",
+            settings.show_now_playing,
+            serde_json::Value::as_bool
+        );
+        take!(
+            "track_notifications",
+            settings.track_notifications,
+            serde_json::Value::as_bool
+        );
         take!("playback_volume", settings.playback_volume, float);
         take!("shuffle", settings.shuffle, serde_json::Value::as_bool);
         take!("repeat_mode", settings.repeat_mode, string);
-        take!("playlist_panel_open", settings.playlist_panel_open,
-              serde_json::Value::as_bool);
+        take!(
+            "playlist_panel_open",
+            settings.playlist_panel_open,
+            serde_json::Value::as_bool
+        );
         take!("postcard_credit", settings.postcard_credit, string);
-        take!("vacuum_enabled", settings.vacuum_enabled,
-              serde_json::Value::as_bool);
+        take!(
+            "vacuum_enabled",
+            settings.vacuum_enabled,
+            serde_json::Value::as_bool
+        );
 
         // v3 re-validated the rate in phosphor.py, not the settings
         // module; v4 has one loader so the law lives here.
@@ -346,9 +416,7 @@ impl Settings {
                 .map(serde_json::Value::Number)
                 .unwrap_or(serde_json::Value::Null)
         };
-        let color = |c: [f32; 3]| {
-            serde_json::Value::Array(vec![f(c[0]), f(c[1]), f(c[2])])
-        };
+        let color = |c: [f32; 3]| serde_json::Value::Array(vec![f(c[0]), f(c[1]), f(c[2])]);
         let opt_string = |v: &Option<String>| match v {
             Some(s) => serde_json::Value::String(s.clone()),
             None => serde_json::Value::Null,
@@ -365,40 +433,41 @@ impl Settings {
         map.insert("mini_size".into(), self.mini_size.into());
         map.insert("mini_x".into(), opt_int(&self.mini_x));
         map.insert("mini_y".into(), opt_int(&self.mini_y));
-        map.insert("display_mode".into(),
-                   self.display_mode.clone().into());
+        map.insert("display_mode".into(), self.display_mode.clone().into());
         map.insert("gain".into(), f(self.gain));
         map.insert("auto_gain".into(), self.auto_gain.into());
         map.insert("persistence".into(), f(self.persistence));
         map.insert("beam_energy".into(), f(self.beam_energy));
         map.insert("beam_focus".into(), f(self.beam_focus));
-        map.insert("scope_sample_rate".into(),
-                   self.scope_sample_rate.into());
-        map.insert("precompute_enabled".into(),
-                   self.precompute_enabled.into());
-        map.insert("compose_frequency_hz".into(),
-                   f(self.compose_frequency_hz));
+        map.insert("scope_sample_rate".into(), self.scope_sample_rate.into());
+        map.insert("compose_frequency_hz".into(), f(self.compose_frequency_hz));
         map.insert("theme_name".into(), self.theme_name.clone().into());
-        map.insert("custom_beam_color".into(),
-                   color(self.custom_beam_color));
-        map.insert("custom_grid_color".into(),
-                   color(self.custom_grid_color));
-        map.insert("custom_beam_color_2".into(),
-                   color(self.custom_beam_color_2));
-        map.insert("custom_beam_color_3".into(),
-                   color(self.custom_beam_color_3));
-        map.insert("beam_cycle_count".into(),
-                   self.beam_cycle_count.into());
-        map.insert("beam_cycle_seconds".into(),
-                   serde_json::Number::from_f64(self.beam_cycle_seconds)
-                       .map(serde_json::Value::Number)
-                       .unwrap_or(serde_json::Value::Null));
-        map.insert("beam_cycle_mode".into(),
-                   self.beam_cycle_mode.clone().into());
-        map.insert("epilepsy_acknowledged".into(),
-                   self.epilepsy_acknowledged.into());
-        map.insert("amoled_background".into(),
-                   self.amoled_background.into());
+        map.insert("custom_beam_color".into(), color(self.custom_beam_color));
+        map.insert("custom_grid_color".into(), color(self.custom_grid_color));
+        map.insert(
+            "custom_beam_color_2".into(),
+            color(self.custom_beam_color_2),
+        );
+        map.insert(
+            "custom_beam_color_3".into(),
+            color(self.custom_beam_color_3),
+        );
+        map.insert("beam_cycle_count".into(), self.beam_cycle_count.into());
+        map.insert(
+            "beam_cycle_seconds".into(),
+            serde_json::Number::from_f64(self.beam_cycle_seconds)
+                .map(serde_json::Value::Number)
+                .unwrap_or(serde_json::Value::Null),
+        );
+        map.insert(
+            "beam_cycle_mode".into(),
+            self.beam_cycle_mode.clone().into(),
+        );
+        map.insert(
+            "epilepsy_acknowledged".into(),
+            self.epilepsy_acknowledged.into(),
+        );
+        map.insert("amoled_background".into(), self.amoled_background.into());
         map.insert("grid_enabled".into(), self.grid_enabled.into());
         map.insert("scope_glass".into(), self.scope_glass.into());
         map.insert("glass_tint".into(), f(self.glass_tint));
@@ -417,26 +486,28 @@ impl Settings {
         map.insert("renderer".into(), self.renderer.clone().into());
         map.insert("gl_supersample".into(), self.gl_supersample.into());
         map.insert("cairo_resolution".into(), f(self.cairo_resolution));
-        map.insert("show_pin_button".into(),
-                   self.show_pin_button.into());
+        map.insert("show_pin_button".into(), self.show_pin_button.into());
         map.insert("show_fps".into(), self.show_fps.into());
-        map.insert("show_fps_detail".into(),
-                   self.show_fps_detail.into());
+        map.insert("show_fps_detail".into(), self.show_fps_detail.into());
         map.insert("max_fps".into(), self.max_fps.into());
         map.insert("target_id".into(), opt_string(&self.target_id));
         map.insert("pinned".into(), self.pinned.into());
-        map.insert("show_now_playing".into(),
-                   self.show_now_playing.into());
-        map.insert("track_notifications".into(),
-                   self.track_notifications.into());
+        map.insert("show_now_playing".into(), self.show_now_playing.into());
+        map.insert(
+            "track_notifications".into(),
+            self.track_notifications.into(),
+        );
         map.insert("playback_volume".into(), f(self.playback_volume));
         map.insert("shuffle".into(), self.shuffle.into());
-        map.insert("repeat_mode".into(),
-                   self.repeat_mode.clone().into());
-        map.insert("playlist_panel_open".into(),
-                   self.playlist_panel_open.into());
-        map.insert("postcard_credit".into(),
-                   self.postcard_credit.clone().into());
+        map.insert("repeat_mode".into(), self.repeat_mode.clone().into());
+        map.insert(
+            "playlist_panel_open".into(),
+            self.playlist_panel_open.into(),
+        );
+        map.insert(
+            "postcard_credit".into(),
+            self.postcard_credit.clone().into(),
+        );
         map.insert("vacuum_enabled".into(), self.vacuum_enabled.into());
         serde_json::Value::Object(map)
     }
@@ -447,8 +518,7 @@ impl Settings {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let text = serde_json::to_string_pretty(&self.to_json())
-            .unwrap_or_else(|_| "{}".into());
+        let text = serde_json::to_string_pretty(&self.to_json()).unwrap_or_else(|_| "{}".into());
         std::fs::write(path, text)
     }
 }
@@ -472,43 +542,55 @@ mod tests {
 
     #[test]
     fn unknown_keys_ignored_known_keys_taken() {
-        let directory = std::env::temp_dir()
-            .join("phosphor-proto-settings-test");
+        let directory = std::env::temp_dir().join("phosphor-proto-settings-test");
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("settings.json");
-        std::fs::write(&path, r#"{"display_mode": "helix",
+        std::fs::write(
+            &path,
+            r#"{"display_mode": "helix",
             "scope_sample_rate": 384000, "martian_field": 9,
-            "amoled_background": true, "gl_supersample": 7}"#).unwrap();
+            "amoled_background": true, "gl_supersample": 7}"#,
+        )
+        .unwrap();
         let settings = Settings::load(&path);
         assert_eq!(settings.display_mode, "helix");
         assert_eq!(settings.scope_sample_rate, 384000);
         assert!(settings.amoled_background);
         assert_eq!(settings.gl_supersample, 3, "clamped to v3's 1..3");
         assert_eq!(settings.gain, 1.0, "untouched default");
-        assert_eq!(settings.unknown.get("martian_field"),
-                   Some(&serde_json::Value::from(9)));
+        assert_eq!(
+            settings.unknown.get("martian_field"),
+            Some(&serde_json::Value::from(9))
+        );
     }
 
     #[test]
     fn beam_cycle_keys_round_trip_and_clamp() {
-        let directory = std::env::temp_dir()
-            .join("phosphor-proto-settings-cycle-test");
+        let directory = std::env::temp_dir().join("phosphor-proto-settings-cycle-test");
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("settings.json");
-        std::fs::write(&path, r#"{
+        std::fs::write(
+            &path,
+            r#"{
             "custom_beam_color_2": [1.0, 0.0, 0.0],
             "beam_cycle_count": 9,
             "beam_cycle_seconds": 0.01,
-            "beam_cycle_mode": "martian"}"#).unwrap();
+            "beam_cycle_mode": "martian"}"#,
+        )
+        .unwrap();
         let settings = Settings::load(&path);
-        assert_eq!(settings.beam_cycle_mode, "timer",
-                   "unknown mode falls back to the default");
+        assert_eq!(
+            settings.beam_cycle_mode, "timer",
+            "unknown mode falls back to the default"
+        );
         assert_eq!(settings.custom_beam_color_2, [1.0, 0.0, 0.0]);
         assert_eq!(settings.beam_cycle_count, 3, "clamped to 1..=3");
-        assert_eq!(settings.beam_cycle_seconds, 0.1,
-                   "clamped to 0.1..=60");
-        assert_eq!(settings.custom_beam_color_3, [1.0, 0.30, 0.88],
-                   "untouched default");
+        assert_eq!(settings.beam_cycle_seconds, 0.1, "clamped to 0.1..=60");
+        assert_eq!(
+            settings.custom_beam_color_3,
+            [1.0, 0.30, 0.88],
+            "untouched default"
+        );
         settings.save(&path).unwrap();
         let reloaded = Settings::load(&path);
         assert_eq!(reloaded.beam_cycle_count, 3);
@@ -517,12 +599,13 @@ mod tests {
 
     #[test]
     fn epilepsy_ack_persists_forever() {
-        let directory = std::env::temp_dir()
-            .join("phosphor-proto-settings-ack-test");
+        let directory = std::env::temp_dir().join("phosphor-proto-settings-ack-test");
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("settings.json");
-        assert!(!Settings::default().epilepsy_acknowledged,
-                "the guard is ON for fresh installs");
+        assert!(
+            !Settings::default().epilepsy_acknowledged,
+            "the guard is ON for fresh installs"
+        );
         let settings = Settings {
             epilepsy_acknowledged: true,
             ..Settings::default()
@@ -533,10 +616,32 @@ mod tests {
         assert!(Settings::load(&path).epilepsy_acknowledged);
     }
 
+    /// `precompute_enabled` is legacy-only (no v4 consumer): it is no
+    /// longer an owned key, so a v3 file's value must survive a v4
+    /// load→save round-trip verbatim through the unknown map.
+    #[test]
+    fn legacy_precompute_key_round_trips_as_unknown() {
+        let directory = std::env::temp_dir().join("phosphor-proto-settings-precompute");
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("settings.json");
+        std::fs::write(&path, r#"{"precompute_enabled": true}"#).unwrap();
+        let settings = Settings::load(&path);
+        assert_eq!(
+            settings.unknown.get("precompute_enabled"),
+            Some(&serde_json::Value::from(true))
+        );
+        settings.save(&path).unwrap();
+        let after: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            after.get("precompute_enabled"),
+            Some(&serde_json::Value::from(true))
+        );
+    }
+
     #[test]
     fn invalid_scope_rate_falls_back() {
-        let directory = std::env::temp_dir()
-            .join("phosphor-proto-settings-rate-test");
+        let directory = std::env::temp_dir().join("phosphor-proto-settings-rate-test");
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("settings.json");
         std::fs::write(&path, r#"{"scope_sample_rate": 44100}"#).unwrap();
@@ -548,8 +653,7 @@ mod tests {
     /// owned keys must reflect the struct.
     #[test]
     fn write_back_preserves_foreign_keys() {
-        let directory = std::env::temp_dir()
-            .join("phosphor-proto-settings-roundtrip");
+        let directory = std::env::temp_dir().join("phosphor-proto-settings-roundtrip");
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("settings.json");
         let original = r#"{
@@ -567,28 +671,35 @@ mod tests {
         settings.gain = 3.0; // the one legitimate change
         settings.save(&path).unwrap();
 
-        let before: serde_json::Value =
-            serde_json::from_str(original).unwrap();
-        let after: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&path).unwrap()).unwrap();
+        let before: serde_json::Value = serde_json::from_str(original).unwrap();
+        let after: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         // foreign keys byte-identical
-        assert_eq!(after.get("some_v5_experiment"),
-                   before.get("some_v5_experiment"));
-        assert_eq!(after.get("another_unknown"),
-                   before.get("another_unknown"));
+        assert_eq!(
+            after.get("some_v5_experiment"),
+            before.get("some_v5_experiment")
+        );
+        assert_eq!(after.get("another_unknown"), before.get("another_unknown"));
         // owned keys reflect struct state
-        assert_eq!(after.get("gain"),
-                   Some(&serde_json::Value::from(3.0)));
-        assert_eq!(after.get("display_mode"),
-                   Some(&serde_json::Value::from("ring")));
-        assert_eq!(after.get("glass_tints").unwrap()
-                   .get("aero").unwrap().as_f64().unwrap(),
-                   0.41999998688697815_f64.min(0.42001), "f32 round-trip");
-        assert_eq!(after.get("window_x"),
-                   Some(&serde_json::Value::from(120)));
+        assert_eq!(after.get("gain"), Some(&serde_json::Value::from(3.0)));
+        assert_eq!(
+            after.get("display_mode"),
+            Some(&serde_json::Value::from("ring"))
+        );
+        assert_eq!(
+            after
+                .get("glass_tints")
+                .unwrap()
+                .get("aero")
+                .unwrap()
+                .as_f64()
+                .unwrap(),
+            0.41999998688697815_f64.min(0.42001),
+            "f32 round-trip"
+        );
+        assert_eq!(after.get("window_x"), Some(&serde_json::Value::from(120)));
         // defaults materialize for keys absent before (v3 did the same
         // on its first save)
-        assert_eq!(after.get("renderer"),
-                   Some(&serde_json::Value::from("gl")));
+        assert_eq!(after.get("renderer"), Some(&serde_json::Value::from("gl")));
     }
 }
