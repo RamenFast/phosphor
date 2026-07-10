@@ -15,6 +15,7 @@
 //! Error text stays short and directive — a 7B model must repair its
 //! kit in one round-trip (Ben's law).
 
+pub mod fsio;
 pub mod phos;
 pub mod phoskit;
 pub mod settings;

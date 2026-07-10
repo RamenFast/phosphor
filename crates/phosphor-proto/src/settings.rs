@@ -239,17 +239,41 @@ const OWNED_KEYS: &[&str] = &[
     "vacuum_enabled",
 ];
 
+/// What `load_with_status` found on disk — `Malformed` means the
+/// broken file was preserved next to the original (never silently
+/// replaced by defaults) and the UI should say so.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LoadStatus {
+    Loaded,
+    Missing,
+    /// unparseable file — backed up to the given path (settings.json.bad)
+    Malformed { backup: Option<PathBuf> },
+}
+
 impl Settings {
     pub fn load(path: &Path) -> Settings {
+        Self::load_with_status(path).0
+    }
+
+    /// Load and report WHAT happened. A malformed file is moved aside
+    /// to `<file>.bad` so the next save cannot clobber the evidence,
+    /// and the caller can surface a visible warning instead of a
+    /// silent reset to defaults.
+    pub fn load_with_status(path: &Path) -> (Settings, LoadStatus) {
         let mut settings = Settings::default();
         let Ok(text) = std::fs::read_to_string(path) else {
-            return settings;
+            return (settings, LoadStatus::Missing);
+        };
+        let malformed = |path: &Path| {
+            let backup = path.with_extension("json.bad");
+            let backup = std::fs::rename(path, &backup).ok().map(|_| backup);
+            LoadStatus::Malformed { backup }
         };
         let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else {
-            return settings;
+            return (settings, malformed(path));
         };
         let Some(map) = value.as_object() else {
-            return settings;
+            return (settings, malformed(path));
         };
 
         macro_rules! take {
@@ -405,7 +429,7 @@ impl Settings {
             .filter(|(key, _)| !OWNED_KEYS.contains(&key.as_str()))
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
-        settings
+        (settings, LoadStatus::Loaded)
     }
 
     /// Serialize every owned key + all preserved unknown keys.
@@ -512,14 +536,14 @@ impl Settings {
         serde_json::Value::Object(map)
     }
 
-    /// Write back (v3 wrote indent=2 JSON; the directory is created
-    /// like v3's os.makedirs(exist_ok=True)).
+    /// Write back (v3 wrote indent=2 JSON). Atomic: temp sibling +
+    /// rename, so a crash mid-write can never leave a truncated file,
+    /// and a serialize failure is an error — never a '{}' that would
+    /// clobber a good file.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let text = serde_json::to_string_pretty(&self.to_json()).unwrap_or_else(|_| "{}".into());
-        std::fs::write(path, text)
+        let text = serde_json::to_string_pretty(&self.to_json())
+            .map_err(std::io::Error::other)?;
+        crate::fsio::write_atomic(path, text.as_bytes())
     }
 }
 
@@ -529,7 +553,9 @@ mod tests {
 
     #[test]
     fn missing_file_yields_v3_defaults() {
-        let settings = Settings::load(Path::new("/nonexistent/nope"));
+        let (settings, status) =
+            Settings::load_with_status(Path::new("/nonexistent/nope"));
+        assert_eq!(status, LoadStatus::Missing);
         assert_eq!(settings.display_mode, "xy");
         assert_eq!(settings.scope_sample_rate, 96000);
         assert_eq!(settings.theme_name, "P7 Green");
@@ -538,6 +564,30 @@ mod tests {
         assert_eq!(settings.renderer, "gl");
         assert_eq!(settings.max_fps, 0);
         assert_eq!(settings.repeat_mode, "off");
+    }
+
+    #[test]
+    fn malformed_file_backed_up_not_clobbered() {
+        let directory =
+            std::env::temp_dir().join("phosphor-proto-settings-bad");
+        let _ = std::fs::remove_dir_all(&directory);
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("settings.json");
+        std::fs::write(&path, "{not json!!").unwrap();
+        let (settings, status) = Settings::load_with_status(&path);
+        assert_eq!(settings.display_mode, "xy", "defaults on malformed");
+        let LoadStatus::Malformed { backup: Some(backup) } = status else {
+            panic!("expected Malformed with a backup, got {status:?}");
+        };
+        assert_eq!(
+            std::fs::read_to_string(&backup).unwrap(),
+            "{not json!!",
+            "evidence preserved verbatim"
+        );
+        assert!(!path.exists(), "original moved aside, not left in place");
+        // a save after the failed load must not touch the backup
+        settings.save(&path).unwrap();
+        assert!(backup.exists());
     }
 
     #[test]

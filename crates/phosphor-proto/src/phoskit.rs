@@ -169,17 +169,15 @@ pub fn to_json(name: &str, author: &str, stages: &[Stage])
     })
 }
 
-/// Write a kit to disk (pretty JSON, dirs created).
+/// Write a kit to disk (pretty JSON, dirs created, atomic — same
+/// temp-sibling + rename policy as settings, so a crash mid-save
+/// never truncates a kit).
 pub fn save(path: &Path, name: &str, author: &str, stages: &[Stage])
             -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("{}: {error}", parent.display()))?;
-    }
     let text = serde_json::to_string_pretty(
         &to_json(name, author, stages))
         .map_err(|error| error.to_string())?;
-    std::fs::write(path, text)
+    crate::fsio::write_atomic(path, text.as_bytes())
         .map_err(|error| format!("{}: {error}", path.display()))
 }
 

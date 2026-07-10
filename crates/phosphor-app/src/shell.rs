@@ -19,7 +19,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use phosphor_audio::{AudioEngine, AudioEvent};
-use phosphor_proto::settings::{default_path, Settings};
+use phosphor_proto::settings::{default_path, LoadStatus, Settings};
 use phosphor_render_gpu::GpuRenderer;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
@@ -508,7 +508,26 @@ pub struct Shell {
 
 impl Shell {
     pub fn new(args: ShellArgs) -> Result<Shell, String> {
-        let settings = Settings::load(&default_path());
+        let (settings, load_status) =
+            Settings::load_with_status(&default_path());
+        // A malformed settings file is moved aside, never clobbered —
+        // tell the user instead of silently resetting to defaults.
+        let initial_status = match &load_status {
+            LoadStatus::Malformed { backup: Some(backup) } => {
+                let line = format!(
+                    "settings unreadable — defaults loaded, old file kept at {}",
+                    backup.display());
+                eprintln!("phosphor: {line}");
+                line
+            }
+            LoadStatus::Malformed { backup: None } => {
+                let line = "settings unreadable — defaults loaded"
+                    .to_string();
+                eprintln!("phosphor: {line}");
+                line
+            }
+            _ => String::new(),
+        };
 
         let (event_sender, audio_events) = mpsc::channel();
         let engine = AudioEngine::spawn(settings.scope_sample_rate,
@@ -629,7 +648,7 @@ impl Shell {
             segments_per_second: 0.0,
             capture_on: false,
             beam_source: BeamSource::Silent,
-            status_line: String::new(),
+            status_line: initial_status,
         })
     }
 
