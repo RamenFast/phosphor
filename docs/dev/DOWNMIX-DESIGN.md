@@ -346,6 +346,37 @@ Clamp-vs-wrap: forcing >FS content into the s16 conversion (a 1.5·FS f32
 stereo wav → `-f s16le`) yields a saturated plateau at ±32767/−32768 with
 no sign-flip wrap artifacts. **swresample clamps (saturates), never wraps.**
 
+**Mechanism (grounded in FFmpeg source, va-gap-swr-int-float-mechanism,
+2026-07-10):** the split is intentional, sample-format-keyed clipping
+protection in libswresample's auto-matrix builder. In
+`libswresample/rematrix.c`, `auto_matrix()` picks the normalization
+ceiling `maxval`: if `rematrix_maxval` is unset (>0 not given), then
+`maxval = 1.0` when either the **output sample format or the internal
+processing format is integer** (`av_get_packed_sample_fmt(...) <
+AV_SAMPLE_FMT_FLT`), else `maxval = INT_MAX` (i.e. effectively no cap)
+for float. `swr_build_matrix2()` then computes `maxcoef = max row sum of
+|coeffs|` and divides the whole matrix by `maxcoef/maxval` only when
+`maxcoef > maxval`. So for s16 output the 5.1→stereo row sum 1+2·0.7071 ≈
+2.414 exceeds 1.0 and the matrix is scaled by 1/2.414 (FL 1.0→0.4142, taps
+0.7071→0.2929, exactly the measured values); for f32 output 2.414 < INT_MAX
+and nothing is scaled. Rationale: integer paths saturate at full scale, so
+the renorm is clip protection; float can carry >±1.0 losslessly, so
+headroom is preserved. Confirmed on this host via `ffmpeg -v debug`: the
+`Matrix coefficients` dump shows FL: 0.414214/FC: 0.292893 for `-f s16le
+-ac 2` and FL: 1.000000/FC: 0.707107 for `-f f32le -ac 2` on the same 5.1
+input. `-ac 2` inserts an `auto_aresample` filter either way; the only
+per-format difference is swr's own `maxval` choice, not CLI plumbing.
+
+**Version stability:** this exact `maxval` selection (with the same
+integer-vs-float condition) has been in `rematrix.c` since at least
+FFmpeg n1.0 (2012, then as an inline `maxcoef > 1.0` check gated on the
+same `< AV_SAMPLE_FMT_FLT` test; refactored to the `maxval` form by
+n2.8) and is unchanged through n8.0 (checked tags n1.0, n1.2, n2.0,
+n2.8, n3.0, n6.1.1, n8.0). It is stable, documented-by-code behavior,
+not version-fragile. It can be overridden explicitly with
+`-rematrix_maxval 1.0` (forces normalization even for float output),
+which is the low-risk lever if option (a) of A.4 is chosen.
+
 ### A.6 Downstream fate of >±1.0 f32 samples (va-gap-f32-overrange-downstream, 2026-07-10)
 
 Traced where the two f32le decode paths (bench.rs `decode_signal`, render.rs
@@ -398,6 +429,35 @@ is 0.7071 per side (A.2) while the Symphonia player duplicates mono at 1.0
 **3 dB smaller** in beam deflection than they play live. Together with the
 5.1 case (render hotter than player) the player and the offline paths
 disagree in both directions today.
+
+### A.7 Audio fate of >±1.0 samples in clip exports (va-gap-save-clip-overrange-audio, 2026-07-10)
+
+A.6 covered the *visual* fate of over-range f32; this covers the *audio
+export* fate. Chain (code read):
+
+- `fold_mix_into_ring` (`crates/phosphor-audio/src/engine.rs:403-426`) sums
+  mix members at **unity gain with no limiter** into the capture ring, so
+  the ring can carry >±1.0 samples whenever a multi-app mix is hot (§4.1's
+  soft clipper is a proposal, not implemented).
+- `save_clip` (`crates/phosphor-app/src/shell.rs:1004,1032` →
+  `crates/phosphor-app/src/exports.rs:140`) hands
+  `engine.copy_history()` — the raw ring, untouched — to `write_wav`.
+- `write_wav` (`exports.rs:71`) does `sample.clamp(-1.0, 1.0) * 32767.0`
+  before the s16 cast: a **hard clamp**, then ffmpeg muxes the wav to AAC.
+
+Empirical probe (unit test, run then removed): fed `write_wav`
+`[2.0, -3.5, 0.5, 1.0000001]` and read back the PCM — got
+`[32767, -32767, 16383, 32767]`. **Saturates, never wraps** (no sign-flip
+artifacts), matching swresample's behavior in A.5.
+
+Verdict: clip exports of a hot multi-app mix **hard-clip audibly today** —
+flat-topped waveform, harsh odd-harmonic distortion — while the same
+over-range samples were numerically benign visually (A.6). This is the
+concrete audible consequence motivating the §4.1 recommendation: the
+`1/√N` per-source gain plus a soft clipper in `fold_mix_into_ring` would
+fix both the live scope feed and every export drawn from the ring, since
+`write_wav`'s clamp would then be a no-op safety net rather than the
+distortion stage.
 
 Clamp requirement for A.4: **no hard clamp is required for safety under
 either option** — nothing NaNs or panics. But:
