@@ -261,7 +261,8 @@ Observations:
   surround stay 0.7071, LFE stays 0, regardless of channel count. In 7.1
   the SL/SR **and** BL/BR taps are all 0.7071 simultaneously (max row sum
   1 + 3·0.7071 ≈ 3.12), confirming **no normalization kicks in for wider
-  layouts** — libswresample's default never renormalizes here.
+  layouts** — libswresample's default never renormalizes here (for
+  **float** output; integer output like s16le *is* normalized, see A.5).
 - 6.1's back-center is the one composed coefficient: BC → 0.5 per side
   (0.7071 into BL/BR, then 0.7071 into L/R).
 - mono → stereo is 0.7071 into each output, not 1.0 — a mono file decoded
@@ -281,12 +282,15 @@ dropped (`lfe_mix_level` default 0), fronts at unity.
 
 1. **Loudness mismatch**: the proposed DownmixMatrix (k ≈ 0.414 for 5.1) will
    be ≈ 7.7 dB quieter than the ffmpeg decode paths for the same 5.1 source.
-   The player (Symphonia path) and the render/bench/postcard (ffmpeg paths)
-   would disagree audibly and in beam amplitude.
-2. **Clipping risk in ffmpeg paths**: `export_postcard` decodes to **s16le**,
+   The player (Symphonia path) and the render/bench (ffmpeg f32le paths)
+   would disagree audibly and in beam amplitude. (Postcard's s16le path is
+   normalized, see A.5, so it matches the proposed matrix, not the f32le
+   paths.)
+2. **Clipping risk in ffmpeg paths**: ~~`export_postcard` decodes to **s16le**,
    which hard-clips; a hot correlated 5.1 source can exceed full scale after
-   ffmpeg's unnormalized downmix. The f32le paths (bench, render decode) don't
-   clip at decode, but downstream beam math sees >±1.0 samples.
+   ffmpeg's unnormalized downmix.~~ **Refuted empirically — see A.5.** The
+   s16le path is normalized by swresample and does not clip. The f32le paths
+   (bench, render decode) do see >±1.0 samples (measured 2.39 peak, A.5).
 
 ### A.4 Recommended amendment
 
@@ -302,6 +306,33 @@ Pick one and make it consistent everywhere:
 §3.1's wording has been fixed (2026-07-10): it now states that ffmpeg's
 default is *not* row-sum normalized and references this appendix for the
 open (a)/(b) decision.
+
+### A.5 Empirical clip probe of the export_postcard command shape (va-gap-postcard-clip-repro, 2026-07-10)
+
+Reproduction attempt of the A.3.2 clip claim, on ffmpeg 6.1.1-3ubuntu5
+(same host that runs the app). Hot legal 5.1 source: correlated full-scale
+FL+FC+SL, `aevalsrc=0.99·sin(440)` on channels FL/FC/SL, zero elsewhere,
+pcm_f32le 5.1 wav @48k. Ran the exact exports.rs:211-215 shape:
+`ffmpeg -v error -i src -f s16le -ac 2 -ar 48000 -`.
+
+**Result: refuted for the s16le path.** Output L peak = ±32440 (0.990 FS),
+zero samples at i16 bounds, no clip. Solo-channel probes through the same
+s16le shape measure FL→L **0.4142**, FC→L/R **0.2929**, SL→L **0.2929**,
+i.e. row-sum-normalized ITU coefficients (0.4142+0.2929+0.2929 ≈ 1.000).
+The unnormalized 0.7071 taps in A.2 were measured with **f32le** output;
+re-running the hot file with `-f f32le -ac 2` gives L peak **2.390**
+(= 0.99·(1+2·0.7071)), confirming the split: **libswresample normalizes the
+rematrix when the output sample format is integer (s16), and leaves it
+unnormalized for float output.** So:
+
+- `export_postcard` (s16le, exports.rs:211-215): normalized, cannot clip
+  from downmix. A.3.2's clip claim is wrong for this path.
+- `bench.rs` / `render.rs` (f32le): unnormalized, >±1.0 samples confirmed
+  (2.39 peak measured), as A.3.2 said.
+
+Clamp-vs-wrap: forcing >FS content into the s16 conversion (a 1.5·FS f32
+stereo wav → `-f s16le`) yields a saturated plateau at ±32767/−32768 with
+no sign-flip wrap artifacts. **swresample clamps (saturates), never wraps.**
 
 ## Verified SPA <-> Symphonia channel mapping (va-gap-spa-symphonia-mapping, 2026-07-10)
 
