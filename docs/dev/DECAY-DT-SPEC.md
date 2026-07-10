@@ -1,0 +1,247 @@
+# DECAY-DT-SPEC — the single authoritative dt-decay specification
+
+Status: FINAL ruling of node `decay-spec-unify` (2026-07-10). Merges and supersedes the
+`decay-repair-design` and `decay-refdt-reconcile` artifacts wherever they conflict, and folds in
+`decay-deposit-dtnorm`, `decay-dt-callsite-spec`, and `decay-other-perframe-consumers`.
+The repair/implementation node implements THIS document only.
+
+---
+
+## Ruling 1 — REF_DT anchor: **1/60 s** (reconcile ADOPTED, design's 1/164.83 REJECTED)
+
+`pub const REF_DT: f32 = 1.0 / 60.0;` in phosphor-beam.
+
+Receipts:
+- The literal keeps FLASH_KEEP=0.50 (phosphor-beam/src/lib.rs:33) and glow_keep(p)
+  (lib.rs:50-52, default 0.82) are what every golden, checksum, and doc-law is anchored to,
+  with "one advance == one frame" semantics throughout: keep_laws_match_v3
+  (phosphor-beam/src/lib.rs:448-451), render-cpu inline tests (lib.rs:254/:264, :308/:310/:315,
+  :324/:329), bench checksums (phosphor-app/src/bench.rs:205,:208,:212,:224), export outputs
+  (exports.rs:118,:180). All exports/bench are media-time at EXPORT_FPS=60 (render.rs:24).
+- Design's 1/164.83 rests only on BENCH.md:15 (Ben's monitor refresh) and an inference that
+  constants were "tuned live at ~165 Hz". A monitor refresh is not a physics anchor; adopting it
+  would re-baseline every multi-advance golden (effective 60 Hz glow keep 0.82 → 0.82^2.747 ≈ 0.580,
+  flash 0.50 → 0.149) and visibly shorten trails ~3x in every 60 fps export.
+- Under REF_DT=1/60 with the bit-exact short-circuit (Ruling 2), `advance(segments, REF_DT)` is
+  bit-identical to today's `advance(segments)`: NOTHING re-baselines.
+- Design's actual goal (preserve the live 165 Hz look) is still satisfied: at dt=1/165 the powf
+  path gives glow keep 0.82^(60/165) ≈ 0.9304, i.e. the live high-refresh look is the
+  frame-rate-independent look by construction.
+
+Open item for Ben (informational only, does not block implementation): the live look at 165 Hz
+will subtly change relative to today (today it over-decays at 165 Hz; after this fix it matches
+the 60 fps export look). This is the intended bug fix, not a regression.
+
+## Ruling 2 — keep formula: **powf with bit-exact literal short-circuit** (reconcile adopted)
+
+```
+fn decay_step(dt: f32, persistence: f32) -> DecayStep
+if dt == REF_DT (exact f32 ==):
+    flash_keep = FLASH_KEEP (0.50 literal)
+    glow_keep  = glow_keep(persistence)  // existing fn, lib.rs:50-52
+    floors     = [ENERGY_FLOOR, ENERGY_FLOOR]  // 0.0004 literal
+else:
+    n          = dt / REF_DT
+    flash_keep = FLASH_KEEP.powf(n)
+    glow_keep  = glow_keep(persistence).powf(n)
+    floors     = per Ruling 3
+```
+
+`keep_ref.powf(dt/REF_DT)` and `exp(-dt/tau)` with `tau = -REF_DT/ln(keep_ref)` are the same
+function mathematically; powf is chosen because it needs no stored tau constants and expresses
+the anchor directly. The dt==REF_DT special case is MANDATORY: f32 ln/exp/powf round-trips are
+not bit-identical to the literals, and bit-exactness at REF_DT is what keeps all goldens green.
+Do NOT re-baseline expectations.
+
+Keeps compose exactly (k^a · k^b = k^(a+b)), so no subdivision loop is ever needed.
+Document this in the decay_step doc comment so nobody re-adds one.
+
+## Ruling 3 — ENERGY_FLOOR scaling: **geometric-series closed form** (design adopted, reconcile's linear form REJECTED)
+
+```
+keep_total = keep_ref.powf(n)                       // n = dt/REF_DT
+floor_total = ENERGY_FLOOR * (1 - keep_total) / (1 - keep_ref)
+E' = max(E * keep_total - floor_total, 0)
+```
+
+This is the EXACT closed form of sub-stepping the current per-step (keep_ref, floor) process n
+times: `E·k^n − f·(1+k+…+k^(n−1))`. Reconcile's linear `ENERGY_FLOOR·n` is wrong for n>1 because
+each step's floor subtraction is itself decayed by subsequent keeps. Divergence is material:
+
+| plane | n=dt/REF_DT | geometric | linear | linear over-subtracts |
+|---|---|---|---|---|
+| glow p=0.7 (k=0.82) | 2 | 0.000728 | 0.000800 | 1.10x |
+| glow p=0.7 | 6 (dt=0.1s) | 0.001547 | 0.002400 | 1.55x |
+| glow p=0.7 | 30 (dt=0.5s) | 0.002216 | 0.012000 | 5.41x |
+| flash (k=0.50) | 6 | 0.000788 | 0.002400 | 3.05x |
+| flash | 30 | 0.000800 | 0.012000 | 15.0x |
+
+The geometric floor converges to `f/(1−k)` (flash 0.0008, glow(0.7) ≈ 0.00222); the linear form
+grows without bound and would visibly stomp faint trails after any stall. For n<1 (high refresh)
+the geometric form correctly gives a sub-reference floor as well.
+
+Floors are per-plane (keep_ref differs per plane): `DecayStep { flash_keep, glow_keep, floor: [f32;2] }`.
+At dt==REF_DT both floors short-circuit to the literal 0.0004.
+
+GPU plumbing: DecayUniforms currently has `keep: vec2f, _pad: vec2f` (shaders.wgsl:9-12, 16-byte
+buffer at render-gpu/src/lib.rs:445). The two floors go into `_pad` → `floor: vec2f`, and the
+hardcoded `0.0004` literal at shaders.wgsl:28 is replaced by the uniform (also fixes the law-9
+one-fact-one-representation violation). Shader math shape unchanged, no per-pixel exp/powf.
+
+## Ruling 4 — dt clamp: **dt.clamp(0.0, 0.25)**; no lower clamp
+
+One value replaces all three proposals (0.5 design / 0.1 callsite-spec / [1/240,1/24] reconcile):
+
+- **Upper 0.25 s.** With geometric floors, a 0.25 s step leaves glow(p=1.0, k=0.98) at
+  keep_total = 0.98^15 ≈ 0.74 minus its floor: long stalls decay plenty without integrating a
+  window-drag or debugger pause into a full flash-out. Design's 0.5 s and 0.25 s are visually
+  near-equivalent for p≤0.9; 0.25 halves the worst-case post-stall dimming step. Callsite-spec's
+  0.1 s is too tight (a 7 fps struggling frame is real elapsed time and should decay as such).
+- **No lower clamp** (reconcile's 1/240 floor rejected): dt below 1/240 is legitimate at high
+  refresh or coalesced frames; powf handles n<1 exactly. Negative dt (clock anomaly) clamps to 0
+  = no-op decay (keep_total=1, floor_total=0 — decay_step must return exactly that at dt=0).
+- Clamp lives inside `decay_step` so every consumer inherits it.
+
+Wake/first-frame rule (restated from design §4/§6): the live sim clock is
+`last_advance_enqueue: Option<Instant>` on the Shell. On first frame, after quiet-law wake
+(shell.rs:2807-2809), and after pause/target switch, the anchor is None → use dt = REF_DT
+(one reference step, no catch-up flash-out). Sleep never accumulates dt (anchor reset to None).
+
+raster_worker dt-folding (restated from callsite-spec, adopted as specified there):
+`RasterJob` gains `dt: f32` (raster_worker.rs:20-39), stamped at enqueue against
+`last_advance_enqueue` (shell.rs:2910 submit site); restyle submits (shell.rs:2955, advance=false)
+neither read nor bump the anchor and carry dt=0. Mailbox folding: in `RasterWorker::submit`, if
+the overwritten job has `old.advance`, fold `old.dt` into the new job; if the new job is
+advance=false, the worker stashes it in a `carry_dt` added to the next advancing job. Folded dt
+is clamped to 0.25 s at consumption (inside decay_step), so drop storms cannot overshoot.
+GPU live path (shell.rs:2902) has no queue: its own `last_gpu_advance` anchor, same clamp.
+
+## Ruling 5 — exports.rs final partial chunk: **dt = samples/rate**; render.rs full chunks only (REF_DT)
+
+Only exports.rs produces short final chunks: `chunks()` yields a short trailing chunk
+(exports.rs:110-119 snapshot path, :175-184 clip path). Rule there: offline dt is ALWAYS media
+time, `dt = (chunk.len()/2) as f32 / rate`, which equals REF_DT exactly for full chunks
+(per_frame = rate/EXPORT_FPS·2) and the correct shorter dt for the final partial chunk.
+
+render.rs is different: its offline loop reads fixed-size frames with `read_exact` and treats a
+read_exact error as end-of-stream ("read_exact error = trailing partial frame: done",
+render.rs:~483-484). The trailing partial chunk is DROPPED and never rendered — render.rs today
+has no short-dt final frame. Therefore render.rs passes exactly REF_DT for every frame it
+renders (full chunks only).
+
+Drop-vs-render is an explicit implementation choice for the repair node:
+- **Keep dropping the trailing partial frame** (default): zero behavior change; render.rs never
+  needs a non-REF_DT dt.
+- **Start rendering it** with `dt = samples/rate`: a deliberate output change (one extra final
+  frame in exports whose sample count is not a multiple of rate/60) that MUST be called out in
+  the commit note per law 5.
+
+Determinism impact: fully deterministic — dt is a pure function of input length and rate, so
+byte-identical inputs give byte-identical outputs. In exports.rs, all frames except at most the
+last one hit the dt==REF_DT bit-exact path, so existing export goldens change at most in the
+final frame, and only for inputs whose sample count is not a multiple of rate/60. Reconcile's
+"unconditional REF_DT" would silently treat a partial frame as a full one, which is precisely
+the class of bug this migration exists to kill. Never use wall clock offline; never use
+frame_index live.
+
+bench.rs (:205,:212) is media-time with exact full chunks: passes REF_DT, checksums unchanged.
+`render()` no-dt convenience wrapper (render-cpu lib.rs:239-242) stays, defaulting to REF_DT,
+keeping timing.rs:37,41 and cross_snapshot.rs:119,208 byte-identical. Inline render-cpu tests
+(:264,:310,:315,:329) pass REF_DT.
+
+## Ruling 6 — deposit-side normalization and other per-frame consumers (integrated)
+
+From `decay-deposit-dtnorm` (adopted in full, with REF_DT=1/60 confirming its assumption):
+
+- **Streaming modes** (xy/xy45/xy_dots/swirl at modes/xy.rs:98-105, takens): energy-per-sample,
+  already fps-invariant on the deposit side; dt-decay fixes their steady-state fps-dependence
+  automatically. NO deposit change.
+- **Restamped modes** MUST scale their per-frame stamp: `intensity *= dt / REF_DT`, dt being the
+  same value passed to advance for that frame (so at 60 fps and offline this is exactly 1.0 and
+  nothing changes). Applies to:
+  - compose preview (compose.rs:22 PREVIEW_INTENSITY=0.25, restamped at :243-263)
+  - waveform (modes/waveform.rs:52), spectrum/spectrum_radial (modes/spectrum.rs:94),
+    ring, helix, tunnel (waveform-history dispatch, dsp/lib.rs:349-361)
+  - visitor segments (shell.rs:2870-2873)
+  Apply centrally where the restamp happens (or in shell frame() for the restamped segment vecs),
+  using the clamped dt, so a stall cannot produce a >2.5x bright flash (dt≤0.25 → factor ≤15;
+  acceptable since it is one frame of a "held picture" that decays immediately — if visually
+  objectionable, clamp the deposit factor separately to ≤4, decided at implementation with eyes on).
+- age_weight (dsp/lib.rs:398-413): re-derive the per-chunk grading keep each frame as
+  `glow_keep(p).powf(dt/REF_DT)` so intra-chunk grading matches buffer decay (second-order polish;
+  may land in a follow-up commit).
+- dsp `frame_glow_keep=0.82` (dsp/lib.rs:135,204): intra-frame per-wave brightness fade, NOT
+  buffer-time decay. Stays per-frame, out of scope, annotated in code as deliberately excluded
+  from law 8. dsp goldens unchanged.
+
+From `decay-other-perframe-consumers` (adopted):
+
+- **FADE_OUT_FRAMES=90 → wall-clock deadline** (shell.rs:34,:1670,:2371,:2712-2714): replace the
+  frame counter with `fade_out_until: Option<Instant>` set to now + FADE_OUT_SECONDS (1.5 s,
+  = 90/60, preserving today's 60 fps wall time). The render loop stays awake until the deadline
+  passes AND planes are zero. begin_visitor's 240 fps frame math (shell.rs:1670) converts to
+  seconds the same way.
+- Feed AGC 0.92 (feed.rs:28) and shell auto-gain 0.999/0.05 (shell.rs:2282-2288): control-loop
+  smoothing, deliberately per-frame, NOT part of this migration. Optional later polish.
+- chrome.rs ThemeXfade, cycle_song_fade: already Instant-based, no change.
+
+## API surface (single source of truth, law 9)
+
+In phosphor-beam/src/lib.rs:
+```rust
+pub const REF_DT: f32 = 1.0 / 60.0;
+pub const FLASH_KEEP: f32 = 0.50;        // existing, unchanged
+pub const ENERGY_FLOOR: f32 = 0.0004;    // existing, unchanged
+pub fn glow_keep(persistence: f32) -> f32;  // existing, unchanged
+pub struct DecayStep { pub flash_keep: f32, pub glow_keep: f32, pub floor: [f32; 2] }
+pub fn decay_step(dt: f32, persistence: f32) -> DecayStep;  // clamps dt, short-circuits dt==REF_DT
+```
+Both renderers consume ONLY DecayStep. `advance(&mut self, segments, dt: f32)` on CpuRenderer
+(render-cpu lib.rs:105) and GpuRenderer (render-gpu lib.rs:514); FrameSink::advance (render.rs:48-53)
+gains dt and passes through. settings.persistence keeps its type, range, default, ctl key, and UI
+slider unchanged; no migration.
+
+## Implementation order (for the repair node)
+
+1. phosphor-beam: REF_DT, DecayStep, decay_step (clamp + short-circuit + geometric floors) + tests T2/T3/T4.
+2. render-cpu: advance(segments, dt) consuming DecayStep; keep `render()` REF_DT wrapper; tests T1/T5.
+3. render-gpu: advance(dt), upload keep+floor vec2s into DecayUniforms `_pad`, replace wgsl 0.0004
+   literal with uniform (shaders.wgsl:28).
+4. shell.rs: `last_advance_enqueue` sim clock, RasterJob.dt + submit folding + worker carry_dt,
+   GPU-path anchor, FADE_OUT_FRAMES → fade_out_until deadline, visitor seconds math.
+5. Restamp dt-normalization: compose preview, waveform/spectrum/ring/helix/tunnel, visitor
+   segments (`intensity *= dt/REF_DT` with the clamped dt).
+6. exports.rs: media-time dt = samples/rate incl. partial final chunk + test T6; render.rs
+   passes REF_DT (full chunks only; decide drop-vs-render for the trailing partial frame per
+   Ruling 5); bench.rs passes REF_DT explicitly.
+7. age_weight dt-correction (optional polish commit).
+8. Golden check: with the bit-exact short-circuit NO goldens should change except final-partial-
+   chunk export frames; if any other checksum moves, that is a bug in the implementation, not a
+   re-baseline. Commit note per law 5 regardless: "physics parameterized by dt, REF_DT=1/60
+   bit-exact to previous per-frame behavior".
+
+## Acceptance tests (final, updated to these rulings)
+
+- **T1 cross-FPS invariance**: fresh CpuRenderer, one impulse deposit, advance to t=0.5 s in steps
+  of 1/30, 1/60, 1/144, 1/240; each rate's plane energy at the first frame boundary ≥ 50 ms
+  matches the analytic `E0·keep_total − floor_total` within rel 0.5% + abs 1e-6.
+- **T2 stall equivalence**: one 0.25 s step vs 15 steps of 1/60 from the same seeded plane:
+  max abs per-pixel diff ≤ 1e-5 (geometric closed form is the exact sub-step limit).
+- **T3 clamp**: dt=10 s bitwise-equals dt=0.25 s; dt=-1 and dt=0 are exact no-ops
+  (keep=1, floor=0).
+- **T4 bit-exact anchor**: `decay_step(REF_DT, p).glow_keep == glow_keep(p)` (exact ==) for
+  p ∈ {0,0.25,0.5,0.7,0.9,1.0}; `.flash_keep == FLASH_KEEP`; both floors `== ENERGY_FLOOR`.
+  Plus monotonicity: keep(1/165) > keep(1/60) > keep(1/30) per plane.
+- **T5 live/offline parity**: same segment stream + same dt sequence via exports offline_pipeline
+  and via direct advance: frames identical (max abs diff 0). CPU-vs-GPU decay parity at varied
+  dt ∈ {1/165, 1/60, 1/30, 0.25} via existing cross_snapshot harness tolerance.
+- **T6 partial final chunk (exports.rs)**: input with sample count not a multiple of rate/60:
+  the exports.rs chunk→dt computation gives last-frame dt = remaining samples/rate (unit-test
+  it), and a full-multiple input is byte-identical to the pre-migration output. render.rs is
+  covered by this test ONLY if the implementer chooses (Ruling 5) to start rendering the
+  trailing partial frame; if it keeps dropping it, assert instead that render.rs's frame count
+  equals floor(samples / (rate/60·2)) and every rendered frame uses REF_DT.
+- **T7 restamp invariance**: restamped mode (waveform) steady-state plane energy after 1 s at
+  1/30 vs 1/144 stepping agrees within rel 2% (deposit dt-normalization × dt-decay cancel).
+- **T8 existing suites green unchanged**: keep_laws_match_v3, render-cpu inline tests, bench
+  checksums, timing.rs, cross_snapshot.rs — zero expected-value edits.
