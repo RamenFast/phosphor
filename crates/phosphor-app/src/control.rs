@@ -21,9 +21,10 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::mpris::MprisCommand;
+use crate::protocol::{CtlRequest, TargetId, hello_event};
 
 /// A verb the shell must apply. Transport verbs reuse the MPRIS command
 /// path (one code path for every external controller); the rest map to
@@ -170,7 +171,7 @@ impl Drop for ControlHandle {
 }
 
 /// One parsed wire request.
-enum Op {
+pub(crate) enum Op {
     Status,
     Tap,
     Ctl(ControlVerb),
@@ -183,8 +184,7 @@ struct SocketChoice {
     remove_existing: bool,
 }
 
-fn socket_target(dir: &Path, ctl_exists: bool, ctl_alive: bool,
-                 pid: u32) -> SocketChoice {
+fn socket_target(dir: &Path, ctl_exists: bool, ctl_alive: bool, pid: u32) -> SocketChoice {
     if ctl_exists && ctl_alive {
         // another instance owns ctl.sock — take a per-pid slot
         SocketChoice {
@@ -208,8 +208,7 @@ fn is_socket_alive(path: &Path) -> bool {
 /// `$XDG_RUNTIME_DIR/phosphor`, else `/tmp/phosphor-$UID`.
 fn control_dir() -> PathBuf {
     match std::env::var_os("XDG_RUNTIME_DIR") {
-        Some(base) if !base.is_empty() =>
-            PathBuf::from(base).join("phosphor"),
+        Some(base) if !base.is_empty() => PathBuf::from(base).join("phosphor"),
         _ => {
             // /proc/self is owned by our uid — no libc, no subprocess
             let uid = std::fs::metadata("/proc/self")
@@ -223,7 +222,7 @@ fn control_dir() -> PathBuf {
 /// Parse one request line. `Ok(op)` needs handling; `Err(value)` is a
 /// ready-to-write error reply the shell never has to see (malformed
 /// JSON, unknown op/verb).
-fn parse_request(line: &str) -> Result<Op, Value> {
+pub(crate) fn parse_request(line: &str) -> Result<Op, Value> {
     let value: Value = serde_json::from_str(line.trim()).map_err(|e| {
         json!({
             "status": "error",
@@ -236,10 +235,13 @@ fn parse_request(line: &str) -> Result<Op, Value> {
         "status" => Ok(Op::Status),
         "tap" => Ok(Op::Tap),
         "ctl" => {
-            let verb = value.get("verb").and_then(Value::as_str)
-                .unwrap_or("");
+            let verb = value.get("verb").and_then(Value::as_str).unwrap_or("");
             let args = value.get("args").cloned().unwrap_or(json!({}));
-            parse_verb(verb, &args).map(Op::Ctl)
+            // ONE parser for both halves (protocol.rs): the CLI builds
+            // a CtlRequest, we parse the same type back — numeric
+            // target ids round-trip by construction (BUGLOG #16).
+            let request = CtlRequest::from_wire_args(verb, &args).map_err(|e| e.to_value())?;
+            Ok(Op::Ctl(control_verb_of(request)))
         }
         other => Err(json!({
             "status": "error",
@@ -249,87 +251,38 @@ fn parse_request(line: &str) -> Result<Op, Value> {
     }
 }
 
-fn parse_verb(verb: &str, args: &Value) -> Result<ControlVerb, Value> {
-    let str_arg = |key: &str| -> Option<String> {
-        args.get(key).and_then(Value::as_str).map(str::to_string)
-    };
-    let f64_arg = |key: &str| -> Option<f64> {
-        args.get(key).and_then(Value::as_f64)
-    };
-    let bool_arg = |key: &str| -> Option<bool> {
-        args.get(key).and_then(Value::as_bool)
-    };
-    let verb = match verb {
-        "play" => match str_arg("path") {
-            Some(path) => ControlVerb::Transport(MprisCommand::OpenUri(path)),
-            None => ControlVerb::Transport(MprisCommand::Play),
-        },
-        "pause" => ControlVerb::Transport(MprisCommand::Pause),
-        "toggle" => ControlVerb::Transport(MprisCommand::PlayPause),
-        "stop" => ControlVerb::Transport(MprisCommand::Stop),
-        "next" => ControlVerb::Transport(MprisCommand::Next),
-        "previous" => ControlVerb::Transport(MprisCommand::Previous),
-        "seek" => {
-            let seconds = f64_arg("seconds").ok_or_else(|| json!({
-                "status": "error",
-                "error": "seek needs a numeric 'seconds' (relative)",
-                "fix": "phosphor ctl seek --seconds -5",
-            }))?;
-            ControlVerb::Transport(
-                MprisCommand::SeekRelative((seconds * 1e6) as i64))
+/// Map the shared typed request onto the shell's action verb. Numeric
+/// target ids become their decimal string — TargetPicked and the mix:
+/// prefix logic downstream consume strings.
+fn control_verb_of(request: CtlRequest) -> ControlVerb {
+    match request {
+        CtlRequest::Play { path: Some(path) } => {
+            ControlVerb::Transport(MprisCommand::OpenUri(path))
         }
-        "volume" => {
-            let value = f64_arg("value").ok_or_else(|| json!({
-                "status": "error",
-                "error": "volume needs a numeric 'value' in 0..1",
-                "fix": "phosphor ctl volume --value 0.8",
-            }))?;
-            ControlVerb::Transport(
-                MprisCommand::SetVolume(value.clamp(0.0, 1.0)))
+        CtlRequest::Play { path: None } => ControlVerb::Transport(MprisCommand::Play),
+        CtlRequest::Pause => ControlVerb::Transport(MprisCommand::Pause),
+        CtlRequest::Toggle => ControlVerb::Transport(MprisCommand::PlayPause),
+        CtlRequest::Stop => ControlVerb::Transport(MprisCommand::Stop),
+        CtlRequest::Next => ControlVerb::Transport(MprisCommand::Next),
+        CtlRequest::Previous => ControlVerb::Transport(MprisCommand::Previous),
+        CtlRequest::Seek { seconds } => {
+            ControlVerb::Transport(MprisCommand::SeekRelative((seconds * 1e6) as i64))
         }
-        "mode" => ControlVerb::Mode(str_arg("name").ok_or_else(|| json!({
-            "status": "error",
-            "error": "mode needs a 'name'",
-            "fix": "phosphor ctl mode --name xy",
-        }))?),
-        "theme" => ControlVerb::Theme(str_arg("name").ok_or_else(|| json!({
-            "status": "error",
-            "error": "theme needs a 'name'",
-            "fix": "phosphor ctl theme --name blossom",
-        }))?),
-        "ui" => ControlVerb::UiStyle(str_arg("name").ok_or_else(|| json!({
-            "status": "error",
-            "error": "ui needs a 'name'",
-            "fix": "phosphor ctl ui --name dark",
-        }))?),
-        "capture" => ControlVerb::Capture(bool_arg("on").ok_or_else(|| {
-            json!({
-                "status": "error",
-                "error": "capture needs a boolean 'on'",
-                "fix": "phosphor ctl capture --on true",
-            })
-        })?),
-        "target" => ControlVerb::Target(str_arg("id").ok_or_else(|| json!({
-            "status": "error",
-            "error": "target needs an 'id'",
-            "fix": "phosphor ctl target --id monitor:0 (see: phosphor status)",
-        }))?),
-        "snapshot" => ControlVerb::Snapshot,
-        "clip" => ControlVerb::Clip,
-        "raise" => ControlVerb::Raise,
-        "open" => ControlVerb::Open(str_arg("path").ok_or_else(|| json!({
-            "status": "error",
-            "error": "open needs a 'path'",
-            "fix": "phosphor ctl open --path /music/song.flac",
-        }))?),
-        "quit" => ControlVerb::Quit,
-        other => return Err(json!({
-            "status": "error",
-            "error": format!("unknown verb '{other}'"),
-            "fix": "run: phosphor schema",
-        })),
-    };
-    Ok(verb)
+        CtlRequest::Volume { value } => ControlVerb::Transport(MprisCommand::SetVolume(value)),
+        CtlRequest::Mode { name } => ControlVerb::Mode(name),
+        CtlRequest::Theme { name } => ControlVerb::Theme(name),
+        CtlRequest::Ui { name } => ControlVerb::UiStyle(name),
+        CtlRequest::Capture { on } => ControlVerb::Capture(on),
+        CtlRequest::Target { id } => ControlVerb::Target(match id {
+            TargetId::Node(n) => n.to_string(),
+            TargetId::Name(s) => s,
+        }),
+        CtlRequest::Snapshot => ControlVerb::Snapshot,
+        CtlRequest::Clip => ControlVerb::Clip,
+        CtlRequest::Raise => ControlVerb::Raise,
+        CtlRequest::Open { path } => ControlVerb::Open(path),
+        CtlRequest::Quit => ControlVerb::Quit,
+    }
 }
 
 /// Geometry of a frame's segments in trace-pixel coords: bounding box
@@ -345,7 +298,9 @@ struct FrameGeometry {
 fn frame_geometry(segments: &[[f32; 5]], max_poly: usize) -> FrameGeometry {
     if segments.is_empty() {
         return FrameGeometry {
-            bbox: None, centroid: None, polyline: Vec::new(),
+            bbox: None,
+            centroid: None,
+            polyline: Vec::new(),
         };
     }
     let mut min_x = f32::INFINITY;
@@ -376,15 +331,22 @@ fn frame_geometry(segments: &[[f32; 5]], max_poly: usize) -> FrameGeometry {
         .collect();
 
     FrameGeometry {
-        bbox: Some(bbox), centroid: Some(centroid), polyline,
+        bbox: Some(bbox),
+        centroid: Some(centroid),
+        polyline,
     }
 }
 
 /// Build the `frame` tap value the shell broadcasts. Coords rounded to
 /// one decimal to keep the NDJSON lines small.
 pub(crate) fn build_frame_event(
-    segments: &[[f32; 5]], mode: &str, peak: f32,
-    trace_w: f32, trace_h: f32, ts_ms: u128) -> Value {
+    segments: &[[f32; 5]],
+    mode: &str,
+    peak: f32,
+    trace_w: f32,
+    trace_h: f32,
+    ts_ms: u128,
+) -> Value {
     let round1 = |v: f32| ((v * 10.0).round() / 10.0) as f64;
     let geometry = frame_geometry(segments, 64);
     json!({
@@ -412,8 +374,7 @@ fn now_ms() -> u128 {
 /// Bind the control socket and start the accept loop. `None` (with a
 /// note on stderr) when the socket can't be bound — headless / locked
 /// runs keep working without a control surface.
-pub(crate) fn spawn(proxy: winit::event_loop::EventLoopProxy<()>)
-    -> Option<ControlHandle> {
+pub(crate) fn spawn(proxy: winit::event_loop::EventLoopProxy<()>) -> Option<ControlHandle> {
     let dir = control_dir();
     if let Err(error) = std::fs::DirBuilder::new()
         .recursive(true)
@@ -431,9 +392,7 @@ pub(crate) fn spawn(proxy: winit::event_loop::EventLoopProxy<()>)
             let path = entry.path();
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.starts_with("ctl-") && name.ends_with(".sock")
-                && !is_socket_alive(&path)
-            {
+            if name.starts_with("ctl-") && name.ends_with(".sock") && !is_socket_alive(&path) {
                 let _ = std::fs::remove_file(&path);
             }
         }
@@ -442,8 +401,7 @@ pub(crate) fn spawn(proxy: winit::event_loop::EventLoopProxy<()>)
     let ctl_path = dir.join("ctl.sock");
     let ctl_exists = ctl_path.exists();
     let ctl_alive = ctl_exists && is_socket_alive(&ctl_path);
-    let choice = socket_target(&dir, ctl_exists, ctl_alive,
-                               std::process::id());
+    let choice = socket_target(&dir, ctl_exists, ctl_alive, std::process::id());
     if choice.remove_existing {
         let _ = std::fs::remove_file(dir.join("ctl.sock"));
     }
@@ -451,8 +409,10 @@ pub(crate) fn spawn(proxy: winit::event_loop::EventLoopProxy<()>)
     let listener = match UnixListener::bind(&choice.path) {
         Ok(listener) => listener,
         Err(error) => {
-            eprintln!("phosphor: control socket {}: {error}",
-                      choice.path.display());
+            eprintln!(
+                "phosphor: control socket {}: {error}",
+                choice.path.display()
+            );
             return None;
         }
     };
@@ -464,6 +424,7 @@ pub(crate) fn spawn(proxy: winit::event_loop::EventLoopProxy<()>)
     let (request_sender, request_receiver) = mpsc::channel();
 
     let shared_for_accept = shared.clone();
+    let socket_for_accept: Arc<str> = Arc::from(choice.path.to_string_lossy().as_ref());
     std::thread::Builder::new()
         .name("phosphor-control".into())
         .spawn(move || {
@@ -472,8 +433,11 @@ pub(crate) fn spawn(proxy: winit::event_loop::EventLoopProxy<()>)
                 let shared = shared_for_accept.clone();
                 let requests = request_sender.clone();
                 let proxy = proxy.clone();
+                let socket = socket_for_accept.clone();
                 std::thread::spawn(move || {
-                    handle_connection(stream, shared, requests, proxy);
+                    handle_connection(stream, shared, requests, &socket, move || {
+                        let _ = proxy.send_event(());
+                    });
                 });
             }
         })
@@ -486,11 +450,12 @@ pub(crate) fn spawn(proxy: winit::event_loop::EventLoopProxy<()>)
     })
 }
 
-fn handle_connection(
+pub(crate) fn handle_connection(
     stream: UnixStream,
     shared: Arc<ControlShared>,
     requests: mpsc::Sender<ControlRequest>,
-    proxy: winit::event_loop::EventLoopProxy<()>,
+    socket_path: &str,
+    wake: impl Fn(),
 ) {
     let mut reader = BufReader::new(match stream.try_clone() {
         Ok(clone) => clone,
@@ -513,26 +478,30 @@ fn handle_connection(
     match op {
         Op::Status => {
             let snapshot = shared.status.lock().unwrap().clone();
-            let value = serde_json::to_value(&snapshot)
-                .unwrap_or_else(|_| json!({"running": true}));
+            let value =
+                serde_json::to_value(&snapshot).unwrap_or_else(|_| json!({"running": true}));
             write_line(&mut writer, &value);
         }
         Op::Ctl(verb) => {
             let (reply_sender, reply_receiver) = mpsc::channel();
-            let request = ControlRequest { verb, reply: reply_sender };
+            let request = ControlRequest {
+                verb,
+                reply: reply_sender,
+            };
             if requests.send(request).is_err() {
-                write_line(&mut writer, &json!({
-                    "status": "error",
-                    "error": "shell is not accepting commands",
-                    "fix": "check that the phosphor window is still running",
-                }));
+                write_line(
+                    &mut writer,
+                    &json!({
+                        "status": "error",
+                        "error": "shell is not accepting commands",
+                        "fix": "check that the phosphor window is still running",
+                    }),
+                );
                 return;
             }
             // wake the idle loop so it drains the request this tick
-            let _ = proxy.send_event(());
-            let reply = match reply_receiver
-                .recv_timeout(Duration::from_secs(10))
-            {
+            wake();
+            let reply = match reply_receiver.recv_timeout(Duration::from_secs(10)) {
                 Ok(value) => value,
                 Err(_) => json!({
                     "status": "error",
@@ -543,6 +512,12 @@ fn handle_connection(
             write_line(&mut writer, &reply);
         }
         Op::Tap => {
+            // server-emitted handshake: proves WHICH instance answered
+            // (protocol version, app version, pid, socket path)
+            let hello = hello_event(std::process::id(), socket_path);
+            if !write_line(&mut writer, &hello) {
+                return;
+            }
             let (tap_sender, tap_receiver) = mpsc::channel();
             shared.taps.lock().unwrap().push(tap_sender);
             loop {
@@ -590,28 +565,42 @@ mod tests {
 
     #[test]
     fn parses_status_and_tap() {
-        assert!(matches!(parse_request(r#"{"op":"status"}"#), Ok(Op::Status)));
+        assert!(matches!(
+            parse_request(r#"{"op":"status"}"#),
+            Ok(Op::Status)
+        ));
         assert!(matches!(parse_request(r#"{"op":"tap"}"#), Ok(Op::Tap)));
     }
 
     #[test]
     fn parses_every_transport_verb() {
-        assert!(matches!(verb_of(r#"{"op":"ctl","verb":"pause"}"#),
-            ControlVerb::Transport(MprisCommand::Pause)));
-        assert!(matches!(verb_of(r#"{"op":"ctl","verb":"toggle"}"#),
-            ControlVerb::Transport(MprisCommand::PlayPause)));
-        assert!(matches!(verb_of(r#"{"op":"ctl","verb":"stop"}"#),
-            ControlVerb::Transport(MprisCommand::Stop)));
-        assert!(matches!(verb_of(r#"{"op":"ctl","verb":"next"}"#),
-            ControlVerb::Transport(MprisCommand::Next)));
-        assert!(matches!(verb_of(r#"{"op":"ctl","verb":"previous"}"#),
-            ControlVerb::Transport(MprisCommand::Previous)));
+        assert!(matches!(
+            verb_of(r#"{"op":"ctl","verb":"pause"}"#),
+            ControlVerb::Transport(MprisCommand::Pause)
+        ));
+        assert!(matches!(
+            verb_of(r#"{"op":"ctl","verb":"toggle"}"#),
+            ControlVerb::Transport(MprisCommand::PlayPause)
+        ));
+        assert!(matches!(
+            verb_of(r#"{"op":"ctl","verb":"stop"}"#),
+            ControlVerb::Transport(MprisCommand::Stop)
+        ));
+        assert!(matches!(
+            verb_of(r#"{"op":"ctl","verb":"next"}"#),
+            ControlVerb::Transport(MprisCommand::Next)
+        ));
+        assert!(matches!(
+            verb_of(r#"{"op":"ctl","verb":"previous"}"#),
+            ControlVerb::Transport(MprisCommand::Previous)
+        ));
         // play with no path resumes; with a path opens it
-        assert!(matches!(verb_of(r#"{"op":"ctl","verb":"play"}"#),
-            ControlVerb::Transport(MprisCommand::Play)));
+        assert!(matches!(
+            verb_of(r#"{"op":"ctl","verb":"play"}"#),
+            ControlVerb::Transport(MprisCommand::Play)
+        ));
         match verb_of(r#"{"op":"ctl","verb":"play","args":{"path":"/a.flac"}}"#) {
-            ControlVerb::Transport(MprisCommand::OpenUri(p)) =>
-                assert_eq!(p, "/a.flac"),
+            ControlVerb::Transport(MprisCommand::OpenUri(p)) => assert_eq!(p, "/a.flac"),
             _ => panic!("play path should OpenUri"),
         }
     }
@@ -619,13 +608,13 @@ mod tests {
     #[test]
     fn parses_seek_and_volume_args() {
         match verb_of(r#"{"op":"ctl","verb":"seek","args":{"seconds":-5.0}}"#) {
-            ControlVerb::Transport(MprisCommand::SeekRelative(us)) =>
-                assert_eq!(us, -5_000_000),
+            ControlVerb::Transport(MprisCommand::SeekRelative(us)) => assert_eq!(us, -5_000_000),
             _ => panic!("seek"),
         }
         match verb_of(r#"{"op":"ctl","verb":"volume","args":{"value":1.7}}"#) {
-            ControlVerb::Transport(MprisCommand::SetVolume(v)) =>
-                assert!((v - 1.0).abs() < 1e-9, "clamped to 1.0"),
+            ControlVerb::Transport(MprisCommand::SetVolume(v)) => {
+                assert!((v - 1.0).abs() < 1e-9, "clamped to 1.0")
+            }
             _ => panic!("volume"),
         }
     }
@@ -652,28 +641,52 @@ mod tests {
             ControlVerb::Target(id) => assert_eq!(id, "monitor:0"),
             _ => panic!("target"),
         }
-        assert!(matches!(verb_of(r#"{"op":"ctl","verb":"snapshot"}"#),
-            ControlVerb::Snapshot));
-        assert!(matches!(verb_of(r#"{"op":"ctl","verb":"clip"}"#),
-            ControlVerb::Clip));
-        assert!(matches!(verb_of(r#"{"op":"ctl","verb":"quit"}"#),
-            ControlVerb::Quit));
-        assert!(matches!(verb_of(r#"{"op":"ctl","verb":"raise"}"#),
-            ControlVerb::Raise));
+        // numeric id — what the CLI actually sends for `target 42`
+        // (BUGLOG #16: the server used to reject it)
+        match verb_of(r#"{"op":"ctl","verb":"target","args":{"id":42}}"#) {
+            ControlVerb::Target(id) => assert_eq!(id, "42"),
+            _ => panic!("numeric target"),
+        }
+        assert!(matches!(
+            verb_of(r#"{"op":"ctl","verb":"snapshot"}"#),
+            ControlVerb::Snapshot
+        ));
+        assert!(matches!(
+            verb_of(r#"{"op":"ctl","verb":"clip"}"#),
+            ControlVerb::Clip
+        ));
+        assert!(matches!(
+            verb_of(r#"{"op":"ctl","verb":"quit"}"#),
+            ControlVerb::Quit
+        ));
+        assert!(matches!(
+            verb_of(r#"{"op":"ctl","verb":"raise"}"#),
+            ControlVerb::Raise
+        ));
         match verb_of(r#"{"op":"ctl","verb":"open","args":{"path":"/b.flac"}}"#) {
             ControlVerb::Open(p) => assert_eq!(p, "/b.flac"),
             _ => panic!("open should carry its path"),
         }
-        // open without a path is a fix-bearing error
-        let err = parse_request(r#"{"op":"ctl","verb":"open"}"#).err().unwrap();
+        // open without a path is a fix-bearing error, and the fix is
+        // real positional syntax (no --flags — the CLI rejects those)
+        let err = parse_request(r#"{"op":"ctl","verb":"open"}"#)
+            .err()
+            .unwrap();
         assert_eq!(err["status"], "error");
-        assert!(err["fix"].as_str().unwrap().contains("--path"));
+        assert!(
+            err["fix"]
+                .as_str()
+                .unwrap()
+                .starts_with("phosphor ctl open ")
+        );
+        assert!(!err["fix"].as_str().unwrap().contains("--"));
     }
 
     #[test]
     fn unknown_verb_and_op_carry_a_fix() {
         let err = parse_request(r#"{"op":"ctl","verb":"boom"}"#)
-            .err().expect("unknown verb errors");
+            .err()
+            .expect("unknown verb errors");
         assert_eq!(err["status"], "error");
         assert!(err["error"].as_str().unwrap().contains("boom"));
         assert!(err["fix"].as_str().unwrap().contains("schema"));
@@ -691,7 +704,8 @@ mod tests {
             r#"{"op":"ctl","verb":"mode"}"#,
             r#"{"op":"ctl","verb":"capture"}"#,
         ] {
-            let err = parse_request(line).err()
+            let err = parse_request(line)
+                .err()
                 .unwrap_or_else(|| panic!("{line} should error"));
             assert_eq!(err["status"], "error");
             assert!(!err["fix"].as_str().unwrap().is_empty());
@@ -721,6 +735,89 @@ mod tests {
         let c = socket_target(dir, true, true, 42);
         assert_eq!(c.path, dir.join("ctl-42.sock"));
         assert!(!c.remove_existing);
+    }
+
+    /// Serve exactly one connection with a stub shell that answers
+    /// every ctl request `{"status":"ok","verb":<verb>}`. Returns the
+    /// bound path. The real `handle_connection` runs — real socket,
+    /// real framing.
+    fn serve_once(dir: &Path) -> PathBuf {
+        let path = dir.join("ctl.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        let socket = path.to_string_lossy().to_string();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let shared = Arc::new(ControlShared {
+                status: Mutex::new(StatusSnapshot::default()),
+                taps: Mutex::new(Vec::new()),
+            });
+            let (sender, receiver) = mpsc::channel::<ControlRequest>();
+            // stub shell: reply ok to whatever verb arrives
+            std::thread::spawn(move || {
+                while let Ok(request) = receiver.recv() {
+                    let _ = request.reply.send(json!({"status": "ok"}));
+                }
+            });
+            handle_connection(stream, shared, sender, &socket, || {});
+        });
+        path
+    }
+
+    /// The audit's 6-step round trip for EVERY verb: CLI text → typed
+    /// request → real socket framing → server parse → validate →
+    /// response. (Step 7, the schema check, lives in agent.rs where
+    /// the schema document is built.)
+    #[test]
+    fn every_verb_round_trips_over_a_real_socket() {
+        use crate::protocol::CtlRequest;
+        use std::io::{BufRead, BufReader, Write};
+
+        let dir = std::env::temp_dir().join(format!("phos-rt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (index, (verb, rest)) in CtlRequest::EXAMPLES.iter().enumerate() {
+            let sock_dir = dir.join(format!("{index}"));
+            std::fs::create_dir_all(&sock_dir).unwrap();
+            let path = serve_once(&sock_dir);
+            // 1. CLI text → 2. typed request → wire message
+            let request =
+                CtlRequest::from_cli(verb, rest).unwrap_or_else(|e| panic!("{verb}: {e}"));
+            let message = request.to_wire();
+            // 3. real socket framing
+            let mut stream = UnixStream::connect(&path).unwrap();
+            let mut line = message.to_string();
+            line.push('\n');
+            stream.write_all(line.as_bytes()).unwrap();
+            // 4-6. server parse + validate + response
+            let mut reply = String::new();
+            BufReader::new(stream).read_line(&mut reply).unwrap();
+            let reply: Value = serde_json::from_str(reply.trim())
+                .unwrap_or_else(|e| panic!("{verb}: bad reply: {e}"));
+            assert_eq!(
+                reply["status"],
+                json!("ok"),
+                "{verb} {rest:?} must round-trip; got {reply}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tap_first_line_is_the_server_hello() {
+        use std::io::{BufRead, BufReader, Write};
+        let dir = std::env::temp_dir().join(format!("phos-tap-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = serve_once(&dir);
+        let mut stream = UnixStream::connect(&path).unwrap();
+        stream.write_all(b"{\"op\":\"tap\"}\n").unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).unwrap();
+        let hello: Value = serde_json::from_str(line.trim()).unwrap();
+        assert_eq!(hello["event"], json!("hello"));
+        assert_eq!(hello["tool"], json!("phosphor"));
+        assert_eq!(hello["pid"], json!(std::process::id()));
+        assert!(hello["socket"].as_str().unwrap().ends_with("ctl.sock"));
+        assert!(hello["protocol"].as_i64().unwrap() >= 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

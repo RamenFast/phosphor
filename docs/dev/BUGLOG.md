@@ -463,6 +463,50 @@ icon.png md5-matches the repo (RGBA, four colors).
 
 ---
 
+## #16 — The ctl client and server spoke different dialects (fixed 2026-07-10)
+
+**Symptom:** `phosphor ctl target 42` failed with "target needs an
+'id'" even though the schema advertises `integer|string`; every server
+error's `fix` suggested flag syntax (`--seconds`, `--name`, `--path`)
+the positional CLI parser rejects; `phosphor schema` published types
+the runtime never emits (`duration_seconds` non-nullable vs
+`Option<f64>`, `vacuum.file` string|null vs bool, `capture.target_id`
+integer|string|null vs `Option<String>`); the tap `hello` was
+fabricated client-side before any server byte, and a dead server was
+indistinguishable from a clean stop (both exit 0, no end marker).
+
+**Root cause:** client (agent.rs `build_ctl_message`) and server
+(control.rs `parse_verb`) each kept a private copy of the verb
+grammar, and the schema was a third hand-authored `json!` literal —
+three representations of one fact, each free to drift. Server tests
+even asserted the wrong fix syntax (`--path`), locking the drift in.
+
+**The laws:** (1) ONE typed representation (`protocol.rs::CtlRequest`)
+that the CLI builds and the server parses — a verb round-trips by
+construction, and `CtlRequest::EXAMPLES` drives a 6-step round-trip
+test (CLI text → typed request → real socket framing → server parse →
+validate → response) for every verb plus a schema-coverage check.
+(2) Every server `fix` string is executable verbatim — a test re-parses
+each `phosphor ctl …` fix through the CLI parser. (3) The probe schema
+must validate a serialized `StatusSnapshot::default()` (nullability
+included) — the snapshot-vs-schema test kills silent type drift.
+(4) The tap handshake is SERVER-emitted (protocol version, app
+version, pid, socket path — it names who answered), and the client
+ends the stream with an `end` event carrying a reason; a server that
+vanished before any line is exit 4, a consumer hangup stays 0.
+(5) `--socket <path>` / `PHOSPHOR_CTL_SOCKET` pin one instance when
+several are up.
+
+**Receipt:** `cargo test -p phosphor-app` — 77 tests green, including
+`every_verb_round_trips_over_a_real_socket` (22 CLI examples over real
+UnixListener sockets), `tap_first_line_is_the_server_hello`,
+`every_wire_fix_is_an_executable_cli_command`,
+`default_status_snapshot_validates_against_the_probe_schema`, and
+`schema_ctl_verbs_match_the_shared_protocol_exactly`. The applet feed
+protocol (frozen v3) is untouched.
+
+---
+
 ## Standing laws (older repeat families — one line each, don't relearn)
 
 - **Focus trap:** egui 0.33 `wants_keyboard_input()` ==

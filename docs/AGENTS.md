@@ -14,8 +14,11 @@ the schema itself comes from `phosphor schema`.
 - Output auto-switches to JSON when stdout is a pipe; `--json` forces
   it on a TTY.
 - Streams (`tap`, `feed`) are NDJSON; the first `tap` line is a
-  `hello` event, and `tick` heartbeats prove liveness while the scope
-  is quiet.
+  server-emitted `hello` event (protocol version, app version, pid,
+  socket path — it names WHICH instance answered), `tick` heartbeats
+  prove liveness while the scope is quiet, and the last line is an
+  `end` event with a reason (`server-eof` after a clean server exit is
+  exit 0; a server that vanished before saying anything is exit 4).
 
 ## Read state
 
@@ -43,6 +46,7 @@ phosphor ctl theme "P7 Green"     # beam phosphor color
 phosphor ctl ui amber             # chrome look (12 ids)
 phosphor ctl target "device:alsa_output.pci-0000_0b_00.4.analog-stereo.monitor"
 phosphor ctl target "app:Spotify" # one app, by name key
+phosphor ctl target 42            # or a PipeWire node id (integer)
 phosphor ctl target "mix:app:one+app:two"   # fold several apps
 phosphor ctl capture off
 phosphor ctl open /music/song.flac          # load + focus
@@ -116,7 +120,10 @@ phosphor bench                      # perf gates, JSON
   Scripted runs that *need* a second instance set
   `PHOSPHOR_NO_SINGLE_INSTANCE=1` or use `--background`.
 - The control socket lives at `$XDG_RUNTIME_DIR/phosphor/ctl.sock`;
-  clients fall back to `/tmp/phosphor-$UID`. Isolating a test
+  clients fall back to `/tmp/phosphor-$UID`. With several instances
+  up, pin the one you mean with `--socket <path>` (probe/ctl/tap) or
+  `PHOSPHOR_CTL_SOCKET` — the tap `hello` echoes the pid and socket so
+  you can verify who answered. Isolating a test
   instance = giving it its own `XDG_RUNTIME_DIR` — but then hand the
   process `PIPEWIRE_RUNTIME_DIR=/run/user/$UID` (and `PULSE_SERVER=`
   `unix:/run/user/$UID/pulse/native`) or it goes deaf: PipeWire finds

@@ -17,7 +17,9 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
+
+use crate::protocol::{CtlRequest, end_event};
 
 const TOOL: &str = "phosphor";
 
@@ -111,6 +113,17 @@ fn socket_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// An explicit socket override: `--socket <path>` on the CLI, else the
+/// `PHOSPHOR_CTL_SOCKET` environment variable. `None` = auto-discover.
+fn socket_override(args: &[String]) -> Option<PathBuf> {
+    if let Some(index) = args.iter().position(|a| a == "--socket")
+        && let Some(path) = args.get(index + 1)
+    {
+        return Some(PathBuf::from(path));
+    }
+    std::env::var_os("PHOSPHOR_CTL_SOCKET").map(PathBuf::from)
+}
+
 /// Connect order: `ctl.sock` first, then any `ctl-*.sock` in the dir,
 /// newest mtime first — across every candidate dir.
 fn socket_candidates() -> Vec<PathBuf> {
@@ -142,14 +155,23 @@ fn socket_candidates() -> Vec<PathBuf> {
 }
 
 /// First socket that accepts a connection, or an error (used by callers
-/// to decide between "not running" (ok/2) and a runtime failure).
-fn connect() -> Result<UnixStream, String> {
+/// to decide between "not running" (ok/2) and a runtime failure). An
+/// override (`--socket` / `PHOSPHOR_CTL_SOCKET`) pins ONE socket — with
+/// several instances up, auto-discovery is otherwise implicit.
+fn connect_to(override_path: Option<PathBuf>) -> Result<UnixStream, String> {
+    if let Some(path) = override_path {
+        return UnixStream::connect(&path).map_err(|e| format!("socket {}: {e}", path.display()));
+    }
     for path in socket_candidates() {
         if let Ok(stream) = UnixStream::connect(&path) {
             return Ok(stream);
         }
     }
     Err("no control socket".into())
+}
+
+fn connect() -> Result<UnixStream, String> {
+    connect_to(None)
 }
 
 fn send_line(stream: &mut UnixStream, value: &Value) -> Result<(), String> {
@@ -159,9 +181,7 @@ fn send_line(stream: &mut UnixStream, value: &Value) -> Result<(), String> {
 }
 
 /// Send one request line, read exactly one reply line, parse it.
-fn request(stream: UnixStream, message: &Value, timeout: Duration)
-    -> Result<Value, String>
-{
+fn request(stream: UnixStream, message: &Value, timeout: Duration) -> Result<Value, String> {
     let mut stream = stream;
     let _ = stream.set_read_timeout(Some(timeout));
     send_line(&mut stream, message)?;
@@ -171,8 +191,7 @@ fn request(stream: UnixStream, message: &Value, timeout: Duration)
     if read == 0 {
         return Err("phosphor closed the connection without replying".into());
     }
-    serde_json::from_str(line.trim())
-        .map_err(|e| format!("unreadable reply from phosphor: {e}"))
+    serde_json::from_str(line.trim()).map_err(|e| format!("unreadable reply from phosphor: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -190,9 +209,7 @@ pub fn forward_to_running_instance(play_path: Option<&str>) -> Option<i32> {
         Duration::from_secs(3),
     );
     match raise {
-        Ok(reply)
-            if reply.get("status").and_then(Value::as_str) == Some("ok") =>
-        {
+        Ok(reply) if reply.get("status").and_then(Value::as_str) == Some("ok") => {
             if let Some(path) = play_path {
                 // canonicalize client-side: the running instance has a
                 // different cwd, so a relative path would miss
@@ -208,9 +225,7 @@ pub fn forward_to_running_instance(play_path: Option<&str>) -> Option<i32> {
                     );
                 }
             }
-            eprintln!(
-                "phosphor: already running — focused the existing window"
-            );
+            eprintln!("phosphor: already running — focused the existing window");
             Some(0)
         }
         _ => {
@@ -252,7 +267,7 @@ pub fn run_probe(args: &[String]) -> i32 {
         return 2;
     }
 
-    let stream = match connect() {
+    let stream = match connect_to(socket_override(args)) {
         Ok(stream) => stream,
         Err(_) => {
             // A status tool saying "not running" is a valid answer, not
@@ -355,7 +370,7 @@ fn clock(seconds: f64) -> String {
 // ---------------------------------------------------------------------------
 
 const CTL_USAGE: &str = "\
-usage: phosphor ctl <verb> [value] [--json]
+usage: phosphor ctl <verb> [value] [--json] [--socket <path>]
   play [path]        pause | toggle | stop | next | previous
   seek <±seconds>    volume <0..1>
   mode <name>        theme <name>        ui <style>
@@ -364,81 +379,31 @@ usage: phosphor ctl <verb> [value] [--json]
   snapshot           clip                quit";
 
 /// Map a positional CLI verb + args to the frozen wire message
-/// `{"op":"ctl","verb":..,"args":{..}}`. Pure, so it is unit-tested for
-/// every verb. `Err` is a bad-arguments (exit 3) message.
+/// `{"op":"ctl","verb":..,"args":{..}}` via the SHARED typed request
+/// (protocol.rs) — the server parses the same type back, so what this
+/// builds the server accepts by construction (BUGLOG #16). `Err` is a
+/// bad-arguments (exit 3) message.
 fn build_ctl_message(verb: &str, rest: &[&str]) -> Result<Value, String> {
-    let args: Value = match verb {
-        "play" => match rest.first() {
-            Some(path) => json!({ "path": path }),
-            None => json!({}),
-        },
-        "pause" | "toggle" | "stop" | "next" | "previous" | "snapshot"
-        | "clip" | "raise" | "quit" => json!({}),
-        "open" => {
-            let path = rest
-                .first()
-                .ok_or("open needs a path, e.g. `open /music/song.flac`")?;
-            json!({ "path": path })
-        }
-        "seek" => {
-            let seconds = rest
-                .first()
-                .and_then(|s| s.parse::<f64>().ok())
-                .ok_or("seek needs a number of seconds, e.g. `seek -10`")?;
-            json!({ "seconds": seconds })
-        }
-        "volume" => {
-            let value = rest
-                .first()
-                .and_then(|s| s.parse::<f64>().ok())
-                .filter(|v| (0.0..=1.0).contains(v))
-                .ok_or("volume needs a value in 0..1, e.g. `volume 0.7`")?;
-            json!({ "value": value })
-        }
-        "mode" => {
-            let name = rest.first().ok_or("mode needs a name, e.g. `mode ring`")?;
-            json!({ "name": name })
-        }
-        "theme" => {
-            let name = rest
-                .first()
-                .ok_or("theme needs a name, e.g. `theme Amber`")?;
-            json!({ "name": name })
-        }
-        "ui" => {
-            let name = rest
-                .first()
-                .ok_or("ui needs a style, e.g. `ui chromacore`")?;
-            json!({ "name": name })
-        }
-        "capture" => {
-            let on = match rest.first().copied() {
-                Some("on") => true,
-                Some("off") => false,
-                _ => return Err("capture takes `on` or `off`".into()),
-            };
-            json!({ "on": on })
-        }
-        "target" => {
-            let id = rest.first().ok_or("target needs an id")?;
-            // Prefer an integer id (PipeWire node); fall back to a string.
-            match id.parse::<i64>() {
-                Ok(number) => json!({ "id": number }),
-                Err(_) => json!({ "id": id }),
-            }
-        }
-        other => {
-            return Err(format!("unknown verb '{other}'"));
-        }
-    };
-    Ok(json!({ "op": "ctl", "verb": verb, "args": args }))
+    CtlRequest::from_cli(verb, rest).map(|request| request.to_wire())
 }
 
 pub fn run_ctl(args: &[String]) -> i32 {
     let json = wants_json(args);
+    let socket = socket_override(args);
+    let mut skip_next = false;
     let positional: Vec<&str> = args
         .iter()
-        .filter(|a| a.as_str() != "--json")
+        .filter(|a| {
+            if skip_next {
+                skip_next = false;
+                return false;
+            }
+            if a.as_str() == "--socket" {
+                skip_next = true;
+                return false;
+            }
+            a.as_str() != "--json"
+        })
         .map(String::as_str)
         .collect();
 
@@ -461,20 +426,16 @@ pub fn run_ctl(args: &[String]) -> i32 {
         Err(problem) => {
             eprintln!("phosphor ctl: {problem}\n{CTL_USAGE}");
             if json {
-                emit_json(&error_envelope(
-                    &problem,
-                    "see `phosphor ctl` usage above",
-                ));
+                emit_json(&error_envelope(&problem, "see `phosphor ctl` usage above"));
             }
             return 3;
         }
     };
 
-    let stream = match connect() {
+    let stream = match connect_to(socket) {
         Ok(stream) => stream,
         Err(_) => {
-            let envelope =
-                error_envelope("phosphor is not running", "start the GUI: phosphor");
+            let envelope = error_envelope("phosphor is not running", "start the GUI: phosphor");
             if json {
                 emit_json(&envelope);
             } else {
@@ -547,8 +508,7 @@ fn print_ctl_confirmation(verb: &str, rest: &[&str], reply: &Value) {
         return;
     }
     match verb {
-        "seek" | "volume" | "mode" | "theme" | "ui" | "capture" | "target"
-        | "play" | "open" => {
+        "seek" | "volume" | "mode" | "theme" | "ui" | "capture" | "target" | "play" | "open" => {
             if let Some(value) = rest.first() {
                 println!("{verb} → {value}");
             } else {
@@ -567,7 +527,7 @@ pub fn run_tap(args: &[String]) -> i32 {
     // Streams are JSON by nature; `--json` is accepted but changes nothing.
     let _ = wants_json(args);
 
-    let stream = match connect() {
+    let stream = match connect_to(socket_override(args)) {
         Ok(stream) => stream,
         Err(_) => {
             emit_json(&error_envelope(
@@ -587,34 +547,39 @@ pub fn run_tap(args: &[String]) -> i32 {
         return 4;
     }
 
-    // First line is ALWAYS the client-side hello event.
-    let hello = json!({
-        "event": "hello",
-        "tool": TOOL,
-        "version": version(),
-        "schema": "phosphor schema",
-    });
-    {
-        let mut out = std::io::stdout().lock();
-        if writeln!(out, "{hello}").is_err() {
-            return 0; // stdout already gone: clean exit
-        }
-    }
-
-    // Relay server lines verbatim until EOF or a broken stdout pipe.
+    // First line is the SERVER-emitted hello (protocol v1): it names
+    // which instance answered (pid, socket, versions). We relay it —
+    // and every later line — verbatim. When the stream ends we say WHY
+    // with a final `end` event: a vanished server exits 4, our own
+    // consumer hanging up (EPIPE) stays a clean 0.
+    let mut lines_seen: u64 = 0;
     let reader = BufReader::new(stream);
     for line in reader.lines() {
         let line = match line {
             Ok(line) => line,
-            Err(_) => break, // read error / EOF: clean stop
+            Err(_) => {
+                // read error: the server vanished mid-stream
+                emit_json_line(&end_event("read-error"));
+                return 4;
+            }
         };
         let mut out = std::io::stdout().lock();
         if writeln!(out, "{line}").is_err() {
             // EPIPE — the consumer closed. Clean exit, no unwrap.
             return 0;
         }
+        lines_seen += 1;
     }
-    0
+    // EOF from the server side: it quit (or never said hello at all).
+    emit_json_line(&end_event("server-eof"));
+    if lines_seen == 0 { 4 } else { 0 }
+}
+
+/// Best-effort single NDJSON line on stdout (stream events, not
+/// envelopes — an already-closed consumer is fine).
+fn emit_json_line(value: &Value) {
+    let mut out = std::io::stdout().lock();
+    let _ = writeln!(out, "{value}");
 }
 
 // ---------------------------------------------------------------------------
@@ -651,7 +616,7 @@ fn schema_document() -> Value {
         "ui_style": {"type": "string"},
         "capture": strict_object(json!({
             "on": {"type": "boolean"},
-            "target_id": {"type": ["integer", "string", "null"]},
+            "target_id": {"type": ["string", "null"]},
         })),
         "source": strict_object(json!({
             "kind": {"enum": ["capture", "mix", "player", "silent"]},
@@ -662,7 +627,7 @@ fn schema_document() -> Value {
             "title": {"type": ["string", "null"]},
             "artist": {"type": ["string", "null"]},
             "position_seconds": {"type": "number"},
-            "duration_seconds": {"type": "number"},
+            "duration_seconds": {"type": ["number", "null"]},
             "paused": {"type": "boolean"},
         })),
         "volume": {"type": "number"},
@@ -680,7 +645,7 @@ fn schema_document() -> Value {
             "fullscreen": {"type": "boolean"},
         })),
         "vacuum": strict_object(json!({
-            "file": {"type": ["string", "null"]},
+            "file": {"type": "boolean"},
             "app": {"type": ["string", "null"]},
         })),
         "quiet": strict_object(json!({
@@ -772,13 +737,19 @@ fn schema_document() -> Value {
                 "summary": "NDJSON stream of beam frames",
                 "events": {
                     "hello": {"tool": "string", "version": "string",
-                              "schema": "string", "note": "first line, client-emitted"},
+                              "protocol": "integer", "pid": "integer",
+                              "socket": "string", "schema": "string",
+                              "note": "first line, server-emitted — names \
+                                       the instance that answered"},
                     "frame": {"ts_ms": "integer", "mode": "string",
                               "segments": "integer", "bbox": "array|null",
                               "centroid": "array|null", "peak": "number",
                               "polyline": "array of [x,y]",
                               "trace_size": "[w,h]"},
                     "tick": {"ts_ms": "integer", "note": "idle heartbeat"},
+                    "end": {"reason": "server-eof|read-error",
+                            "note": "client-emitted last line; exit 4 when \
+                                     the server vanished before any line"},
                 },
             },
             "kit": {
@@ -860,8 +831,14 @@ mod tests {
         assert_eq!(build_ctl_message("toggle", &[]).unwrap()["args"], json!({}));
         assert_eq!(build_ctl_message("stop", &[]).unwrap()["args"], json!({}));
         assert_eq!(build_ctl_message("next", &[]).unwrap()["args"], json!({}));
-        assert_eq!(build_ctl_message("previous", &[]).unwrap()["args"], json!({}));
-        assert_eq!(build_ctl_message("snapshot", &[]).unwrap()["args"], json!({}));
+        assert_eq!(
+            build_ctl_message("previous", &[]).unwrap()["args"],
+            json!({})
+        );
+        assert_eq!(
+            build_ctl_message("snapshot", &[]).unwrap()["args"],
+            json!({})
+        );
         assert_eq!(build_ctl_message("clip", &[]).unwrap()["args"], json!({}));
         assert_eq!(build_ctl_message("quit", &[]).unwrap()["args"], json!({}));
 
@@ -950,5 +927,81 @@ mod tests {
             doc["verbs"]["kit"]["schema"],
             json!("docs/phoskit.schema.json")
         );
+    }
+
+    /// Step 7 of the round trip: every verb the shared protocol knows
+    /// is documented in the schema, and vice versa — the schema's verb
+    /// table can't drift from the wire again.
+    #[test]
+    fn schema_ctl_verbs_match_the_shared_protocol_exactly() {
+        let doc = schema_document();
+        let table = doc["verbs"]["ctl"]["verbs"].as_object().unwrap();
+        let mut protocol_verbs: Vec<&str> = CtlRequest::EXAMPLES.iter().map(|(v, _)| *v).collect();
+        protocol_verbs.sort_unstable();
+        protocol_verbs.dedup();
+        for verb in &protocol_verbs {
+            assert!(
+                table.contains_key(*verb),
+                "schema is missing ctl verb '{verb}'"
+            );
+        }
+        for verb in table.keys() {
+            assert!(
+                protocol_verbs.contains(&verb.as_str()),
+                "schema documents '{verb}' the protocol doesn't parse"
+            );
+        }
+        // and every CLI example builds a wire message (executability)
+        for (verb, rest) in CtlRequest::EXAMPLES {
+            build_ctl_message(verb, rest).unwrap_or_else(|e| panic!("{verb}: {e}"));
+        }
+    }
+
+    /// The probe schema and the server's StatusSnapshot are the same
+    /// fact: a default snapshot must validate against the published
+    /// property types (nullability included — duration_seconds,
+    /// vacuum.file and capture.target_id drifted once).
+    #[test]
+    fn default_status_snapshot_validates_against_the_probe_schema() {
+        fn check(value: &Value, schema: &Value, path: &str) {
+            if let Some(kinds) = schema.get("type") {
+                let kinds: Vec<String> = match kinds {
+                    Value::String(s) => vec![s.clone()],
+                    Value::Array(a) => a
+                        .iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect(),
+                    _ => vec![],
+                };
+                if !kinds.is_empty() {
+                    let actual = match value {
+                        Value::Null => "null",
+                        Value::Bool(_) => "boolean",
+                        Value::Number(n) if n.is_i64() || n.is_u64() => "integer",
+                        Value::Number(_) => "number",
+                        Value::String(_) => "string",
+                        Value::Array(_) => "array",
+                        Value::Object(_) => "object",
+                    };
+                    let fits = kinds
+                        .iter()
+                        .any(|k| k == actual || (k == "number" && actual == "integer"));
+                    assert!(fits, "{path}: runtime {actual}, schema {kinds:?}");
+                }
+            }
+            if let (Value::Object(fields), Some(properties)) =
+                (value, schema.get("properties").and_then(Value::as_object))
+            {
+                for (key, field) in fields {
+                    let sub = properties
+                        .get(key)
+                        .unwrap_or_else(|| panic!("{path}.{key}: not in the probe schema"));
+                    check(field, sub, &format!("{path}.{key}"));
+                }
+            }
+        }
+        let snapshot = serde_json::to_value(crate::control::StatusSnapshot::default()).unwrap();
+        let schema = schema_document()["outputs"]["probe"].clone();
+        check(&snapshot, &schema, "status");
     }
 }

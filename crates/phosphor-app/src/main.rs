@@ -20,21 +20,22 @@ use std::process::ExitCode;
 mod agent;
 mod bench;
 mod chrome;
-mod control;
-mod feed;
 mod compose;
+mod control;
 mod exports;
+mod feed;
 mod keyboard;
 mod kit;
 mod mpris;
 mod mpris_client;
 mod notify;
 mod player;
+mod protocol;
 mod raster_worker;
 mod render;
 mod shell;
-mod theme;
 mod signals;
+mod theme;
 
 const PENDING: &[&str] = &["studio"];
 
@@ -48,7 +49,8 @@ fn reexec_in_background(arguments: &[String]) -> i32 {
     if std::env::var_os("PHOSPHOR_BACKGROUND").is_some() {
         return -1; // already wrapped: fall through to the GUI
     }
-    let rest: Vec<&String> = arguments.iter()
+    let rest: Vec<&String> = arguments
+        .iter()
         .filter(|a| a.as_str() != "--background")
         .collect();
     let self_exe = match std::env::current_exe() {
@@ -68,8 +70,10 @@ fn reexec_in_background(arguments: &[String]) -> i32 {
         .exec();
     // exec only returns on failure
     eprintln!("phosphor --background: could not launch xvfb-run: {error}");
-    eprintln!("fix: install it (sudo apt install xvfb), or run phosphor \
-               on your display normally");
+    eprintln!(
+        "fix: install it (sudo apt install xvfb), or run phosphor \
+               on your display normally"
+    );
     2
 }
 
@@ -82,9 +86,11 @@ fn main() -> ExitCode {
         }
         // -1: we are inside the wrapped instance — run the GUI with
         // the flag stripped.
-        let rest: Vec<String> = arguments.iter()
+        let rest: Vec<String> = arguments
+            .iter()
             .filter(|a| a.as_str() != "--background")
-            .cloned().collect();
+            .cloned()
+            .collect();
         return ExitCode::from(shell::run(&rest) as u8);
     }
     let first = arguments.first().map(String::as_str);
@@ -100,8 +106,7 @@ fn main() -> ExitCode {
         Some("render") => render::run(&arguments[1..]),
         Some("--render") => {
             // v3 muscle memory: `phosphor --render in out.mp4 [--rate N]`
-            let rest: Vec<String> = arguments.iter().skip(1)
-                .cloned().collect();
+            let rest: Vec<String> = arguments.iter().skip(1).cloned().collect();
             render::run(&rest)
         }
         Some("bench") => bench::run(&arguments[1..]),
@@ -112,14 +117,18 @@ fn main() -> ExitCode {
         Some("kit") => kit::run(&arguments[1..]),
         Some("schema") => agent::run_schema(&arguments[1..]),
         Some("--screensaver") => {
-            eprintln!("phosphor --screensaver: not built yet (returns \
+            eprintln!(
+                "phosphor --screensaver: not built yet (returns \
                        after 4.0)\nfix: run `phosphor` normally, or \
-                       `phosphor --mini` for the tiny scope");
+                       `phosphor --mini` for the tiny scope"
+            );
             2
         }
         Some(name) if PENDING.contains(&name) => {
-            eprintln!("phosphor {name}: not built yet (returns after \
-                       4.0)\nfix: see the roadmap issues on GitHub");
+            eprintln!(
+                "phosphor {name}: not built yet (returns after \
+                       4.0)\nfix: see the roadmap issues on GitHub"
+            );
             2
         }
         // GUI is the default command
@@ -155,12 +164,14 @@ fn launch_gui(arguments: &[String]) -> i32 {
 
     // Scripted/receipt runs opt out of single-instance; so does the
     // wrapped --background GUI (its point is to coexist).
-    let scripted = arguments.iter().any(|a| {
-        a == "--fps-log" || a == "--exit-after" || a == "--visitor"
-    }) || std::env::var_os("PHOSPHOR_BACKGROUND").is_some()
+    let scripted = arguments
+        .iter()
+        .any(|a| a == "--fps-log" || a == "--exit-after" || a == "--visitor")
+        || std::env::var_os("PHOSPHOR_BACKGROUND").is_some()
         || std::env::var_os("PHOSPHOR_NO_SINGLE_INSTANCE").is_some();
     if !scripted {
-        let play_path = arguments.iter()
+        let play_path = arguments
+            .iter()
             .find(|a| !a.starts_with('-'))
             .map(String::as_str);
         if let Some(code) = agent::forward_to_running_instance(play_path) {
