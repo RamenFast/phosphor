@@ -99,8 +99,12 @@ After normalization, e.g. 5.1: row sum = 1 + 2c ≈ 2.414 → k ≈ 0.414, so
 FL contributes ≈ 0.414 and each −3 dB tap ≈ 0.293. Output cannot exceed ±1.0
 for full-scale correlated input.
 
-Note mono currently duplicates at unity (playback.rs:290-295), which is
-correct and matches row 1. Keep it.
+Note mono currently duplicates at unity (playback.rs:290-295), which
+matches row 1 of this design's table, but the ffmpeg offline paths use
+0.7071 per side (A.2), so the player and render/bench disagree by 3 dB on
+mono files (see A.6). Whether to keep 1.0 or adopt 0.7071 is an **open
+question** tied to the A.4 (a)/(b) decision; do not treat this convention
+as settled.
 
 ### 3.3 Layout detection order (player path)
 
@@ -333,6 +337,77 @@ unnormalized for float output.** So:
 Clamp-vs-wrap: forcing >FS content into the s16 conversion (a 1.5·FS f32
 stereo wav → `-f s16le`) yields a saturated plateau at ±32767/−32768 with
 no sign-flip wrap artifacts. **swresample clamps (saturates), never wraps.**
+
+### A.6 Downstream fate of >±1.0 f32 samples (va-gap-f32-overrange-downstream, 2026-07-10)
+
+Traced where the two f32le decode paths (bench.rs `decode_signal`, render.rs
+`spawn_decoder`) deliver samples, and what each consumer assumes about range.
+Both feed `Computer::compute` (`crates/phosphor-dsp/src/lib.rs:315-334`) —
+bench via `execute()` (bench.rs:199-203), render via the frame loop
+(render.rs:449-452). No stage between the ffmpeg pipe read and `compute`
+normalizes, clamps, or checks range.
+
+Per-mode behavior with >FS input (code read):
+
+- **xy / xy45 / xy_dots / swirl** (`modes/xy.rs:60-70`): position is
+  `center ± sample * gain * radius` — a 2.39 sample maps ~2.39× outside the
+  nominal scope circle, i.e. **off-screen** (measured x range
+  [−234, 1314] on a 1080-wide frame; see probe below). No NaN, no panic:
+  segment intensity is `min(1.0)`-capped (xy.rs:99), and the CPU
+  rasterizer culls/clips quads to the buffer
+  (`phosphor-render-cpu/src/raster.rs:39-53`) while the compositor clamps
+  each channel to [0,1] (`phosphor-render-cpu/src/lib.rs:227,233`); the GPU
+  shader clamps alpha too (`shaders.wgsl:208`). So the failure mode is
+  purely **visual**: the trace slams past the graticule and mostly leaves
+  the frame (looks like extreme over-gain), not blowout/NaN.
+- **waveform / ring / helix / tunnel** (`modes/waveform.rs:38-56` etc.):
+  amplitude scales `height * 0.21 * gain * sample`; a 2.39 sample overshoots
+  its lane and can cross the other channel's trace. Benign otherwise.
+  Trigger search (waveform.rs:18-30) only compares signs, unaffected.
+- **spectrum / spectrum_radial** (`modes/spectrum.rs:29-34`): level is
+  `((peak/norm).sqrt() * gain).min(1.0)` — hot input just pins bars at 1.0.
+- **kit chain** (`lib.rs:319-327`): stages process the raw over-range buffer;
+  no stage asserts [-1,1] (not re-audited per-op — see caveat).
+
+Empirical probes:
+
+1. Unit probe: fed one 60 fps chunk of `2.39·sin(440 Hz)` into
+   `Computer::compute` (mode xy, defaults). Result: 799 segments, **0
+   non-finite values**, x range [−234.4, 1314.4] px on a 1080×720 frame,
+   max intensity 0.988. Confirms off-screen excursion, no NaN.
+2. End-to-end: `phosphor render` on the A.5 hot 5.1 wav (0.99 FL+FC+SL)
+   completed normally (120 frames, cpu renderer), dump-frame output is a
+   valid PPM with max channel 255 and no corruption.
+
+Verdict: over-range f32 input is **numerically benign but visually wrong**
+(off-screen beam / lane overshoot). There is no [-1,1] invariant enforced or
+relied on for safety anywhere in the segment→raster→composite chain; the
+only real defect is amplitude semantics.
+
+Mono parity divergence (same root cause, opposite sign): ffmpeg mono→stereo
+is 0.7071 per side (A.2) while the Symphonia player duplicates mono at 1.0
+(`crates/phosphor-audio/src/playback.rs:289-294`), so mono files render/bench
+**3 dB smaller** in beam deflection than they play live. Together with the
+5.1 case (render hotter than player) the player and the offline paths
+disagree in both directions today.
+
+Clamp requirement for A.4: **no hard clamp is required for safety under
+either option** — nothing NaNs or panics. But:
+
+- Option **(b)** (match ffmpeg unnormalized) accepts routine >FS peaks, so it
+  **should** add a soft limiter or clamp before `compute` if the off-screen
+  beam excursion is considered unacceptable; otherwise hot 5.1 content
+  renders as a blown-out over-gain trace.
+- Option **(a)** (normalize everywhere) removes the over-range source
+  entirely; a clamp is then optional belt-and-braces only. Option (a) also
+  naturally fixes the mono 0.7071-vs-1.0 parity if the ffmpeg invocations
+  get an explicit pan matrix including `mono→stereo = 1.0` per side (or the
+  player adopts 0.7071 — pick one convention).
+
+Not checked here: individual kit ops' numeric behavior on >FS input
+(waveshapers etc. could fold interestingly, still finite-math), GPU renderer
+end-to-end with hot input (CPU path verified), and the live PipeWire capture
+path (out of scope — PipeWire owns that fold).
 
 ## Verified SPA <-> Symphonia channel mapping (va-gap-spa-symphonia-mapping, 2026-07-10)
 
