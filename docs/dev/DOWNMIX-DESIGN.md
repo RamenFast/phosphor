@@ -273,8 +273,9 @@ dropped (`lfe_mix_level` default 0), fronts at unity.
 
 ### A.3 Divergence: normalization claim in §3.1 is wrong
 
-§3.1 asserts row-sum normalization (`max row sum ≤ 1.0`) is "ffmpeg's default
-`-ac 2` behavior". It is not. libswresample's default (`rematrix_maxval`
+§3.1 originally asserted that row-sum normalization (`max row sum ≤ 1.0`) is
+"ffmpeg's default `-ac 2` behavior". It is not (§3.1 has since been amended,
+2026-07-10, to state the measured default and mark (a)/(b) as open). libswresample's default (`rematrix_maxval`
 = INT_MAX effectively, no renorm applied here) leaves FL at 1.0 with row sum
 1 + 2c ≈ 2.414. Consequences:
 
@@ -298,7 +299,9 @@ Pick one and make it consistent everywhere:
 - **(b)** Drop the normalization and match ffmpeg's default (FL 1.0, taps
   0.7071, LFE 0), accepting potential >FS peaks and adding a limiter/clamp.
 
-Either way, fix §3.1's wording: ffmpeg's default is *not* row-sum normalized.
+§3.1's wording has been fixed (2026-07-10): it now states that ffmpeg's
+default is *not* row-sum normalized and references this appendix for the
+open (a)/(b) decision.
 
 ## Verified SPA <-> Symphonia channel mapping (va-gap-spa-symphonia-mapping, 2026-07-10)
 
@@ -338,6 +341,18 @@ Sources read directly:
 | LFE2 | 0x0200_0000 |
 
 Channel interleave order = ascending bit order (see `ChannelsIter`, audio.rs:~101, iterates by `trailing_zeros`).
+
+**Empirically verified (va-gap-symphonia-interleave-verify, 2026-07-10):**
+5.1 files with distinct solo tones per channel (ffmpeg aevalsrc: FL=300, FR=600,
+FC=900, LFE=60, RL=1200, RR=1500 Hz) decoded via symphonia 0.5.5
+`SampleBuffer::copy_interleaved_ref` (probe:
+`crates/phosphor-audio/examples/symphonia_interleave_probe.rs`). For **FLAC**,
+**WAV (pcm_s16le)**, and **Vorbis**, `spec.channels` came back as bits 0x3f
+(FL|FR|FC|LFE1|RL|RR) and interleave slots 0..5 measured 300/600/900/60/1200/1500 Hz,
+i.e. exactly FL,FR,FC,LFE,RL,RR ascending bit order. The Vorbis result is the
+strong evidence: Vorbis's *native* 5.1 order is FL,FC,FR,RL,RR,LFE, so
+Symphonia's decoder demonstrably remaps to bit order rather than passing
+codec-native order through. Not tested: AAC, MP3 (mp3 is ≤2ch anyway), ALAC.
 
 ### SPA_AUDIO_CHANNEL_* enum values (bindings.rs:2586-2662)
 
