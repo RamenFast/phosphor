@@ -9,11 +9,11 @@ Ben asked for: (1) full investigation + repair of the `phosphor_codebase_audit.m
 with a companion theme, (3) skill updates (claude + jcode harnesses), (4) HANDOFF.md and
 README.md refreshed. Baseline: v4.6.2, commit fcd3a12, all suites green.
 
-Input docs (repo root, currently untracked):
-- `phosphor_codebase_audit.md` — the GPT's static audit (it could NOT build; we can)
-- `recurrence_bloom_scope_spec.md` — the new scope's spec
-- `OtherScopeIdeas.md` — five more scope concepts (context, not tasks)
-- `phosphor-development-best-practices.md` — draft dev rules doc, to be critiqued/distilled
+Input docs (were repo root; moved home at arc close — the docs-final move):
+- `docs/dev/AUDIT.md` — the GPT's static audit (it could NOT build; we can)
+- `docs/dev/BLOOM-SPEC.md` — the new scope's spec
+- `docs/dev/SCOPE-IDEAS.md` — five more scope concepts (context, not tasks)
+- `docs/dev/BEST-PRACTICES-DRAFT.md` — draft dev rules doc, to be critiqued/distilled
 
 ## Standing repo laws (violations have shipped bugs before)
 
