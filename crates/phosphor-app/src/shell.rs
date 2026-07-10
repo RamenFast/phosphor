@@ -1905,27 +1905,23 @@ impl Shell {
         graphics.scope_cpu = None;
         match self.renderer_choice {
             RendererChoice::Gpu => {
-                let instance = wgpu::Instance::default();
-                let surface_format = graphics.config.format;
-                if let Ok(adapter) = pollster::block_on(
-                    instance.request_adapter(&wgpu::RequestAdapterOptions {
-                        power_preference:
-                            wgpu::PowerPreference::HighPerformance,
-                        compatible_surface: None,
-                        ..Default::default()
-                    }))
-                {
-                    match GpuRenderer::new_for_surface(
-                        &adapter, graphics.device.clone(),
-                        graphics.queue.clone(), width, height,
-                        self.settings.gl_supersample, surface_format)
-                    {
-                        Ok(renderer) => {
-                            graphics.scope_gpu = Some(renderer)
-                        }
-                        Err(error) => eprintln!(
-                            "phosphor: gpu renderer: {error}"),
-                    }
+                // Reuse the surface's own adapter: the device/queue
+                // already come from it, and a fresh request_adapter here
+                // could pick a DIFFERENT physical GPU on multi-GPU boxes
+                // (the adapter feeds format probing, so mismatch = wrong
+                // energy format). Also keeps blocking work off the event
+                // loop.
+                match GpuRenderer::new_for_surface(
+                    &graphics.adapter,
+                    graphics.device.clone(),
+                    graphics.queue.clone(),
+                    width,
+                    height,
+                    self.settings.gl_supersample,
+                    graphics.config.format,
+                ) {
+                    Ok(renderer) => graphics.scope_gpu = Some(renderer),
+                    Err(error) => eprintln!("phosphor: gpu renderer: {error}"),
                 }
             }
             RendererChoice::Cpu => {
