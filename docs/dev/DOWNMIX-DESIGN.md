@@ -271,6 +271,14 @@ Observations:
   (0.7071 into BL/BR, then 0.7071 into L/R).
 - mono → stereo is 0.7071 into each output, not 1.0 — a mono file decoded
   via these ffmpeg paths comes back 3 dB down per channel.
+- **Polarity: all taps are positive.** The table above was measured by peak
+  magnitude only (sine probe), which is sign-blind. Re-probed 2026-07-10
+  (va-gap-tap-polarity-probe) with a **DC offset** (`aevalsrc=0.5` soloed per
+  channel, others zero, `-ac 2 -f f32le`, mean of each output stream): for
+  5.1 (FL FR FC LFE BL BR) and 7.1 (FL FR FC LFE BL BR SL SR) every non-zero
+  output mean was positive (+0.5 fronts, +0.3536 ≈ 0.5·0.7071 for
+  FC/BL/BR/SL/SR, 0 for LFE). No coefficient in libswresample's default
+  stereo downmix is phase-inverted, so the matrix table stands as written.
 
 So ffmpeg's default matches this design's raw (un-normalized) taps exactly
 across all measured layouts: ITU −3 dB (0.7071) for center/surrounds, LFE
