@@ -417,6 +417,39 @@ Not checked here: individual kit ops' numeric behavior on >FS input
 end-to-end with hot input (CPU path verified), and the live PipeWire capture
 path (out of scope — PipeWire owns that fold).
 
+### A.7 AC-3 / DTS codec-level downmix probe (va-gap-ac3-decoder-downmix, 2026-07-10)
+
+Concern: lossy decoders (ac3, dca) can apply their own codec-level downmix
+(dmix metadata / `request_channel_layout`) *before* swresample, potentially
+changing the effective taps vs the pcm-based A.2 matrix. Probe on ffmpeg
+6.1.1-3ubuntu5: encoded the A.2 solo-channel 5.1(side) signals and the A.5
+hot correlated FL+FC+SL (0.99·sin 440) signal to **AC-3** (`-c:a ac3`) and
+**DTS** (`-c:a dca -strict -2`), then ran both exact app decode shapes
+(`-f f32le -ac 2 -ar 48000` and `-f s16le -ac 2 -ar 48000`).
+
+Measured (both codecs identical to within lossy-codec error, ≈0.7001 vs
+0.7071, i.e. <0.09 dB):
+
+| Solo ch | f32 L / R | s16 L / R |
+|---|---|---|
+| FL | 0.990 / 0 | 13438 / 0 |
+| FC | 0.700 / 0.700 | 9502 / 9502 |
+| LFE | 0 / 0 | 0 / 0 |
+| SL | 0.700 / 0 | 9502 / 0 |
+| HOT FL+FC+SL | **2.390** / 0.700 | 32442 / 9502 (no clip) |
+
+(DTS values within ±3 LSB of AC-3.)
+
+**Conclusion: refuted.** The AC-3 and DTS decode paths behave identically to
+the pcm-based A.2/A.5 results: unnormalized ITU taps (FL 1.0, FC/SL/SR
+0.7071, LFE 0) for f32le output with the same 2.39 hot peak, and
+row-sum-normalized taps for s16le output with no clipping (13438/32767 ≈
+0.410 ≈ 0.99·0.4142). No codec-level downmix alters the effective matrix
+here — with plain `-ac 2` the downmix still happens in libswresample after
+full 5.1 decode. Note the ffmpeg *encoders* wrote no custom dmix metadata;
+a broadcast AC-3 file carrying non-default cmixlev/surmixlev could still
+differ (not checked).
+
 ## Verified SPA <-> Symphonia channel mapping (va-gap-spa-symphonia-mapping, 2026-07-10)
 
 Sources read directly:
