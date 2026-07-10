@@ -309,3 +309,56 @@ slider unchanged; no migration.
   spectrum_radial} and false for {xy, xy45, xy_swirl, xy_dots, xyz_takens}.
 - **T8 existing suites green unchanged**: keep_laws_match_v3, render-cpu inline tests, bench
   checksums, timing.rs, cross_snapshot.rs — zero expected-value edits.
+
+## Ruling 7 — f16 energy-buffer quantization under small dt (node `decay-gpu-f16-quantization`)
+
+The GPU energy buffer is rg16float (probe at render-gpu/src/lib.rs:222-229, fallback
+rgba16float — same 10-bit mantissa either way), while decay_fs (shaders.wgsl:24-29) computes in
+f32 (textureLoad yields f32, math is f32) and rounds to f16 only on the render-target write
+(round-to-nearest-even). Stall condition for an "undead trail": the per-frame decrement
+`E·(1−keep_total) + floor_total` falls below half-ulp(E), making round(E·keep−floor) == E.
+
+Quantified (worst plane = glow at persistence 1.0, keep_ref 0.98; flash keep 0.50 is ~35x safer):
+
+- Worst relative half-ulp of f16 in the normal range [2^-14, 65504]: **2^-11 ≈ 4.883e-4**
+  (E just above a power of two; near the top of a binade it improves to 2^-12).
+- Relative keep-decrement for small n: `1 − 0.98^(60·dt) ≈ 1.2122·dt`
+  (60·|ln 0.98| = 1.2122). Per-fps: 60 fps → 2.02e-2 (41x margin), 165 fps → 7.34e-3 (15x),
+  1000 fps → 1.211e-3 (**2.48x margin**), stall onset at dt < 4.03e-4 s ≈ **2483 fps**.
+- The floor term `floor_total ≈ 0.02424·dt` (geometric form, small n) is absolute, so it alone
+  guarantees decay whenever `E < 0.02424·dt / 4.883e-4 ≈ 49.6·dt` (at 1000 fps: all E < 0.0497),
+  independent of the keep term. And once E ≤ floor_total the shader's max() clamps to exact 0.0.
+- True-zero guarantee holds: f16 subnormals bottom out at ulp 2^-24 ≈ 6e-8, three orders of
+  magnitude below floor_total even at 1000 fps, so the tail cannot dither above zero — it is
+  subtracted through the subnormal range and clamped to 0.0 exactly.
+- Deposit side: the beam pipeline is pure additive One/One/Add on color AND alpha with no
+  saturation (render-gpu/src/lib.rs beam_pipeline blend; float render targets do not clamp),
+  so the CPU steady-state analysis carries over. Small-deposit absorption (deposit < half-ulp
+  of accumulated E) has the same ~2.4 kfps onset because dt-normalized deposits and half-ulp of
+  the dt-invariant steady state both scale together until that bound.
+
+**Ruling**: no shader or format change for the supported regime. fps 60..1000 (the observed
+uncapped ceiling on this rig per the shell Mailbox receipt) is safe with ≥2.48x margin at the
+worst persistence. Mitigation for beyond-spec frame rates is **dt accumulation, not a minimum
+decrement** (a decrement floor would break fps invariance): the GPU live path's decay anchor
+MUST fold dt forward and skip the decay pass for a frame whose accumulated dt < **DECAY_MIN_DT
+= 1/1000 s**, running one decay with the accumulated dt on the next frame that crosses the
+threshold. Keeps compose exactly (k^a·k^b = k^(a+b), Ruling 2) and the geometric floor is the
+exact sub-step limit (Ruling 3), so folding is bit-honest and restores the ≥2.48x margin at any
+fps. CPU f32 planes need none of this (f32 half-ulp 2^-25 relative; stall would need ~10^7 fps).
+Implementation note: this is the same carry mechanism as raster_worker carry_dt (Ruling 4); the
+GPU path reuses its `last_gpu_advance` anchor.
+
+### Acceptance test T9 — GPU decay-to-zero at small dt
+
+Offscreen GpuRenderer (rg16float path), seed one bright impulse (post-deposit peak energy
+≥ 8.0 so E sits in a coarse binade), then advance with dt = 1/1000 at persistence 1.0 until
+2.5 s of simulated time, reading back the energy plane every 0.25 s:
+
+1. Peak energy is strictly monotonically decreasing at every sample (no stall plateau), and
+2. the entire plane is exactly 0.0 by t = 2.5 s (analytic: keep_total(2.5 s) = 0.98^150 ≈ 0.048,
+   then floored to zero well before that), and
+3. the dt-accumulation fold: 1000 steps of dt=5e-4 (folded pairwise by DECAY_MIN_DT) matches
+   500 steps of dt=1e-3 within 1 f16 ulp per pixel.
+
+Skip (with a logged reason) on hosts with no adapter, per the existing GPU test convention.
