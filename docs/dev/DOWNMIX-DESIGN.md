@@ -477,7 +477,7 @@ Not checked here: individual kit ops' numeric behavior on >FS input
 end-to-end with hot input (CPU path verified), and the live PipeWire capture
 path (out of scope — PipeWire owns that fold).
 
-### A.7 AC-3 / DTS codec-level downmix probe (va-gap-ac3-decoder-downmix, 2026-07-10)
+### A.8 AC-3 / DTS codec-level downmix probe (va-gap-ac3-decoder-downmix, 2026-07-10)
 
 Concern: lossy decoders (ac3, dca) can apply their own codec-level downmix
 (dmix metadata / `request_channel_layout`) *before* swresample, potentially
