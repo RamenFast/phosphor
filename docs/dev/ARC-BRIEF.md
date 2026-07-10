@@ -1,5 +1,10 @@
 # ARC BRIEF — audit-repair + Recurrence Bloom arc (2026-07-10)
 
+**STATUS: ARC CLOSED 2026-07-10.** HANDOFF.md carries the outcome and the
+in-flight queue; this file is the historical brief. One correction learned at
+close: gate law 5's `cargo fmt` line was never real in this repo (see
+BEST-PRACTICES.md §1) — the binding gate is clippy -D warnings + full tests.
+
 Shared laws for every agent working this arc. Read this WHOLE file before touching anything.
 
 ## The arc

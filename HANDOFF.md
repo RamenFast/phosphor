@@ -1,5 +1,78 @@
 # Handoff — next session starts here
 
+## AUDIT ARC CLOSED (July 9–10, 2026 — contract consolidation; the plans are the product)
+
+The GPT's static audit of 4.6.2 (`docs/dev/AUDIT.md`, 1608 lines; verdict:
+"local correctness is stronger than system correctness — the right next
+phase is contract consolidation, not another renderer rewrite") plus three
+companion inputs became a four-deliverable arc (`docs/dev/ARC-BRIEF.md`).
+The arc ran July 9, **usage died mid-arc** (banked at `6ce88f5`), and was
+closed July 10: remaining deliverables delivered, in-flight work mapped.
+
+### Code that landed (master, UNRELEASED — the installed deb is still release 4.6.2)
+
+- `1ec2f6c` — **audit PR 1**: ONE typed wire grammar for both halves
+  (`crates/phosphor-app/src/protocol.rs`); ctl round-trips by construction,
+  error `fix` strings are executable syntax, schema pinned to runtime by a
+  snapshot test (BUGLOG #16).
+- `f7f7ca0` — **audit PR 2**: `precompute_enabled` dead state retired,
+  studio marked an explicit stub, stale `dead_code` allows dropped.
+- `0582e24` — **audit PR 5**: renderer rebuild reuses the surface adapter.
+- `73d7270` — atomic saves everywhere proto owns a format
+  (`fsio::write_atomic`) + malformed-settings QUARANTINE (settings.json →
+  settings.json.bad, visible warning, never a silent reset).
+- `80219f0` — the banked thread_probe example wasn't clippy-clean; fixed
+  (the workspace gate was red on arrival — watch for that on future banks).
+- The empirical docs campaign: downmix appendices A.2–A.7 (ffmpeg taps
+  across 6 layouts, symphonia interleave order verified, DC polarity probe,
+  AC-3/DTS codec-downmix REFUTED, hot-mix clip exports hard-clip audibly)
+  and DECAY-DT rulings 1–7.
+
+### THE IN-FLIGHT QUEUE (feature planning, recommended order)
+
+1. **`docs/dev/DECAY-DT-SPEC.md`** — FINAL (7 rulings, REF_DT = 1/60,
+   restamp at the phosphor-app post-compute pass, dsp untouched).
+   **Implement-ready; do this first** — two other items receipt against it.
+2. **`docs/dev/RECURRENCE-BLOOM-PLAN.md`** — NEW this close: the 12th mode
+   (chroma Goertzel bank → polar bloom + recurrence ghosts, sample-clock
+   deterministic) + the 13th room (Night Garden). Six phases, each
+   independently shippable, UI exposure last. After decay-dt by design —
+   "the garden opens on honest phosphor." Spec: `docs/dev/BLOOM-SPEC.md`.
+3. **`docs/dev/ACTION-LENS-PLAN.md`** — semantic UI mirror with visible
+   agent actions; plan complete, its prerequisite (PR 1) already landed.
+4. **`docs/dev/SPSC-RING-DESIGN.md`** — P0 RT-audio (locks/allocs in
+   callbacks). Design "unfinished but sound" + `thread_probe.rs` receipt
+   rig. Finish the design, then implement.
+5. **`docs/dev/DOWNMIX-DESIGN.md`** — §4.5–4.7 mix alignment + layout-aware
+   downmix; design only, anchors verified at fcd3a12.
+6. **`docs/dev/SHELL-DECOMPOSITION-PLAN.md`** — Rewrite-3 state machines;
+   the biggest, planned only. BUGLOG #8/#9/#11/#12 are its motivation.
+
+Context, not tasks: `docs/dev/SCOPE-IDEAS.md` (five more scope concepts;
+Bloom was judged the most phosphor-native and is the one planned).
+
+### Adopted law + open questions for Ben
+
+`docs/dev/BEST-PRACTICES.md` distilled the 1388-line draft into binding law
+(LAW / NEW-CODE LAW / ASPIRATIONAL, each aspiration naming its repair). The
+REAL gate is `cargo clippy --workspace --all-targets -- -D warnings` +
+`cargo test --workspace`. **Finding: the fmt gate was never real** — no
+rustfmt.toml, ~50 files of drift since forever; ARC-BRIEF gate 5 inherited
+it from the draft. ❓ Ben: (a) adopt rustfmt (one churn commit) or strike
+it; (b) want BEST-PRACTICES mirrored as a skill?; (c) master is
+release-shaped (4.6.3/4.7.0 — quarantine + protocol are user-facing wins) —
+release timing is yours.
+
+### Closure housekeeping (this session)
+
+Input docs moved home: `docs/dev/AUDIT.md`, `BEST-PRACTICES-DRAFT.md`,
+`BLOOM-SPEC.md`, `SCOPE-IDEAS.md` (root is minimal again). The `phosphor`
+skill updated in BOTH harnesses (~/.claude + ~/.jcode: PHOSPHOR_AUDIO_LOG,
+typed-protocol + quarantine facts with the installed-deb caveat, the
+in-flight map pointer). This file's duplicated 4.6.2 paragraph deduped
+(audit §5.6's own example, fittingly). Gates at close: 20/20 suites,
+clippy silent, tree clean, every commit story-first.
+
 ## v4.6.2 FINAL (July 8, 2026 — audio + CPU-restyle + applet self-heal; the clean user release)
 
 Ben's real-machine round after the WM rig work: "theme isn't applying
@@ -32,28 +105,6 @@ NOT a regression). Installed deb == working tree == published 4.6.2.
 Gates: all suites pass (+restyle test), clippy silent.
 
 ## v4.6.2 (earlier that session — the WM rig round; geometry/menu/FPS)
-
-Ben: FPS squares left + slow fps-view switching; "window behavior is
-very buggy — not remembering last location; mini toggle switches
-location/bugs out." The breakthrough: **muffin runs NESTED on Xvfb**
-(`dbus-run-session muffin --x11 --sm-disable`) — Ben's actual WM in a
-receipt rig at 2560×1440, so WM races are finally VISIBLE without his
-desktop. Plus `PHOSPHOR_GEOM_LOG=1` (env-gated stderr geometry
-tracer, ships in release) — when a bug survives to a real desktop,
-the log is the receipt. BUGLOG #11 (four movers: synthetic X11 keys
-reached the shortcut table and re-toggled the mini ~7 ms after a real
-M; egui's double_clicked duplicated the winit double-click-restore
-owner; the settle/snap machinery outlived the mini and stamped the
-NORMAL window's position into mini_x/y; window size was NEVER
-persisted + Moved/mini-spot recording trusted transients) and #12
-(the 4.6.0 native popup never woke the main window — menu clicks sat
-invisible until the next natural frame; now any popup-pushed action
-wakes it, key-path style). FPS squares moved to the row's LEFT in the
-checkbox column. Receipts: `tests/receipts/w2-wm-geometry.sh`
-(self-contained rig, 10/10 twice — including SIGSTOP-pulsed muffin
-round-trips, drag+instant-M, double-click restore, quit-from-mini
-relaunch), FPS popup walk ■□→■■→□□ with +350 ms wake screenshot on a
-quiet-asleep scope, 20/20 suites, clippy silent. The launch restore
 
 Ben: FPS squares left + slow fps-view switching; "window behavior is
 very buggy — not remembering last location; mini toggle switches

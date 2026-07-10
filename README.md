@@ -201,6 +201,17 @@ phosphor schema                          # the whole machine-readable map
 The full guide (patterns, gotchas, the feed protocol):
 [docs/AGENTS.md](docs/AGENTS.md).
 
+## Where development is
+
+The latest release is what the badges say; `master` runs ahead of it with
+hardening from a full codebase audit — a typed agent wire protocol (the CLI
+and the app share one grammar, so they can't drift apart) and atomic,
+self-quarantining settings saves (a crash mid-write can't eat your config).
+The audit itself, the adopted engineering law, and the queue of planned work
+(time-correct phosphor decay, lock-free audio transport, and a new scope
+mode with memory — *Recurrence Bloom*) live in [docs/dev/](docs/dev/), with
+[HANDOFF.md](HANDOFF.md) as the map.
+
 ## Things to try
 
 - Jerobeam Fenderson — *How To Draw Mushrooms*; whole albums at
