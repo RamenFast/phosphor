@@ -163,8 +163,64 @@ From `decay-deposit-dtnorm` (adopted in full, with REF_DT=1/60 confirming its as
   - waveform (modes/waveform.rs:52), spectrum/spectrum_radial (modes/spectrum.rs:94),
     ring, helix, tunnel (waveform-history dispatch, dsp/lib.rs:349-361)
   - visitor segments (shell.rs:2870-2873)
-  Apply centrally where the restamp happens (or in shell frame() for the restamped segment vecs),
-  using the clamped dt, so a stall cannot produce a >2.5x bright flash (dt≤0.25 → factor ≤15;
+  **Application point (RULED, no discretion):** the scaling is applied in **phosphor-app only**,
+  as a single post-compute pass over the assembled segment `Vec`, in exactly the two live paths:
+  1. **shell.rs frame()** — immediately after the visitor extend (shell.rs:2870-2877), before
+     `let segments = &segments[..]` (shell.rs ~2878), i.e. before the tap broadcast, before
+     `gpu.advance(segments)` (shell.rs:2944) and before the `RasterJob` submit (shell.rs:2951).
+     One pass covers all three restamped sources in that vec: compose preview segments,
+     restamped-mode Computer output, and visitor segments. The dt used is the SAME clamped dt
+     value computed for that frame's advance (Ruling 4 anchor), captured once into a local
+     before both consumers.
+  2. **compose preview offline export path is N/A** (export_compose_drawing synthesizes audio,
+     not segments) — no other live segment source exists.
+
+  **phosphor-dsp is NOT touched.** `Computer::compute()` keeps no dt parameter; modes/*.rs emit
+  exactly what they emit today, so `crates/phosphor-dsp/tests/golden_replay.rs` (byte-for-byte
+  segment-row comparison) is provably unchanged — the scaling never executes inside the crate
+  under golden test.
+
+  **Mode classification API:** add to phosphor-dsp `impl Mode` (lib.rs:81, beside `name()`):
+  ```rust
+  /// True for modes whose segments restamp a held picture every frame
+  /// (intensity is per-frame, not per-sample); their deposit must be
+  /// dt-normalized by the caller. Streaming modes deposit energy per
+  /// sample and are already fps-invariant.
+  pub fn is_restamped(self) -> bool {
+      matches!(self, Mode::Waveform | Mode::Ring | Mode::Helix | Mode::Tunnel
+                   | Mode::Spectrum | Mode::SpectrumRadial)
+  }
+  ```
+  This is a pure classification method, adds no behavior to dsp, changes no goldens. shell.rs
+  applies the factor when `self.compose_drawing || self.computer.mode.is_restamped()` to the
+  Computer/compose portion of the vec, and unconditionally to the visitor-appended tail
+  (visitor segments are always restamped). Simplest correct shape: scale the compose/Computer
+  portion first (gated), then extend with visitor segments pre-scaled, OR record the vec length
+  before the visitor extend and scale the two ranges — implementer's choice, both are one pass.
+
+  **Bit-exactness offline and at 60 fps:** the multiply is short-circuited, mirroring Ruling 2:
+  ```rust
+  if dt != phosphor_beam::REF_DT {           // exact f32 ==
+      let factor = dt / phosphor_beam::REF_DT;
+      for seg in scaled_range { seg[4] *= factor; }
+  }
+  ```
+  When dt == REF_DT (exact f32 equality) NO arithmetic touches the intensities — not even a
+  `*= 1.0` — so offline paths (render.rs full frames, bench.rs, exports.rs full chunks) and
+  60 fps live frames are bit-identical to today with zero float perturbation. exports.rs's
+  final partial chunk (Ruling 5) legitimately gets factor < 1.0; that is the intended behavior,
+  not a golden break (only the last frame of a non-multiple-length export changes, already
+  accepted under Ruling 5). render.rs/bench.rs pass REF_DT for every frame, so the branch never
+  fires there.
+
+  **exports.rs offline restamp:** exports.rs runs Computer directly (exports.rs:117,:207) with
+  media-time dt; apply the identical short-circuited pass there right after compute(), gated on
+  `computer.mode.is_restamped()`, so live/offline parity (T5) holds for restamped modes too.
+  Factor it as one small helper in phosphor-app (e.g. `pub(crate) fn restamp_scale(segments:
+  &mut [Segment], dt: f32)` in signals.rs or a new decay.rs) called from shell.rs, exports.rs —
+  ONE implementation, no copies.
+
+  Use the clamped dt, so a stall cannot produce a >2.5x bright flash (dt≤0.25 → factor ≤15;
   acceptable since it is one frame of a "held picture" that decays immediately — if visually
   objectionable, clamp the deposit factor separately to ≤4, decided at implementation with eyes on).
 - age_weight (dsp/lib.rs:398-413): re-derive the per-chunk grading keep each frame as
@@ -209,8 +265,11 @@ slider unchanged; no migration.
    literal with uniform (shaders.wgsl:28).
 4. shell.rs: `last_advance_enqueue` sim clock, RasterJob.dt + submit folding + worker carry_dt,
    GPU-path anchor, FADE_OUT_FRAMES → fade_out_until deadline, visitor seconds math.
-5. Restamp dt-normalization: compose preview, waveform/spectrum/ring/helix/tunnel, visitor
-   segments (`intensity *= dt/REF_DT` with the clamped dt).
+5. Restamp dt-normalization: `Mode::is_restamped()` in phosphor-dsp (classification only, no
+   golden change), plus one shared `restamp_scale(&mut [Segment], dt)` helper in phosphor-app
+   applied post-compute in shell.rs frame() (before tap/gpu.advance/RasterJob) and in exports.rs
+   after compute(); short-circuits dt==REF_DT (exact ==) so offline/60fps paths are bit-identical.
+   phosphor-dsp Computer takes NO dt parameter (Ruling 6).
 6. exports.rs: media-time dt = samples/rate incl. partial final chunk + test T6; render.rs
    passes REF_DT (full chunks only; decide drop-vs-render for the trailing partial frame per
    Ruling 5); bench.rs passes REF_DT explicitly.
@@ -243,5 +302,10 @@ slider unchanged; no migration.
   equals floor(samples / (rate/60·2)) and every rendered frame uses REF_DT.
 - **T7 restamp invariance**: restamped mode (waveform) steady-state plane energy after 1 s at
   1/30 vs 1/144 stepping agrees within rel 2% (deposit dt-normalization × dt-decay cancel).
+  Exercised through the shared `restamp_scale` helper + CpuRenderer advance directly (unit
+  test in phosphor-app), not through dsp. Plus: (a) `restamp_scale(segs, REF_DT)` leaves the
+  slice bitwise unchanged (exact byte compare, proving the short-circuit); (b)
+  `Mode::is_restamped()` returns true exactly for {waveform, ring, helix, tunnel, spectrum,
+  spectrum_radial} and false for {xy, xy45, xy_swirl, xy_dots, xyz_takens}.
 - **T8 existing suites green unchanged**: keep_laws_match_v3, render-cpu inline tests, bench
   checksums, timing.rs, cross_snapshot.rs — zero expected-value edits.
