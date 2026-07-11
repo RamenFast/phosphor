@@ -236,7 +236,11 @@ impl Shell {
                                 self.actions.push(UiAction::ModeChanged);
                             }
                         }
-                    });
+                    })
+                    .response
+                    .on_hover_text(
+                        "The ways to see sound — XY scope art, \
+                         waveforms, spectra, true 3D");
 
                 if self.bevel_button(
                         ui, icon::CAMERA,
@@ -389,7 +393,12 @@ impl Shell {
                         self.actions.push(UiAction::SaveSettings);
                     }
                 }
-            });
+            })
+            .response
+            .on_hover_text(
+                "Who draws the beam: the GPU's analytic CRT model \
+                 (fast,\nthe intended look) or the cairo software \
+                 path (no GPU needed)");
         let quality_label = GPU_QUALITY_CHOICES
             .iter()
             .find(|(v, _)| *v == self.settings.gl_supersample)
@@ -408,7 +417,11 @@ impl Shell {
                         self.actions.push(UiAction::SaveSettings);
                     }
                 }
-            });
+            })
+            .response
+            .on_hover_text(
+                "Supersampling — the beam is rendered larger and \
+                 scaled\ndown: smoother edges, more GPU work");
         // nearest-value match, v3's quirk (§3.2 cairo_resolution)
         let nearest = CPU_RESOLUTION_CHOICES
             .iter()
@@ -429,7 +442,11 @@ impl Shell {
                         self.actions.push(UiAction::SaveSettings);
                     }
                 }
-            });
+            })
+            .response
+            .on_hover_text(
+                "CPU render scale — lower is faster on big windows;\n\
+                 the beam math is identical, only the canvas shrinks");
     }
 
     fn ui_settings_scope(&mut self, ui: &mut egui::Ui) {
@@ -477,11 +494,15 @@ impl Shell {
             self.actions.push(UiAction::SignalTuning);
         }
         if ui.checkbox(&mut self.settings.grid_enabled, "Grid")
+            .on_hover_text("The graticule behind the beam (G)")
             .changed()
         {
             self.actions.push(UiAction::RenderTuning);
         }
         if ui.checkbox(&mut self.settings.amoled_background, "AMOLED scope")
+            .on_hover_text(
+                "True-black scope ground — pixels rest fully off on \
+                 OLED\npanels; the beam floats in nothing")
             .changed()
         {
             self.actions.push(UiAction::RenderTuning);
@@ -1738,7 +1759,11 @@ impl Shell {
             } else {
                 "Resume capture"
             };
-            if ui.button(capture_label).clicked() {
+            if ui.button(capture_label)
+                .on_hover_text(
+                    "Live listening on the picked source (Space).\n\
+                     Paused, the last trace rests on the phosphor.")
+                .clicked() {
                 self.actions.push(if self.capture_on {
                     UiAction::CaptureOff
                 } else {
@@ -1766,7 +1791,10 @@ impl Shell {
                     self.request_menu_close(ui);
                 }
             }
-            if !compact && ui.button("Play audio file…  (O)").clicked() {
+            if !compact && ui.button("Play audio file…  (O)")
+                .on_hover_text(
+                    "Open a track — its folder becomes the playlist")
+                .clicked() {
                 self.actions.push(UiAction::OpenFile);
                 self.request_menu_close(ui);
             }
@@ -1776,7 +1804,15 @@ impl Shell {
                 } else {
                     "Pause track"
                 };
-                if ui.button(pause_label).clicked() {
+                let pause_hover = if self.player.paused && self.capture_on {
+                    "Space does this too — resuming takes the beam \
+                     back from capture"
+                } else {
+                    "Space does this too"
+                };
+                if ui.button(pause_label)
+                    .on_hover_text(pause_hover)
+                    .clicked() {
                     self.actions.push(UiAction::PlayerTogglePause);
                     self.request_menu_close(ui);
                 }
@@ -1830,7 +1866,12 @@ impl Shell {
                         .and_then(|e| e.to_str())
                         .is_some_and(|e| e.eq_ignore_ascii_case("phos")));
                 if !compact && !is_phos
-                    && ui.button("Export signal postcard…").clicked()
+                    && ui.button("Export signal postcard…")
+                        .on_hover_text(
+                            "Write this track as a .phos — a recorded \
+                             trace a friend\ncan drop on their Phosphor, \
+                             your credit fading in")
+                        .clicked()
                 {
                     self.actions.push(UiAction::OpenPostcard);
                     self.request_menu_close(ui);
@@ -1839,12 +1880,19 @@ impl Shell {
             if !self.is_mini {
                 // compose stays desktop-only BY DESIGN (v3 law: the
                 // pointer draws; in mini the pointer moves the window)
-                if ui.button("Compose · draw a shape  (D)").clicked() {
+                if ui.button("Compose · draw a shape  (D)")
+                    .on_hover_text(
+                        "Draw on the scope — the shape becomes looping \
+                         audio.\nScroll retunes the pitch.")
+                    .clicked() {
                     self.actions.push(UiAction::ComposeToggle);
                     self.request_menu_close(ui);
                 }
                 if self.composing && self.compose_loop_points.is_some()
                     && ui.button("Export drawing as WAV  (10 s)")
+                        .on_hover_text(
+                            "Your drawn loop as audio — playable on any \
+                             oscilloscope on earth")
                         .clicked()
                 {
                     self.actions.push(UiAction::ExportDrawing);
@@ -1854,16 +1902,28 @@ impl Shell {
             // the playlist pane exists in EVERY view since 4.3 — so
             // does its menu item (it was space-gated, not law-gated)
             let mut panel = self.player.panel_open;
-            if ui.checkbox(&mut panel, "Playlist panel  (L)").clicked() {
+            if ui.checkbox(&mut panel, "Playlist panel  (L)")
+                .on_hover_text(
+                    "The folder's tracks, docked on the left\n\
+                     (a floating pane over the mini)")
+                .clicked() {
                 self.player.panel_open = panel;
                 self.settings.playlist_panel_open = panel;
                 self.request_menu_close(ui);
             }
-            if ui.button("Snapshot  (S)").clicked() {
+            if ui.button("Snapshot  (S)")
+                .on_hover_text(
+                    "A PNG of the scope exactly as it looks — \
+                     saved to ~/Pictures/Phosphor")
+                .clicked() {
                 self.actions.push(UiAction::SaveSnapshot);
                 self.request_menu_close(ui);
             }
-            if !compact && ui.button("Save last 10 s  (C)").clicked() {
+            if !compact && ui.button("Save last 10 s  (C)")
+                .on_hover_text(
+                    "The last ten seconds of beam as an mp4 — \
+                     with the sound")
+                .clicked() {
                 self.actions.push(UiAction::SaveClip);
                 self.request_menu_close(ui);
             }
@@ -1878,7 +1938,11 @@ impl Shell {
                         self.request_menu_close(ui);
                     }
                 }
-            });
+            })
+            .response
+            .on_hover_text(
+                "The ways to see sound — XY scope art, waveforms, \
+                 spectra, true 3D");
             // "Beam color" — the PHOSPHOR presets (it said "Theme"
             // while listing beam colors; the settings panel already
             // says Beam — one name everywhere, Ben's catch)
@@ -1893,7 +1957,11 @@ impl Shell {
                         self.request_menu_close(ui);
                     }
                 }
-            });
+            })
+            .response
+            .on_hover_text(
+                "The phosphor the beam burns — Custom opens the \
+                 color cycle");
             // "Theme" — the CHROME rooms (missing from the menu
             // entirely; same swatchless quick list as Display mode)
             ui.menu_button("Theme", |ui| {
@@ -1907,9 +1975,14 @@ impl Shell {
                         self.request_menu_close(ui);
                     }
                 }
-            });
+            })
+            .response
+            .on_hover_text(
+                "The room around the scope — chrome only,\n\
+                 the beam keeps its color");
             if !compact {
                 if ui.checkbox(&mut self.settings.grid_enabled, "Grid  (G)")
+                    .on_hover_text("The graticule behind the beam")
                     .clicked()
                 {
                     self.actions.push(UiAction::RenderTuning);
@@ -1917,7 +1990,12 @@ impl Shell {
                     self.request_menu_close(ui);
                 }
                 if ui.checkbox(&mut self.settings.auto_gain,
-                               "Auto gain — fit to screen").clicked() {
+                               "Auto gain — fit to screen")
+                    .on_hover_text(
+                        "Follows the signal's peak so quiet material \
+                         still fills\nthe screen; full-scale masters are \
+                         left untouched")
+                    .clicked() {
                     self.actions.push(UiAction::SignalTuning);
                     self.actions.push(UiAction::SaveSettings);
                     self.request_menu_close(ui);
@@ -1929,6 +2007,9 @@ impl Shell {
             self.fps_menu_row(ui);
             if ui.checkbox(&mut self.settings.scope_glass,
                            "Glass scope — transparent background")
+                .on_hover_text(
+                    "The pane goes translucent — the beam glows over \
+                     your desktop")
                 .clicked()
             {
                 self.actions.push(UiAction::RenderTuning);
@@ -1936,7 +2017,9 @@ impl Shell {
             }
             if !compact {
                 let mut pinned = self.settings.pinned;
-                if ui.checkbox(&mut pinned, "Pin above  (P)").clicked() {
+                if ui.checkbox(&mut pinned, "Pin above  (P)")
+                    .on_hover_text("Keeps Phosphor over every other window")
+                    .clicked() {
                     self.actions.push(UiAction::PinToggle);
                     self.request_menu_close(ui);
                 }
@@ -1974,7 +2057,12 @@ impl Shell {
                     self.request_menu_close(ui);
                 }
             } else {
-                if ui.button("Mini view  (M)").clicked() {
+                if ui.button("Mini view  (M)")
+                    .on_hover_text(
+                        "A small always-on-top square of scope — drag \
+                         it anywhere,\ncorners resize, double-click \
+                         restores")
+                    .clicked() {
                     self.actions.push(UiAction::MiniToggle);
                     self.request_menu_close(ui);
                 }
@@ -1983,7 +2071,9 @@ impl Shell {
                 } else {
                     "Fullscreen scope  (F11)"
                 };
-                if ui.button(fullscreen_label).clicked() {
+                if ui.button(fullscreen_label)
+                    .on_hover_text("Nothing but light")
+                    .clicked() {
                     self.actions.push(UiAction::FullscreenToggle);
                     self.request_menu_close(ui);
                 }
