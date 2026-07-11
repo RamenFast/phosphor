@@ -124,6 +124,39 @@ struct MenuPopup {
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
+    /// Repaint on damage, not on every loop wake: rendering the popup
+    /// unconditionally from about_to_wait presented a SECOND vsync'd
+    /// surface on the one thread every pass — the scope lost a vblank
+    /// wait per frame with the menu open ("right click makes it run
+    /// really slow", BUGLOG #18).
+    dirty: bool,
+    /// egui-requested animation deadline (hover eases); None = idle.
+    next_frame: Option<Instant>,
+    /// The card the user can SEE (egui points). The canvas is 560×840
+    /// so submenus can flare, but most of it is invisible void — a
+    /// press outside the card (and outside any open submenu area)
+    /// dismisses, or "clicking out of the menu takes multiple tries"
+    /// (BUGLOG #18: the void swallowed the click).
+    content_rect: egui::Rect,
+    /// Last cursor position over the popup, egui points.
+    last_cursor: Option<egui::Pos2>,
+}
+
+impl MenuPopup {
+    /// Is this point on the visible menu (card or a flared submenu)?
+    fn hit(&self, pos: egui::Pos2) -> bool {
+        if self.content_rect.expand(2.0).contains(pos) {
+            return true;
+        }
+        // submenus live on Order::Foreground areas (BUGLOG #1 law)
+        self.egui_ctx.memory(|memory| {
+            memory.areas().visible_layer_ids().iter().any(|layer| {
+                layer.order == egui::Order::Foreground
+                    && memory.area_rect(layer.id)
+                        .is_some_and(|rect| rect.expand(2.0).contains(pos))
+            })
+        })
+    }
 }
 
 /// Everything that styles a CPU raster frame WITHOUT new signal:
@@ -817,6 +850,10 @@ impl Shell {
     /// Drain chrome intents (frame() calls this with graphics free).
     fn drain_actions(&mut self, graphics: &mut Graphics) {
         let actions = std::mem::take(&mut self.actions);
+        // menu rows mirror live state (FPS squares, pause label,
+        // capture label) — any processed action repaints an open
+        // popup (damage pacing, BUGLOG #18)
+        let repaint_popup = !actions.is_empty();
         for action in actions {
             match action {
                 UiAction::CaptureOn => {
@@ -1259,6 +1296,9 @@ impl Shell {
             }
         }
         self.service_seek_debounce();
+        if repaint_popup && let Some(popup) = self.menu_popup.as_mut() {
+            popup.dirty = true;
+        }
     }
 
     /// Drain MPRIS commands and keep the shared state fresh.
@@ -2000,12 +2040,25 @@ impl Shell {
         let format = capabilities.formats.iter().copied()
             .find(|format| !format.is_srgb())
             .unwrap_or(capabilities.formats[0]);
+        // Same ladder as the main surface: a Fifo popup present BLOCKS
+        // this (shared) thread until the popup's vblank — serialized
+        // behind the scope's own present, it halved the live frame
+        // rate while the menu was open (BUGLOG #18).
+        let present_mode = if capabilities.present_modes
+            .contains(&wgpu::PresentMode::Mailbox) {
+            wgpu::PresentMode::Mailbox
+        } else if capabilities.present_modes
+            .contains(&wgpu::PresentMode::Immediate) {
+            wgpu::PresentMode::Immediate
+        } else {
+            wgpu::PresentMode::Fifo
+        };
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
             width: CANVAS_W,
             height: CANVAS_H,
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode,
             alpha_mode,
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
@@ -2019,10 +2072,13 @@ impl Shell {
         let egui_renderer = egui_wgpu::Renderer::new(
             &graphics.device, config.format,
             egui_wgpu::RendererOptions::default());
-        window.request_redraw();
         self.menu_popup = Some(MenuPopup {
             window, surface, config, egui_ctx, egui_state,
             egui_renderer,
+            dirty: true, // first paint on the next tick
+            next_frame: None,
+            content_rect: egui::Rect::NOTHING,
+            last_cursor: None,
         });
         self.context_menu_open = true;
         self.close_menu_request = false;
@@ -2049,6 +2105,7 @@ impl Shell {
         let panel_fill = popup.egui_ctx.style().visuals.panel_fill;
         let egui_ctx = popup.egui_ctx.clone();
         let actions_before = self.actions.len();
+        let mut card_rect = egui::Rect::NOTHING;
         let full_output = egui_ctx.run(raw_input, |ctx| {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
@@ -2058,14 +2115,16 @@ impl Shell {
                         .stroke(egui::Stroke::new(
                             1.0, palette.line_strong))
                         .inner_margin(egui::Margin::same(6));
-                    card.show(ui, |ui| {
+                    let inner = card.show(ui, |ui| {
                         ui.set_width(230.0);
                         // the popup IS the escape from window-height
                         // jail: never compact here
                         self.context_menu_items(ui, false);
                     });
+                    card_rect = inner.response.rect;
                 });
         });
+        popup.content_rect = card_rect;
         popup.egui_state.handle_platform_output(
             &popup.window, full_output.platform_output);
         // a menu click acts on the MAIN window (HUD state, theme,
@@ -2131,9 +2190,21 @@ impl Shell {
         graphics.queue.submit([encoder.finish()]);
         popup.window.pre_present_notify();
         frame.present();
-        // menus are small and short-lived: keep the pass ticking so
-        // hovers/submenus stay live without frame-pacing machinery
-        popup.window.request_redraw();
+        // Damage-driven pacing (BUGLOG #18): egui tells us when it
+        // next wants a frame (hover eases). Floor at ~60 fps — a menu
+        // never needs the scope's rate — and go fully idle when egui
+        // is settled; input events re-dirty on arrival.
+        popup.dirty = false;
+        let repaint_delay = full_output.viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map(|v| v.repaint_delay)
+            .unwrap_or(Duration::MAX);
+        popup.next_frame = if repaint_delay == Duration::MAX {
+            None
+        } else {
+            Some(Instant::now()
+                 + repaint_delay.max(Duration::from_millis(16)))
+        };
         self.menu_popup = Some(popup);
         if self.close_menu_request {
             self.close_menu_popup();
@@ -3501,11 +3572,41 @@ impl ApplicationHandler<()> for Shell {
         if let Some(popup) = self.menu_popup.as_mut()
             && popup.window.id() == id
         {
-            let _ = popup.egui_state
+            let response = popup.egui_state
                 .on_window_event(&popup.window, &event);
+            // damage-driven repaint (BUGLOG #18): input over the menu
+            // marks it dirty; about_to_wait paints it on the next tick.
+            // RedrawRequested answers repaint=true by definition — the
+            // same busy-loop trap as the main window.
+            if response.repaint
+                && !matches!(event, WindowEvent::RedrawRequested)
+            {
+                popup.dirty = true;
+            }
             match event {
                 WindowEvent::RedrawRequested => {
-                    self.render_menu_popup();
+                    // unreliable for override-redirect popups (#10 law)
+                    // — but when one DOES arrive, honor it as damage
+                    popup.dirty = true;
+                }
+                WindowEvent::CursorMoved { position, .. } => {
+                    let scale = popup.egui_ctx.pixels_per_point();
+                    popup.last_cursor = Some(egui::pos2(
+                        position.x as f32 / scale,
+                        position.y as f32 / scale));
+                }
+                WindowEvent::MouseInput {
+                    state: winit::event::ElementState::Pressed, ..
+                } => {
+                    // the canvas is mostly invisible void (submenu
+                    // space) — a press that hits neither the card nor
+                    // a flared submenu is a dismissal, not a swallowed
+                    // click (BUGLOG #18)
+                    let on_menu = popup.last_cursor
+                        .is_some_and(|pos| popup.hit(pos));
+                    if !on_menu {
+                        self.close_menu_popup();
+                    }
                 }
                 // NOT Focused(false): an override-redirect popup never
                 // HOLDS focus — winit reports false at creation, which
@@ -4006,8 +4107,15 @@ impl ApplicationHandler<()> for Shell {
         }
         // the menu popup renders on the idle tick — winit's
         // per-window RedrawRequested proved unreliable for
-        // override-redirect popups, so the popup doesn't depend on it
-        if self.menu_popup.is_some() {
+        // override-redirect popups, so the popup doesn't depend on it.
+        // Damage-paced (BUGLOG #18): only when input dirtied it or an
+        // egui animation deadline arrived — never per loop wake.
+        let popup_due = self.menu_popup.as_ref().is_some_and(|popup| {
+            popup.dirty
+                || popup.next_frame
+                    .is_some_and(|due| Instant::now() >= due)
+        });
+        if popup_due {
             self.render_menu_popup();
         }
         // mini magnetism settle (fires even while the loop idles)
@@ -4066,9 +4174,17 @@ impl ApplicationHandler<()> for Shell {
         if let Some(due) = self.mini_pending {
             wake_at = Some(wake_at.map_or(due, |w| w.min(due)));
         }
-        if self.menu_popup.is_some() {
-            let due = Instant::now() + Duration::from_millis(16);
-            wake_at = Some(wake_at.map_or(due, |w| w.min(due)));
+        if let Some(popup) = &self.menu_popup {
+            // dirty → paint now-ish; animating → egui's deadline;
+            // settled → no wake at all (events re-dirty it)
+            let due = if popup.dirty {
+                Some(Instant::now())
+            } else {
+                popup.next_frame
+            };
+            if let Some(due) = due {
+                wake_at = Some(wake_at.map_or(due, |w| w.min(due)));
+            }
         }
         if (self.render_loop_active || self.chrome_dirty)
             && let Some(due) = self.next_frame_due

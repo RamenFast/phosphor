@@ -544,6 +544,53 @@ loaded deck → local; both → external on an empty deck.
 Ben's machine is the acceptance for the felt gesture (rig audio is
 false-negative — skill gotcha).
 
+## #18 — The open menu halves the scope; clicking out takes multiple tries (fixed 2026-07-10)
+
+**Symptom (Ben):** "When the scope is playing, right click makes it
+run really slow… even left clicking out of the right click menu takes
+multiple tries. Are things getting stuck on the same thread?"
+
+**Root cause, two independent movers (and yes — one thread):**
+1. **A second vsync'd surface presented on every loop pass.** The
+   popup rendered unconditionally from `about_to_wait` (every wake,
+   ≥ once per scope frame), AND self-perpetuated via `request_redraw`
+   after every paint — on a surface configured `PresentMode::Fifo`.
+   Every popup present BLOCKED the one thread until the popup's
+   vblank, serialized behind the scope's own present: the scope lost
+   a vblank-wait per frame the whole time the menu was open.
+2. **The invisible canvas swallowed dismissal clicks.** The popup
+   window is a 560×840 canvas so submenus can flare, but the visible
+   card is ~230 px wide — the rest is transparent void that still
+   OWNS input. A "click outside the menu" that landed inside the
+   canvas reached neither the main window (whose press is the
+   dismissal path) nor any egui widget: it did nothing. Whether
+   dismissal worked depended on whether the click fell inside an
+   invisible rectangle — Ben's "very inconsistent".
+
+**The laws:**
+- The popup surface uses the SAME present-mode ladder as the main
+  window (Mailbox → Immediate → Fifo last resort). Never put a
+  second Fifo surface on the render thread.
+- The popup repaints on DAMAGE only: input events over it (egui
+  `repaint`, RedrawRequested excluded — the main window's own trap),
+  egui's animation deadline (floored at ~60 fps; a menu never needs
+  the scope's rate), and any drained action (menu rows mirror live
+  state). Idle menu = zero renders; the wake scheduler sleeps on
+  exactly those terms.
+- A press on the popup's canvas that hits neither the visible card
+  rect nor a flared submenu area (`Order::Foreground` areas — the #1
+  law's layer test, popup-side) is a DISMISSAL.
+
+**Receipt:** `tests/receipts/menu-behavior.sh` (nested-Muffin rig,
+2560×1440, silent tone): fps with the menu open held 93.0 against a
+96.1 baseline (was a collapse); void-click dismissed on the FIRST
+try and 10/10 round-trips; main-window-press dismissal re-receipted;
+hover highlight live under damage pacing (screenshot leg).
+
+---
+
+## Standing laws (older repeat families — one line each, don't relearn)
+
 - **Focus trap:** egui 0.33 `wants_keyboard_input()` ==
   `focused().is_some()` and clicked buttons KEEP focus. Keyboard gate
   is OUR `text_focus_ids` registry; every text-capable widget must
