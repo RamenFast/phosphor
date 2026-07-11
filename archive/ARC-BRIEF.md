@@ -18,7 +18,7 @@ Input docs (were repo root; moved home at arc close — the docs-final move):
 - `docs/dev/AUDIT.md` — the GPT's static audit (it could NOT build; we can)
 - `docs/dev/BLOOM-SPEC.md` — the new scope's spec
 - `docs/dev/SCOPE-IDEAS.md` — five more scope concepts (context, not tasks)
-- `docs/dev/BEST-PRACTICES-DRAFT.md` — draft dev rules doc, to be critiqued/distilled
+- `archive/BEST-PRACTICES-DRAFT.md` — draft dev rules doc, distilled at close into docs/dev/BEST-PRACTICES.md
 
 ## Standing repo laws (violations have shipped bugs before)
 

@@ -2,8 +2,8 @@
 
 **Status: PLANNED, not implemented this arc.** Audit `docs/dev/AUDIT.md`
 §3-P0-shell ("`Shell` is a cross-feature state machine without explicit state
-machines") + §7-Rewrite-3. Companion law: `docs/dev/BEST-PRACTICES-DRAFT.md`
-§10 (thin shell, reducers+effects, Escape precedence, cancellable long ops).
+machines") + §7-Rewrite-3. Companion law: `archive/BEST-PRACTICES-DRAFT.md`
+§10 (adopted form: `docs/dev/BEST-PRACTICES.md` §7) (thin shell, reducers+effects, Escape precedence, cancellable long ops).
 
 Authoring contract: fable-to-opus. Symbols: ▸ task · 📁 file · ✅ verify ·
 ↩ rollback · ⛔ constraint · ⚠ gotcha · ❓ decision. Every phase is

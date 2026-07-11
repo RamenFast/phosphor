@@ -25,11 +25,11 @@ The draft's Step-6 matrix names commands that are not real here (verified
 2026-07-10): `cargo fmt --all -- --check` fails on ~50 files — the tree was
 NEVER rustfmt-clean, there is no rustfmt.toml, and hand-formatting is the
 house style; `cargo deny` is not installed and has no config. ARC-BRIEF gate 5
-inherited the fmt line from the draft — treat it as void.
-❓ **Ben:** adopt rustfmt (one tree-wide churn commit, then the gate is real
-forever) or strike it permanently? Until answered: don't run fmt, don't
-"fix" formatting drive-by. `cargo deny` (license/advisory audit) would be a
-sensible CI addition — FUTURE.md material, not a local gate.
+inherited the fmt line from the draft — void.
+**RULING (Ben, 2026-07-10): rustfmt is STRUCK, permanently.** Hand-formatting
+is the style; never run `cargo fmt`, never "fix" formatting drive-by, and no
+future doc reintroduces an fmt gate. `cargo deny` (license/advisory audit)
+remains sensible as a CI addition — FUTURE.md material, not a local gate.
 
 ## 2. Ownership map (LAW)
 
@@ -39,7 +39,8 @@ beam physics (one law) = `phosphor-beam` · deposition = `phosphor-render-gpu`
 / `-cpu` (same model, documented tolerance) · formats & wire types =
 `phosphor-proto` + `phosphor-app/src/protocol.rs` (the one typed wire module
 since `1ec2f6c`) · state/effects = `phosphor-app` · `phosphor-studio` =
-explicitly marked stub (`f7f7ca0`), touch only to make it real.
+out of the workspace entirely (stub archived 2026-07-10, `archive/`);
+when the studio returns (FUTURE #1) it starts fresh.
 
 Direction of flow: callback → bounded transport → analysis → renderer-neutral
 segments → deposition → time-domain persistence → presentation/export. No
@@ -150,8 +151,9 @@ FUTURE.md, not a per-commit gate.
    draft was written by a static auditor that could not build; it guessed a
    conventional Rust gate. Ours is narrower and real.
 2. **Skill formatting** (frontmatter, "use this skill") — it isn't installed
-   as a skill and shouldn't be until Ben wants it in a harness; as repo law a
-   docs/dev file is the right home. ❓ Ben: want a trimmed skill mirror too?
+   as a skill. **RULING (Ben, 2026-07-10): project-specific skills stay in
+   the project** — this file is repo law, no harness mirror. (Skills earn a
+   harness home only when they apply across workspaces.)
 3. **Worker-architecture prescriptions stated as present-tense law** (§14.3,
    parts of §5) — they describe the post-SPSC world. Kept as NEW-CODE /
    ASPIRATIONAL with the repair named, so nobody "complies" early with a

@@ -5,7 +5,7 @@
 The GPT's static audit of 4.6.2 (`docs/dev/AUDIT.md`, 1608 lines; verdict:
 "local correctness is stronger than system correctness — the right next
 phase is contract consolidation, not another renderer rewrite") plus three
-companion inputs became a four-deliverable arc (`docs/dev/ARC-BRIEF.md`).
+companion inputs became a four-deliverable arc (`archive/ARC-BRIEF.md`).
 The arc ran July 9, **usage died mid-arc** (banked at `6ce88f5`), and was
 closed July 10: remaining deliverables delivered, in-flight work mapped.
 
@@ -51,17 +51,20 @@ closed July 10: remaining deliverables delivered, in-flight work mapped.
 Context, not tasks: `docs/dev/SCOPE-IDEAS.md` (five more scope concepts;
 Bloom was judged the most phosphor-native and is the one planned).
 
-### Adopted law + open questions for Ben
+### Adopted law + Ben's rulings (2026-07-10, all three answered)
 
 `docs/dev/BEST-PRACTICES.md` distilled the 1388-line draft into binding law
 (LAW / NEW-CODE LAW / ASPIRATIONAL, each aspiration naming its repair). The
-REAL gate is `cargo clippy --workspace --all-targets -- -D warnings` +
-`cargo test --workspace`. **Finding: the fmt gate was never real** — no
-rustfmt.toml, ~50 files of drift since forever; ARC-BRIEF gate 5 inherited
-it from the draft. ❓ Ben: (a) adopt rustfmt (one churn commit) or strike
-it; (b) want BEST-PRACTICES mirrored as a skill?; (c) master is
-release-shaped (4.6.3/4.7.0 — quarantine + protocol are user-facing wins) —
-release timing is yours.
+gate is `cargo clippy --workspace --all-targets -- -D warnings` +
+`cargo test --workspace`. Rulings:
+- **rustfmt STRUCK, permanently.** Hand-formatting is the style; never run
+  fmt, no future doc reintroduces the gate (the tree was never fmt-clean —
+  ARC-BRIEF gate 5 had inherited it from the draft, void).
+- **No release yet — a UX-testing round comes first.** Ben has feedback
+  incoming; we ship what's polished. Master (typed protocol + settings
+  quarantine + whatever the UX round fixes) rides in that release.
+- **No skill mirror for BEST-PRACTICES** — project-specific skills stay in
+  the project; harness skills are for cross-workspace laws only.
 
 ### Closure housekeeping (this session)
 
@@ -397,7 +400,7 @@ tarball + SHA256SUMS, README/MANUAL/AGENTS rewritten from the live
 build, **zero Python in the tree** (11,662 lines deleted; goldens
 kept — provenance in docs/dev/GOLDEN.md). The whole session was
 recorded to Mass storage with TTS narration; the receipts ledger is
-**docs/dev/PARITY.md** (waves 4.0-truth → 4.0-ensemble tables).
+**archive/PARITY.md** (waves 4.0-truth → 4.0-ensemble tables).
 
 ### What this session fixed/built (Ben's PromptV4 list, all of it)
 
@@ -468,7 +471,7 @@ recorded to Mass storage with TTS narration; the receipts ledger is
 1. **#1 the studio returns** (Rust `studio render/validate/…`, the
    timeline tier, `probe --at`) — then **#8 screensaver**, the GUI
    studio panel, **AFTERGLOW** (spec lives below in the v3 archive
-   section of git history and in docs/dev/V4PLAN.md wave 4).
+   section of git history and in archive/V4PLAN.md wave 4).
 2. Smaller: native-texture upload for the CPU path (skip the egui
    image copy — the last ~10 ms on huge cairo frames), DSP on the
    worker, a `targets` CLI verb (agents can't enumerate sources

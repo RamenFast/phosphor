@@ -151,6 +151,6 @@ must exercise the user's actual gesture (a real click on a real menu
 item — v4.0.1 receipted menu *geometry*, never clicked an item, and
 shipped the menu broken). The living project map is `HANDOFF.md` at
 the repo root; the receipts ledger of the v4 rewrite is
-`docs/dev/PARITY.md`; perf gates are `phosphor bench` (BENCH.md laws:
+`archive/PARITY.md`; perf gates are `phosphor bench` (BENCH.md laws:
 compare under the same machine load — a busy Xvfb test rig once
 read as a perf regression).
