@@ -15,7 +15,7 @@ package_name="phosphor"
 # Overridable for local test builds: +uxN sorts AFTER the 4.6.2
 # release and BEFORE any 4.6.3, so Ben's feel-round installs upgrade
 # over the release deb and the next real release upgrades over them.
-VERSION="${PHOSPHOR_DEB_VERSION:-4.6.2}"
+VERSION="${PHOSPHOR_DEB_VERSION:-4.7.0}"
 
 # The binary: build fresh, package a stripped copy.
 (cd "$project_directory" && cargo build --release --quiet -p phosphor-app)

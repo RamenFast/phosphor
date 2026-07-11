@@ -102,8 +102,9 @@ with the snapshot button:
   native PipeWire. Capture off costs ~0% CPU.
 - **Play music in it** — gapless playlists, shuffle/repeat, seek, cover
   art, per-stream volume; full **MPRIS both ways** — media keys drive
-  Phosphor, and when the beam scopes another player, **Phosphor's
-  transport drives that player**.
+  Phosphor, and when the beam scopes another player with no local
+  track loaded, **Phosphor's transport drives that player** (a loaded
+  track always keeps the deck — resuming takes the beam back).
 - **Tell you what's playing** — a systemwide notification with the album
   art on every track change (yours or the scoped player's). Toggleable.
 - **A real beam** — analytic Gaussian beam integral, linear-light
@@ -141,13 +142,13 @@ Grab the [latest release](https://github.com/RamenFast/phosphor/releases/latest)
 **Debian · Ubuntu · Mint (.deb)** — or just double-click it:
 
 ```bash
-sudo apt install ./phosphor_4.6.2_amd64.deb
+sudo apt install ./phosphor_4.7.0_amd64.deb
 ```
 
 **Fedora · openSUSE (.rpm)** *(built on Mint, `rpm --test`-verified — reports welcome)*:
 
 ```bash
-sudo dnf install ./phosphor-4.6.2-1.x86_64.rpm
+sudo dnf install ./phosphor-4.7.0-1.x86_64.rpm
 ```
 
 **From source** (any Linux; Rust 1.96+):
@@ -168,7 +169,7 @@ mp4 clips and `.phos`-from-anything renders.
 **Verify it breathes:**
 
 ```bash
-phosphor --version   # phosphor 4.6.2 (v4)
+phosphor --version   # phosphor 4.7.0 (v4)
 phosphor             # the scope; second launches focus this one
 ```
 
@@ -203,14 +204,13 @@ The full guide (patterns, gotchas, the feed protocol):
 
 ## Where development is
 
-The latest release is what the badges say; `master` runs ahead of it with
-hardening from a full codebase audit — a typed agent wire protocol (the CLI
-and the app share one grammar, so they can't drift apart) and atomic,
-self-quarantining settings saves (a crash mid-write can't eat your config).
-The audit itself, the adopted engineering law, and the queue of planned work
-(time-correct phosphor decay, lock-free audio transport, and a new scope
-mode with memory — *Recurrence Bloom*) live in [docs/dev/](docs/dev/), with
-[HANDOFF.md](HANDOFF.md) as the map.
+The wire protocol is typed end to end (the CLI and the app share one
+grammar, so they can't drift apart) and settings saves are atomic and
+self-quarantining (a crash mid-write can't eat your config; a corrupt
+file is preserved as evidence, never silently reset). The queue of
+planned work — time-correct phosphor decay, lock-free audio transport,
+and a new scope mode with memory, *Recurrence Bloom* — lives in
+[docs/dev/](docs/dev/), with [HANDOFF.md](HANDOFF.md) as the map.
 
 ## Things to try
 
