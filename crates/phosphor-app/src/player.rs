@@ -278,7 +278,9 @@ impl Shell {
     /// "intelligently recognize what is playing"). The built-in row
     /// renders when the player session owns the beam.
     pub(crate) fn ui_transport(&mut self, ui: &mut egui::Ui) {
-        if self.linked_external_player().is_some() {
+        // the loaded track owns the deck; the beam's player gets the
+        // controls only when nothing is loaded (BUGLOG #17)
+        if self.transport_external_player().is_some() {
             self.ui_external_transport(ui);
             return;
         }
@@ -303,9 +305,13 @@ impl Shell {
                 self.actions.push(UiAction::PlayerPrevious);
             }
             let play_label = if self.player.paused { icon::PLAY } else { icon::PAUSE };
-            if self.bevel_button(ui, play_label,
-                                 "Play/pause the loaded file").clicked()
-            {
+            let play_hover = if self.player.paused && self.capture_on {
+                // scoping paused this track — say what resume costs
+                "Resume the track — takes the beam back from capture"
+            } else {
+                "Play/pause the loaded file"
+            };
+            if self.bevel_button(ui, play_label, play_hover).clicked() {
                 self.actions.push(UiAction::PlayerTogglePause);
             }
             if self.bevel_button(ui, icon::SKIP_FORWARD,
@@ -404,7 +410,7 @@ impl Shell {
     /// scoping (Spotify, a browser…). Drawn only while capture is the
     /// source and a matching player exists.
     fn ui_external_transport(&mut self, ui: &mut egui::Ui) {
-        let Some(player) = self.linked_external_player() else { return };
+        let Some(player) = self.transport_external_player() else { return };
         let Some(client) = &self.mpris_client else { return };
         let commands = client.commands.clone();
         ui.horizontal(|ui| {

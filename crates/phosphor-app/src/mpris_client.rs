@@ -79,6 +79,23 @@ pub fn linked_player(players: &[ExternalPlayer], app_key: Option<&str>)
     }
 }
 
+/// Who owns the TRANSPORT (buttons + media keys). The loaded local
+/// track always wins — scoping Spotify with a file paused underneath
+/// must never make that file unreachable (pressing play steered the
+/// scoped app while the local track sat silent; BUGLOG #17). With an
+/// empty deck, the beam's linked player takes the controls (the v4.0
+/// ensemble behavior: Spotify driven from phosphor's buttons).
+/// The now-playing overlay does NOT use this — it always follows the
+/// beam via `linked_player`.
+pub fn transport_player(players: &[ExternalPlayer], app_key: Option<&str>,
+                        local_track_loaded: bool) -> Option<ExternalPlayer>
+{
+    if local_track_loaded {
+        return None;
+    }
+    linked_player(players, app_key)
+}
+
 pub fn spawn(notify_enabled: bool) -> Option<MprisClientHandle> {
     let players: Arc<Mutex<Vec<ExternalPlayer>>> = Arc::default();
     let (command_sender, command_receiver) = mpsc::channel();
@@ -303,5 +320,25 @@ mod tests {
         assert_eq!(linked_player(&roster, None).unwrap().identity,
                    "Spotify");
         assert!(linked_player(&roster, Some("vlc")).is_none());
+    }
+
+    #[test]
+    fn loaded_local_track_owns_the_transport() {
+        // BUGLOG #17: scoping Spotify while a local file sits paused
+        // must NOT hand the transport to Spotify — the paused file
+        // became unreachable ("no sound on local playback").
+        let roster = vec![player("Spotify", "spotify", "Playing")];
+        // deck loaded → the local track keeps the controls, every face:
+        assert!(transport_player(&roster, Some("spotify"), true).is_none());
+        assert!(transport_player(&roster, None, true).is_none(),
+                "mix / whole-output capture must not hijack a loaded deck");
+        // empty deck → the beam's player takes the controls (v4.0 law)
+        assert_eq!(
+            transport_player(&roster, Some("spotify"), false)
+                .unwrap().identity,
+            "Spotify");
+        assert_eq!(transport_player(&roster, None, false)
+                       .unwrap().identity,
+                   "Spotify");
     }
 }

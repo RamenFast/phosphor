@@ -1286,16 +1286,16 @@ impl Shell {
     pub(crate) fn apply_external_command(
         &mut self, command: crate::mpris::MprisCommand) {
         use crate::mpris::MprisCommand;
-        // Transport verbs follow THE BEAM (Ben's patch list): while
-        // capture scopes a linked player — even with a local track
-        // loaded-and-paused underneath — play/pause/next/previous
-        // drive that player. The local file keeps Space (the beam
-        // arbiter) and the playlist panel.
+        // Transport verbs follow THE BEAM — but only on an empty deck.
+        // A loaded local track (playing OR paused) owns the transport:
+        // v4.6.2 routed media keys to the scoped player even with a
+        // track paused underneath, which made that track unreachable —
+        // "no sound on local playback" (BUGLOG #17).
         if matches!(command,
                     MprisCommand::Next | MprisCommand::Previous
                     | MprisCommand::PlayPause | MprisCommand::Play
                     | MprisCommand::Pause)
-            && let Some(external) = self.linked_external_player()
+            && let Some(external) = self.transport_external_player()
             && let Some(client) = &self.mpris_client
         {
             use crate::mpris_client::ClientCommand;
@@ -2323,22 +2323,45 @@ impl Shell {
     /// The external player the beam is scoping right now, if any —
     /// app capture matches by key; whole-output capture takes whoever
     /// is Playing (v3's watcher law, now with hands).
+    /// The player the beam is scoping (now-playing overlay, song-change
+    /// cycle). For who owns the transport BUTTONS, use
+    /// `transport_external_player` — they differ when a local track is
+    /// loaded (BUGLOG #17).
     pub(crate) fn linked_external_player(
         &self) -> Option<crate::mpris_client::ExternalPlayer>
     {
         let client = self.mpris_client.as_ref()?;
         let players = client.players.lock().unwrap();
-        let app_key = match &self.beam_source {
-            BeamSource::Capture { combo_id } =>
-                combo_id.strip_prefix("app:"),
-            BeamSource::Mix { .. } => None,
-            // the built-in player owns the transport; silent scopes
-            // nothing
-            BeamSource::Player { .. } | BeamSource::Silent => {
-                return None;
-            }
-        };
+        let app_key = self.beam_app_key()?;
         crate::mpris_client::linked_player(&players, app_key)
+    }
+
+    /// The player the TRANSPORT drives: the loaded local track always
+    /// wins; the beam's player gets the controls only on an empty deck
+    /// (BUGLOG #17 — the paused local file was unreachable behind a
+    /// scoped Spotify, "no sound on local playback").
+    pub(crate) fn transport_external_player(
+        &self) -> Option<crate::mpris_client::ExternalPlayer>
+    {
+        let client = self.mpris_client.as_ref()?;
+        let players = client.players.lock().unwrap();
+        let app_key = self.beam_app_key()?;
+        crate::mpris_client::transport_player(
+            &players, app_key, self.player.playing.is_some())
+    }
+
+    /// The beam's MPRIS lookup key. Outer None = the beam scopes no
+    /// external audio at all; inner None = whole-output/mix capture
+    /// (match by Playing status instead of name).
+    fn beam_app_key(&self) -> Option<Option<&str>> {
+        match &self.beam_source {
+            BeamSource::Capture { combo_id } =>
+                Some(combo_id.strip_prefix("app:")),
+            BeamSource::Mix { .. } => Some(None),
+            // the built-in player owns everything; silent scopes
+            // nothing
+            BeamSource::Player { .. } | BeamSource::Silent => None,
+        }
     }
 
     /// Re-derive `beam_source` from live session state: capture (with

@@ -507,7 +507,42 @@ protocol (frozen v3) is untouched.
 
 ---
 
-## Standing laws (older repeat families — one line each, don't relearn)
+## #17 — Scoping Spotify makes the paused local track unreachable (fixed 2026-07-10)
+
+**Symptom (Ben):** "No audio on local playback (music files) when
+switching to spotify; and if a track is playing and you try to mix it
+with spotify, then switch back to the local player — no sound."
+
+**Root cause:** picking a target correctly PAUSES the local track
+(double-feed law) — but the transport then followed the beam
+completely: `ui_transport` swapped the ENTIRE local row for the
+external player's controls the moment `linked_player` matched, and
+`apply_external_command` routed media keys the same way. The paused
+local file kept only Space and playlist clicks — invisible paths. So
+pressing the visible play button steered SPOTIFY (or nothing, if its
+MPRIS entry was stale), and the local track sat paused forever = "no
+sound." The mix face was worse: `BeamSource::Mix` passes a None
+app-key and `linked_player(None)` falls back to "whoever is Playing" —
+ANY playing external player hijacked the transport during a mix.
+The engine was proven innocent first:
+`examples/pause_resume_probe.rs` walks play→pause→capture→resume,
+track-switch-under-capture, and the empty-mix round-trip against the
+REAL PipeWire server — all stages pass at the stream level.
+
+**The law:** the loaded local track owns the transport (buttons AND
+media keys), playing or paused; the beam's player gets the controls
+only on an empty deck. One predicate says who owns the deck —
+`transport_player` (pure, tested) / `Shell::transport_external_player`
+— and the transport row + `apply_external_command` both use it. The
+now-playing overlay deliberately does NOT: it follows the beam via
+`linked_external_player` regardless of the deck.
+
+**Receipts:** `loaded_local_track_owns_the_transport` (mpris_client)
+pins all four faces: app-key match + loaded deck → local; mix/None +
+loaded deck → local; both → external on an empty deck.
+`pause_resume_probe` = the engine-layer receipt (7/7 stages, real PW).
+Ben's machine is the acceptance for the felt gesture (rig audio is
+false-negative — skill gotcha).
 
 - **Focus trap:** egui 0.33 `wants_keyboard_input()` ==
   `focused().is_some()` and clicked buttons KEEP focus. Keyboard gate
