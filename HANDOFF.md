@@ -1,6 +1,19 @@
 # Handoff — next session starts here
 
-## UX ROUND 1 (July 10, 2026 — Ben's feedback, four root causes, all receipted; UNRELEASED)
+## v4.7.0 SHIPPED (July 11, 2026 — the UX-round release; Ben: "yup ship")
+
+Tag `v4.7.0` marked Latest (deb + rpm + source + SHA256SUMS,
+`--notes-file`), master pushed (16 commits: the audit-arc close, Ben's
+rulings, UX round 1, the release bump). Installed deb == published deb
+(sha `264e9b0f…` identical); local probe answers 4.7.0. Bench ALL PASS
+at ship (190.9 / 156.2 / 26.8 / 1875.1 — noise fixture regenerated from
+git history per the BENCH law). README claims updated to the new
+transport law; notes carry the honest 4.6.2→4.7.0 table + "Removed,
+honestly" (nothing user-facing; studio stub left the workspace, verb
+unchanged). The queue below (decay-dt → shell decomposition → Bloom)
+is the post-4.7.0 road.
+
+## UX ROUND 1 (July 10, 2026 — Ben's feedback, four root causes, all receipted; shipped in v4.7.0)
 
 Ben's list, every item root-caused (BUGLOG #17–#19 carry the stories):
 
