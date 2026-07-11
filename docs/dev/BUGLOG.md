@@ -587,6 +587,47 @@ multiple tries. Are things getting stuck on the same thread?"
 try and 10/10 round-trips; main-window-press dismissal re-receipted;
 hover highlight live under damage pacing (screenshot leg).
 
+## #19 — Stale cursors ride mode switches; the postcard dialog drags the window (fixed 2026-07-10)
+
+**Symptom (Ben):** "The cursor regularly gets very messed up when
+switching views (mini to regular, regular to fullscreen to mini)…
+When I open the Export signal postcard, the window moves around with
+my mouse making it impossible to hit the x."
+
+**Root cause, two movers:**
+1. **Our direct `set_cursor` calls bypass egui_winit's cursor cache.**
+   The mini's resize-hint handler sets NwResize/EResize/… straight on
+   the winit window; egui_winit only re-sets the cursor when EGUI's
+   own icon changes, and its cache still said Default — so nothing
+   ever restored the arrow. A resize cursor grabbed near a corner
+   survived M/F11 into the next mode and stuck there.
+2. **Every interior mini press became a WM move-grab** — including
+   presses on egui furniture (the postcard dialog, the playlist
+   slide-over, kit cards). Aiming at the dialog's ✕ started
+   `drag_window()` instead: the whole window chased the mouse, and
+   the grab swallowed the release egui needed (the #1-era pattern,
+   fourth appearance).
+
+**The laws:**
+- Whoever bypasses egui's cursor cache must also restore it: forced
+  cursors are tracked (`forced_cursor`), set only on change, and
+  reset to Default by `set_mini_mode` (both directions) and
+  fullscreen toggles. Hints show only over the BARE scope.
+- The mini's WM-grab machinery (move, resize, double-click restore)
+  fires only when the press lands on the bare scope —
+  `scope_hovered`, the occlusion-aware gate the wheel already uses
+  (NOT `wants_pointer_input`, the standing-law trap). Focus is still
+  claimed on every press (#5). Presses over egui furniture reach
+  egui.
+
+**Receipt:** `tests/receipts/mini-furniture.sh` (Muffin rig, 1440p):
+drag over the playlist pane → window stationary AND zero new
+WM-grab lines in the geom log; pane row click switched the track
+(probe, a-tone→b-tone); bare-scope press still reached the WM-grab
+path (drag law intact); mini leave clean. Cursor-icon staleness has
+no headless introspection — the reset code paths are the receipt,
+Ben's desktop is the felt acceptance.
+
 ---
 
 ## Standing laws (older repeat families — one line each, don't relearn)

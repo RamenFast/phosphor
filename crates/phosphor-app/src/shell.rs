@@ -473,6 +473,10 @@ pub struct Shell {
     /// compose-retune receipt; gain/dolly/mini-resize wheels rode the
     /// same dead branch).
     scope_hovered: bool,
+    /// the resize-hint cursor WE forced (bypasses egui_winit's cache,
+    /// which therefore can't restore it — we must). None = egui owns
+    /// the cursor. BUGLOG #19.
+    forced_cursor: Option<winit::window::CursorIcon>,
     mini_last_click: Option<Instant>,
     /// the Konami visitor swim (verbatim v3 turtle)
     visitor_started: Option<Instant>,
@@ -643,6 +647,7 @@ impl Shell {
             last_external_signature: None,
             cursor_position: (0.0, 0.0),
             scope_hovered: false,
+            forced_cursor: None,
             mini_last_click: None,
             visitor_started: None,
             exporting: false,
@@ -1193,6 +1198,11 @@ impl Shell {
                         } else {
                             None
                         });
+                    // a stale mini resize-hint cursor must not ride
+                    // into the new mode (BUGLOG #19)
+                    graphics.window.set_cursor(
+                        winit::window::CursorIcon::Default);
+                    self.forced_cursor = None;
                 }
                 UiAction::AlignMini(fraction_x, fraction_y) => {
                     self.align_mini(graphics, fraction_x, fraction_y);
@@ -1758,6 +1768,11 @@ impl Shell {
         }
         self.is_mini = enable;
         let window = &graphics.window;
+        // our direct set_cursor calls (mini resize hints) bypass
+        // egui_winit's cursor cache — a stale NwResize survived every
+        // mode switch ("the cursor gets very messed up", BUGLOG #19)
+        window.set_cursor(winit::window::CursorIcon::Default);
+        self.forced_cursor = None;
         geom_log!("set_mini_mode({enable}): outer {:?} inner {:?} \
                    banked {:?}",
                   window.outer_position().ok(), window.inner_size(),
@@ -3732,19 +3747,30 @@ impl ApplicationHandler<()> for Shell {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_position = (position.x, position.y);
                 // hover hint: advertise the mini resize zones so the
-                // edges/corners are discoverable (Default in the move
-                // interior). Cheap — only while mini.
+                // edges/corners are discoverable. Only over the BARE
+                // scope (occlusion-aware) — over a dialog/pane egui
+                // owns the cursor; and only on CHANGE, restoring
+                // Default ourselves when we stop (egui_winit's cursor
+                // cache never saw our set_cursor, so it won't —
+                // BUGLOG #19, "the cursor gets very messed up").
                 if self.is_mini
                     && let Some(graphics) = &self.graphics
                 {
                     let size = graphics.window.inner_size();
-                    let icon = mini_resize_zone(
-                        position.x, position.y,
-                        size.width as f64, size.height as f64,
-                    )
-                    .map(resize_cursor)
-                    .unwrap_or(winit::window::CursorIcon::Default);
-                    graphics.window.set_cursor(icon);
+                    let desired = if self.scope_hovered {
+                        mini_resize_zone(
+                            position.x, position.y,
+                            size.width as f64, size.height as f64,
+                        )
+                        .map(resize_cursor)
+                    } else {
+                        None
+                    };
+                    if desired != self.forced_cursor {
+                        graphics.window.set_cursor(desired.unwrap_or(
+                            winit::window::CursorIcon::Default));
+                        self.forced_cursor = desired;
+                    }
                 }
             }
             WindowEvent::MouseInput {
@@ -3770,6 +3796,22 @@ impl ApplicationHandler<()> for Shell {
                     self.wake_render_loop();
                     return;
                 }
+                // claim keyboard focus on EVERY mini press (BUGLOG #5:
+                // the press becomes a move-grab below, so a click never
+                // focuses the undecorated window by itself)
+                if let Some(graphics) = &self.graphics {
+                    graphics.window.focus_window();
+                }
+                // A press over egui furniture (postcard dialog, the
+                // playlist slide-over, kit cards) belongs to egui —
+                // starting a WM move-grab there made the whole window
+                // chase the mouse and ate the click the ✕ needed
+                // (BUGLOG #19; the occlusion-aware scope_hovered is
+                // the wheel's gate, same law). The grab also swallows
+                // the release egui needs — the #1-era pattern.
+                if !self.scope_hovered {
+                    return;
+                }
                 // Mini owns left-press: corner 26 px = WM resize, a
                 // quick second click = restore, anywhere else = WM
                 // move (v3: drag moves the mini; drag never orbits).
@@ -3777,12 +3819,6 @@ impl ApplicationHandler<()> for Shell {
                 // convergence goal must never fight a live drag
                 self.geometry_goal = None;
                 if let Some(graphics) = &self.graphics {
-                    // claim keyboard focus BEFORE the WM grab: the
-                    // press instantly becomes a move-grab below, so
-                    // this click never focuses the undecorated window
-                    // by itself — F/G/L in mini were dead unless
-                    // focus arrived some other way (BUGLOG #5)
-                    graphics.window.focus_window();
                     let now = Instant::now();
                     let double = self.mini_last_click
                         .is_some_and(|t| now.duration_since(t)
