@@ -1,5 +1,55 @@
 # Handoff — next session starts here
 
+## UX ROUND 1 (July 10, 2026 — Ben's feedback, four root causes, all receipted; UNRELEASED)
+
+Ben's list, every item root-caused (BUGLOG #17–#19 carry the stories):
+
+- **#17 — "no audio on local playback after switching to spotify / mix":**
+  the transport (buttons AND media keys) followed the beam to the scoped
+  player even with a local track paused underneath — the paused file was
+  unreachable except by Space. Mix was worse (`linked_player(None)` grabs
+  ANY playing player). Now the loaded track owns the deck
+  (`transport_player`, pure + tested); the beam's player gets the controls
+  only when nothing is loaded. The engine was exonerated FIRST:
+  `examples/pause_resume_probe.rs`, 7/7 stages on real PipeWire.
+  **Ben's machine is the acceptance** — the rig reads audio false-negatives.
+- **#18 — "right click makes the scope really slow / clicking out takes
+  multiple tries":** the popup presented a SECOND Fifo surface on the one
+  thread every loop pass (the scope lost a vblank wait per frame), and the
+  560×840 popup canvas is mostly invisible void that swallowed dismissal
+  clicks. Now: Mailbox ladder + damage-paced popup (input / egui deadline
+  floored at 60 fps / drained actions), and a void press dismisses.
+  Receipt `tests/receipts/menu-behavior.sh`: fps 93 vs 96 baseline with
+  the menu open, 10/10 first-try dismissals.
+- **#19 — "cursor gets very messed up switching views / the postcard
+  dialog moves the window, can't hit the ✕":** every interior mini press
+  became a WM move-grab (including over egui furniture), and our
+  resize-hint cursors bypass egui_winit's cache so nothing restored the
+  arrow. Now furniture presses reach egui (`scope_hovered` gate — the
+  wheel's law), forced cursors are tracked + reset on every mode switch.
+  Receipt `tests/receipts/mini-furniture.sh` 6/6 (pane drag stationary,
+  row click switches track by probe, bare-scope drag law intact).
+- **Tooltips** across the right-click menu + settings panel (Ben: "why
+  aren't there more?") — receipted live (hover screenshot).
+
+**Why the same bugs keep reappearing (Ben's question, answered honestly):**
+all three of this round's UI bugs are fresh instances of the audit's P0-4
+diagnosis — `Shell` holds ~100 loose fields, gestures have multiple owners,
+impossible states are representable. #19 is the FOURTH appearance of the
+"mini press eats what egui needs" pattern (#1, #5, #11, now the dialog).
+BUGLOG accumulates laws but the structure regenerates instances. The cure
+is planned: `SHELL-DECOMPOSITION-PLAN.md` (reducers + explicit machines
+make these unrepresentable). **Queue reorder from this evidence: decay-dt
+first (small, FINAL, unlocks receipts) → SHELL DECOMPOSITION second →
+Bloom third** — the garden should not be built on a shell that regrows
+this class of bug (it was previously #2 in the queue).
+
+Gates at close: 18/18 suites (78 app tests incl. the new transport-owner
+pin), clippy -D warnings silent, three receipt rigs green
+(menu-behavior, mini-furniture, pause_resume_probe). Owed to Ben's
+desktop: the felt acceptance on all four (audio round-trip on real
+speakers, menu fps at 165 Hz, cursor feel, dialog ✕).
+
 ## AUDIT ARC CLOSED (July 9–10, 2026 — contract consolidation; the plans are the product)
 
 The GPT's static audit of 4.6.2 (`docs/dev/AUDIT.md`, 1608 lines; verdict:
