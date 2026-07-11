@@ -12,7 +12,10 @@ set -euo pipefail
 project_directory="$(cd "$(dirname "$0")/.." && pwd)"
 packaging_directory="$project_directory/packaging"
 package_name="phosphor"
-VERSION="4.6.2"
+# Overridable for local test builds: +uxN sorts AFTER the 4.6.2
+# release and BEFORE any 4.6.3, so Ben's feel-round installs upgrade
+# over the release deb and the next real release upgrades over them.
+VERSION="${PHOSPHOR_DEB_VERSION:-4.6.2}"
 
 # The binary: build fresh, package a stripped copy.
 (cd "$project_directory" && cargo build --release --quiet -p phosphor-app)
