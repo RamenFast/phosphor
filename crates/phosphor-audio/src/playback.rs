@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use rubato::Resampler;
 
-use crate::engine::AudioEvent;
+use crate::events::AudioEvent;
 use crate::metadata::{probe_metadata_with_art, CoverArt, TrackMetadata};
 use crate::ring::SampleRing;
 

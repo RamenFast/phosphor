@@ -6,8 +6,15 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+# The Linux session backend (AudioEngine, mirror, vacuum). Default on so the
+# desktop is unchanged; phosphor-mobil3 consumes `default-features = false`
+# for the pure decode/gapless/ring pipeline.
+default = ["pipewire-backend"]
+pipewire-backend = ["dep:pipewire"]
+
 [dependencies]
-pipewire = { workspace = true }
+pipewire = { workspace = true, optional = true }
 serde_json = { workspace = true }
 symphonia = { workspace = true }
 rubato = { workspace = true }

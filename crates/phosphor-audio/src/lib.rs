@@ -13,16 +13,23 @@
 //! - escape hatch if PW node routing misbehaves: hybrid mode keeps a
 //!   pactl subprocess for module load/unload ONLY.
 
+#[cfg(feature = "pipewire-backend")]
 pub mod engine;
+pub mod events;
 pub mod metadata;
+#[cfg(feature = "pipewire-backend")]
 pub mod mirror;
 pub mod playback;
 pub mod ring;
+#[cfg(feature = "pipewire-backend")]
 pub mod targets;
 
-pub use engine::{AudioEngine, AudioEvent};
+#[cfg(feature = "pipewire-backend")]
+pub use engine::AudioEngine;
+pub use events::AudioEvent;
 pub use metadata::{probe_metadata, CoverArt, TrackMetadata};
 pub use ring::{SampleRing, CLIP_SECONDS, PENDING_BACKLOG_SECONDS};
+#[cfg(feature = "pipewire-backend")]
 pub use targets::{CaptureTarget, ConnectSpec, TargetKind};
 
 /// The null sink apps play into during vacuum (v3's name, kept so the
