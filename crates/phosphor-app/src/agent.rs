@@ -719,7 +719,7 @@ fn schema_document() -> Value {
                     "previous": {"args": {}},
                     "seek": {"args": {"seconds": "number"}},
                     "volume": {"args": {"value": "number 0..1"}},
-                    "gain": {"args": {"value": "number 0.1..6.0 | auto"},
+                    "gain": {"args": {"value": "number 0.1..7.0 | auto"},
                              "note": "numeric values clamp to range and disable auto-gain"},
                     "mode": {"args": {"name": "string (see enums.modes)"}},
                     "theme": {"args": {"name": "string (see enums.themes)"}},

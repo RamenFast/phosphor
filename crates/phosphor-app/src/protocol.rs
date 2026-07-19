@@ -228,7 +228,7 @@ impl CtlRequest {
                                 "gain needs a number or `auto`, e.g. \
                                  `phosphor ctl gain 1.5`",
                             )?
-                            .clamp(0.1, 6.0),
+                            .clamp(0.1, 7.0),
                     ),
                     auto: false,
                 },
@@ -336,7 +336,7 @@ impl CtlRequest {
                                         "phosphor ctl gain 1.5",
                                     )
                                 })?
-                                .clamp(0.1, 6.0),
+                                .clamp(0.1, 7.0),
                         ),
                         auto: false,
                     }

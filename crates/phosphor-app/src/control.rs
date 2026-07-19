@@ -624,7 +624,7 @@ mod tests {
         }
         match verb_of(r#"{"op":"ctl","verb":"gain","args":{"value":9.0}}"#) {
             ControlVerb::Gain { value, auto } => {
-                assert_eq!(value, Some(6.0));
+                assert_eq!(value, Some(7.0));
                 assert!(!auto);
             }
             _ => panic!("numeric gain"),

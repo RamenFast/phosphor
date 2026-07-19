@@ -1481,7 +1481,7 @@ impl Shell {
                         self.settings.auto_gain = true;
                         self.auto_gain_peak = 0.0;
                     } else if let Some(value) = value {
-                        let gain = (value as f32).clamp(0.1, 6.0);
+                        let gain = (value as f32).clamp(0.1, 7.0);
                         self.settings.gain = gain;
                         self.settings.auto_gain = false;
                         self.effective_gain = gain;
@@ -3997,7 +3997,7 @@ impl ApplicationHandler<()> for Shell {
                         // "inconsistent zoom" feedback)
                         let factor = 1.08f32.powf(notches as f32);
                         self.settings.gain =
-                            (self.settings.gain * factor).clamp(0.1, 6.0);
+                            (self.settings.gain * factor).clamp(0.1, 7.0);
                         self.actions.push(UiAction::SignalTuning);
                     }
                     self.chrome_dirty = true;

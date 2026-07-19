@@ -273,7 +273,7 @@ impl Shell {
             let mut gain = self.settings.gain;
             let mut text_ids = std::mem::take(&mut self.text_focus_ids);
             if data_slider(ui, SliderSpec {
-                name: "Gain", minimum: 0.1, maximum: 6.0,
+                name: "Gain", minimum: 0.1, maximum: 7.0,
                 tooltip: "Deflection scale — ×1 is unity; also mouse \
                           scroll over the scope",
                 enabled: !auto_gain,
