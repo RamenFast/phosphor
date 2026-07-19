@@ -12,10 +12,13 @@ set -euo pipefail
 project_directory="$(cd "$(dirname "$0")/.." && pwd)"
 packaging_directory="$project_directory/packaging"
 package_name="phosphor"
-# Overridable for local test builds: +uxN sorts AFTER the 4.6.2
-# release and BEFORE any 4.6.3, so Ben's feel-round installs upgrade
-# over the release deb and the next real release upgrades over them.
-VERSION="${PHOSPHOR_DEB_VERSION:-4.7.0}"
+# Version comes from the workspace Cargo.toml — a hardcoded default here
+# once clobbered a dist deb with a stale number (2026-07-18). Overridable
+# for local test builds (+uxN suffixes sort AFTER the release and BEFORE
+# the next one, so feel-round installs upgrade cleanly in both directions).
+cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$project_directory/Cargo.toml" | head -n1)"
+[ -n "$cargo_version" ] || { echo "could not read version from Cargo.toml" >&2; exit 1; }
+VERSION="${PHOSPHOR_DEB_VERSION:-$cargo_version}"
 
 # The binary: build fresh, package a stripped copy.
 (cd "$project_directory" && cargo build --release --quiet -p phosphor-app)
