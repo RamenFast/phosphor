@@ -1476,6 +1476,24 @@ impl Shell {
                         })
                     }
                 }
+                ControlVerb::Gain { value, auto } => {
+                    if auto {
+                        self.settings.auto_gain = true;
+                        self.auto_gain_peak = 0.0;
+                    } else if let Some(value) = value {
+                        let gain = (value as f32).clamp(0.1, 6.0);
+                        self.settings.gain = gain;
+                        self.settings.auto_gain = false;
+                        self.effective_gain = gain;
+                        self.computer.gain = gain;
+                    }
+                    self.actions.push(UiAction::SaveSettings);
+                    self.chrome_dirty = true;
+                    json!({"status": "ok", "verb": "gain",
+                           "result": {"setting": self.settings.gain,
+                                      "effective": self.effective_gain,
+                                      "auto": self.settings.auto_gain}})
+                }
                 ControlVerb::UiStyle(name) => {
                     if crate::theme::PALETTES.iter()
                         .any(|p| p.id == name)

@@ -33,6 +33,10 @@ pub(crate) enum ControlVerb {
     Transport(MprisCommand),
     Mode(String),
     Theme(String),
+    Gain {
+        value: Option<f64>,
+        auto: bool,
+    },
     UiStyle(String),
     Capture(bool),
     Target(String),
@@ -271,6 +275,7 @@ fn control_verb_of(request: CtlRequest) -> ControlVerb {
         CtlRequest::Volume { value } => ControlVerb::Transport(MprisCommand::SetVolume(value)),
         CtlRequest::Mode { name } => ControlVerb::Mode(name),
         CtlRequest::Theme { name } => ControlVerb::Theme(name),
+        CtlRequest::Gain { value, auto } => ControlVerb::Gain { value, auto },
         CtlRequest::Ui { name } => ControlVerb::UiStyle(name),
         CtlRequest::Capture { on } => ControlVerb::Capture(on),
         CtlRequest::Target { id } => ControlVerb::Target(match id {
@@ -616,6 +621,20 @@ mod tests {
                 assert!((v - 1.0).abs() < 1e-9, "clamped to 1.0")
             }
             _ => panic!("volume"),
+        }
+        match verb_of(r#"{"op":"ctl","verb":"gain","args":{"value":9.0}}"#) {
+            ControlVerb::Gain { value, auto } => {
+                assert_eq!(value, Some(6.0));
+                assert!(!auto);
+            }
+            _ => panic!("numeric gain"),
+        }
+        match verb_of(r#"{"op":"ctl","verb":"gain","args":{"auto":true}}"#) {
+            ControlVerb::Gain { value, auto } => {
+                assert_eq!(value, None);
+                assert!(auto);
+            }
+            _ => panic!("auto gain"),
         }
     }
 

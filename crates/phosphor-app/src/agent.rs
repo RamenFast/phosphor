@@ -508,7 +508,8 @@ fn print_ctl_confirmation(verb: &str, rest: &[&str], reply: &Value) {
         return;
     }
     match verb {
-        "seek" | "volume" | "mode" | "theme" | "ui" | "capture" | "target" | "play" | "open" => {
+        "seek" | "volume" | "gain" | "mode" | "theme" | "ui" | "capture" | "target" | "play"
+        | "open" => {
             if let Some(value) = rest.first() {
                 println!("{verb} → {value}");
             } else {
@@ -718,6 +719,8 @@ fn schema_document() -> Value {
                     "previous": {"args": {}},
                     "seek": {"args": {"seconds": "number"}},
                     "volume": {"args": {"value": "number 0..1"}},
+                    "gain": {"args": {"value": "number 0.1..6.0 | auto"},
+                             "note": "numeric values clamp to range and disable auto-gain"},
                     "mode": {"args": {"name": "string (see enums.modes)"}},
                     "theme": {"args": {"name": "string (see enums.themes)"}},
                     "ui": {"args": {"name": "string (see enums.ui_styles)"}},

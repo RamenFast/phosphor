@@ -20,3 +20,18 @@ Rules:
 
 ## Ledger
 
+- 2026-07-18 [feature] Add a `phosphor ctl gain` verb so the Android relay companion can control desktop scope gain.
+- 2026-07-18 [ask] Support `phosphor ctl gain 1.5`, clamping numeric gain to 0.1..6.0.
+- 2026-07-18 [ask] Support `phosphor ctl gain auto` to enable auto-gain.
+- 2026-07-18 [ask] Put both gain forms in `CtlRequest::EXAMPLES` so BUGLOG #16's real-socket round-trip test covers them.
+- 2026-07-18 [correction] Keep ctl error `fix` strings executable positional syntax, never unsupported flag syntax.
+- 2026-07-18 [ask] Numeric ctl gain must mirror GUI leave-auto semantics: store the clamped gain, disable auto-gain, and snap effective/computer gain immediately.
+- 2026-07-18 [ask] Auto ctl gain must mirror GUI enter-auto semantics: enable auto-gain and reset the tracked auto-gain peak.
+- 2026-07-18 [correction] Publish ctl gain through the existing `computer.gain` and `effective_gain` flow required by BUGLOG #13; do not add a channel.
+- 2026-07-18 [ask] Persist ctl gain changes through `UiAction::SaveSettings` and its atomic-save path.
+- 2026-07-18 [bugfix] A ctl gain change must trigger Theme's restyle repaint mechanism so an idle or paused scope redraws under BUGLOG #14.
+- 2026-07-18 [ask] Bump the workspace version from 4.7.0 to 4.7.1.
+- 2026-07-18 [ask] Gate the gain verb with workspace clippy at `-D warnings`, the full workspace test suite, and the specific ctl real-socket round-trip test.
+- 2026-07-18 [correction] Do not touch the running scope's real ctl socket; use only an isolated instance or the test harness.
+- 2026-07-18 [correction] Leave the implementation uncommitted and unpushed for orchestrator review.
+- 2026-07-18 [ask] Write the gain-verb implementation report, including line refs and verbatim gate outputs, to the requested scratchpad path.

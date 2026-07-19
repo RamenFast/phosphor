@@ -79,6 +79,7 @@ pub(crate) enum CtlRequest {
     Previous,
     Seek { seconds: f64 },
     Volume { value: f64 },
+    Gain { value: Option<f64>, auto: bool },
     Mode { name: String },
     Theme { name: String },
     Ui { name: String },
@@ -103,6 +104,7 @@ impl CtlRequest {
             CtlRequest::Previous => "previous",
             CtlRequest::Seek { .. } => "seek",
             CtlRequest::Volume { .. } => "volume",
+            CtlRequest::Gain { .. } => "gain",
             CtlRequest::Mode { .. } => "mode",
             CtlRequest::Theme { .. } => "theme",
             CtlRequest::Ui { .. } => "ui",
@@ -130,6 +132,8 @@ impl CtlRequest {
         ("previous", &[]),
         ("seek", &["-10"]),
         ("volume", &["0.7"]),
+        ("gain", &["1.5"]),
+        ("gain", &["auto"]),
         ("mode", &["ring"]),
         ("theme", &["Amber"]),
         ("ui", &["amber"]),
@@ -161,6 +165,9 @@ impl CtlRequest {
             | CtlRequest::Quit => json!({}),
             CtlRequest::Seek { seconds } => json!({ "seconds": seconds }),
             CtlRequest::Volume { value } => json!({ "value": value }),
+            CtlRequest::Gain { value, auto } => {
+                json!({ "value": value, "auto": auto })
+            }
             CtlRequest::Mode { name } | CtlRequest::Theme { name } | CtlRequest::Ui { name } => {
                 json!({ "name": name })
             }
@@ -205,6 +212,31 @@ impl CtlRequest {
                     .and_then(|s| s.parse::<f64>().ok())
                     .filter(|v| (0.0..=1.0).contains(v))
                     .ok_or("volume needs a value in 0..1, e.g. `volume 0.7`")?,
+            },
+            "gain" => match rest.first().copied() {
+                Some("auto") => CtlRequest::Gain {
+                    value: None,
+                    auto: true,
+                },
+                Some(value) => CtlRequest::Gain {
+                    value: Some(
+                        value
+                            .parse::<f64>()
+                            .ok()
+                            .filter(|value| value.is_finite())
+                            .ok_or(
+                                "gain needs a number or `auto`, e.g. \
+                                 `phosphor ctl gain 1.5`",
+                            )?
+                            .clamp(0.1, 6.0),
+                    ),
+                    auto: false,
+                },
+                None => {
+                    return Err("gain needs a number or `auto`, e.g. \
+                         `phosphor ctl gain 1.5`"
+                        .into());
+                }
             },
             "mode" => CtlRequest::Mode {
                 name: rest
@@ -286,6 +318,30 @@ impl CtlRequest {
                     })?
                     .clamp(0.0, 1.0),
             },
+            "gain" => {
+                if args.get("auto").and_then(Value::as_bool) == Some(true) {
+                    CtlRequest::Gain {
+                        value: None,
+                        auto: true,
+                    }
+                } else {
+                    CtlRequest::Gain {
+                        value: Some(
+                            args.get("value")
+                                .and_then(Value::as_f64)
+                                .filter(|value| value.is_finite())
+                                .ok_or_else(|| {
+                                    WireError::new(
+                                        "gain needs a numeric 'value' or auto",
+                                        "phosphor ctl gain 1.5",
+                                    )
+                                })?
+                                .clamp(0.1, 6.0),
+                        ),
+                        auto: false,
+                    }
+                }
+            }
             "mode" => CtlRequest::Mode {
                 name: str_arg("name")
                     .ok_or_else(|| WireError::new("mode needs a 'name'", "phosphor ctl mode xy"))?,
@@ -402,7 +458,7 @@ mod tests {
         // Trigger each missing-argument error and re-parse its fix
         // through the CLI parser — a fix the CLI rejects is a bug.
         for verb in [
-            "seek", "volume", "mode", "theme", "ui", "capture", "target", "open",
+            "seek", "volume", "gain", "mode", "theme", "ui", "capture", "target", "open",
         ] {
             let err = CtlRequest::from_wire_args(verb, &json!({}))
                 .err()
