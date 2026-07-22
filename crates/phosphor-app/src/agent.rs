@@ -697,8 +697,10 @@ fn schema_document() -> Value {
     }));
 
     let document = json!({
+        "status": "ok",
         "tool": TOOL,
         "version": version(),
+        "ts": now(),
         "convention": "NexusFormStationWork/CONVENTION.md",
         "verbs": {
             "probe": {
@@ -792,7 +794,8 @@ fn schema_document() -> Value {
 }
 
 pub fn run_schema(_args: &[String]) -> i32 {
-    // schema is ALWAYS one JSON document (no envelope, no TTY switch).
+    // Schema is always JSON, but discovery is still a one-shot and therefore
+    // wears the same envelope as every other one-shot. See BUGLOG #20.
     if let Ok(text) = serde_json::to_string_pretty(&schema_document()) {
         let mut out = std::io::stdout().lock();
         let _ = writeln!(out, "{text}");
@@ -902,6 +905,11 @@ mod tests {
         // round-trips as valid JSON
         let text = serde_json::to_string(&doc).unwrap();
         let _reparsed: Value = serde_json::from_str(&text).unwrap();
+
+        assert_eq!(doc["status"], json!("ok"));
+        assert_eq!(doc["tool"], json!("phosphor"));
+        assert_eq!(doc["version"], json!(version()));
+        assert!(doc["ts"].as_str().is_some_and(|ts| !ts.is_empty()));
 
         let enums = &doc["enums"];
         let modes = enums["modes"].as_array().unwrap();

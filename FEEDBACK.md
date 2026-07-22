@@ -35,3 +35,4 @@ Rules:
 - 2026-07-18 [correction] Do not touch the running scope's real ctl socket; use only an isolated instance or the test harness.
 - 2026-07-18 [correction] Leave the implementation uncommitted and unpushed for orchestrator review.
 - 2026-07-18 [ask] Write the gain-verb implementation report, including line refs and verbatim gate outputs, to the requested scratchpad path.
+- 2026-07-22 [ask] Perform a final cleanup pass in the Phosphor repository after Nexus Mobile, preserving existing work and validating before commit and push.

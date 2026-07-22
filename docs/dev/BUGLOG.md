@@ -630,6 +630,32 @@ Ben's desktop is the felt acceptance.
 
 ---
 
+## #20 — `phosphor schema` published a contract without its own envelope (fixed 2026-07-22)
+
+**Symptom:** `phosphor schema --json` emitted the complete machine map but omitted
+`status` and `ts`, even though Phosphor's own module contract, agent guide, and the
+workspace `AGENT-CLI-STANDARD` require every one-shot, including discovery, to carry
+`{status,tool,version,ts}`.
+
+**Root cause:** `run_schema` deliberately treated discovery as an exception and
+`schema_document` hand-authored only `tool` and `version`. The exception survived even
+after workspace ruling R5 named Phosphor's missing fields as a known hole.
+
+**The law:** discovery is a one-shot, not a side channel. Its machine map may remain
+always-JSON and pretty-printed, but the top-level document wears the same complete
+envelope as every other one-shot. A schema regression test pins all four fields and a
+nonempty timestamp.
+
+**Receipt:**
+
+```bash
+cargo test -p phosphor-app agent::tests::schema_doc_parses_with_live_nonempty_enums
+cargo run -q -p phosphor-app -- schema --json \
+  | jq -e '.status == "ok" and .tool == "phosphor" and (.version | length > 0) and (.ts | length > 0)'
+```
+
+---
+
 ## Standing laws (older repeat families — one line each, don't relearn)
 
 - **Focus trap:** egui 0.33 `wants_keyboard_input()` ==
